@@ -1,0 +1,3 @@
+[submodule "litho/scripts/camera/flir"]
+	path = litho/scripts/camera/flir
+	url = https://github.com/hacker-fab/flir-private

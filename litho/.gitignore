@@ -1,0 +1,7 @@
+scripts/*.jpg
+scripts/*.png
+__pycache__
+venv/
+*.so
+*.jls
+*.whl

@@ -1,0 +1,9 @@
+{
+  "cpu": {
+    "fqbn": "arduino:avr:mega:cpu=atmega2560",
+    "name": "Arduino Mega 2560",
+    "type": "serial"
+  },
+  "secrets": [],
+  "included_libs": []
+}

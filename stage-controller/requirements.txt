@@ -1,0 +1,4 @@
+numpy
+typing-extensions
+sangaboard
+pyserial
