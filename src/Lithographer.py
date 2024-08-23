@@ -18,16 +18,15 @@ from gui_lib import *
 from img_lib import *
 from backend_lib import *
 
-from config import RUN_WITH_CAMERA, RUN_WITH_STAGE
+# import configuration variables
+from config import RUN_WITH_CAMERA
 if(RUN_WITH_CAMERA):
   from config import camera as camera_hw
   import cv2
+from config import RUN_WITH_STAGE
 if(RUN_WITH_STAGE):
+  from config import stage_file, baud_rate, scale_factor
   import serial
-
-stage_file = "COM6" # change as needed; later will have automatic COM port identification
-baud_rate = 115200
-scale_factor = 50/3890 # For us, 50 units went about 3890 microns. PLEASE CHANGE THIS FOR YOUR OWN SETUP.
 
 # TODO
 # - Camera Integration
@@ -48,20 +47,17 @@ scale_factor = 50/3890 # For us, 50 units went about 3890 microns. PLEASE CHANGE
 # - Add user controllable tile adjustment and continue
 # - use a paste command to put the preview on a black background to represent the actual exposure. 
 
-VERSION: str = "1.6.2"
+VERSION: str = "1.6.3"
 ''' Patch Notes
 
 **Minor**
-- re-enabled GUI-integrated stage control
-- moved gui_lib, img_lib, and backend_lib to separate lib directory
-- changed step size defaults and added min and max step distances for safety
+- modified repo structure; changed /litho/scripts to /src
+- moved stage step factor, baud rate, and serial port to config.py
 
-**TODO for 1.6.x**
+**TODO**
 - Improve camera preview sizing on GUI (i.e. take up less space) 
 - Make camera settings configurable
 - Automatic serial port detection 
-
-**TODO for later versions**
 - Code refactoring
 - Automatic step and expose
 - UI improvements
