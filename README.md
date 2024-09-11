@@ -6,5 +6,22 @@ This repository contains the source code for The Hacker Fab's open source steppe
 
 For more information about software setup, hardware assembly, or the Hacker Fab in general, please visit our [Gitbook](https://hacker-fab.gitbook.io/hacker-fab-space/fab-toolkit/patterning/lithography-stepper-v2-build-work-in-progress) or our [website](https://hackerfab.ece.cmu.edu/).
 
+# Setup
+
+It is strongly recommended to use a [virtual environment](https://docs.python.org/3/library/venv.html).
+
+```bash
+python3 -m venv venv
+source venv/bin/activate  # depending on your shell, see venv docs
+```
+
+This repository uses a local package as a library.
+On first use and after adding/removing files to/from the `lib/lithographer_lib` directory,
+run the following commands to install it:
+
+```bash
+cd lib && pip install -e . --config-settings editable_mode=strict
+```
+
 > [!NOTE]
 > This software is in active development, and features are subject to change. Though each change to the main branch has been tested, there remains a chance that some bugs are undetected. To report a bug or to suggest additional features, please create an issue on this repository.
