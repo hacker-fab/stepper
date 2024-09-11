@@ -13,6 +13,7 @@ It is strongly recommended to use a [virtual environment](https://docs.python.or
 ```bash
 python3 -m venv venv
 source venv/bin/activate  # depending on your shell, see venv docs
+pip install -r requirements.txt
 ```
 
 This repository uses a local package as a library.
