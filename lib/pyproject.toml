@@ -1,0 +1,8 @@
+[project]
+name = "lithographer-lib"
+version = "0.1.0"
+description = "Main library for hackerfab GUI and related code"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

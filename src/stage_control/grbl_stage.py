@@ -3,8 +3,17 @@
 # GRBL Stage Controller
 
 from stage_control.stage_controller import StageController
+from typing import List
 import io
 import time
+
+def clamp(value, lo, hi):
+    if value > hi:
+        return hi
+    elif value < lo:
+        return lo
+    else:
+        return value
 
 class GrblStage(StageController):
     # only x, y, and z axes are supported by this interface
@@ -14,7 +23,7 @@ class GrblStage(StageController):
                  controller_target, 
                  bounds: tuple[tuple[float,float],tuple[float,float],tuple[float,float]] = ((-10,10),(-10,10),(-10,10)), 
                  # axes: tuple[str] = ('x','y','z'),
-                 position: tuple[float,float,float]=[0,0,0]):
+                 position: List[float]=[0,0,0]):
         self.controller_target = controller_target
 
         try:
@@ -71,13 +80,14 @@ class GrblStage(StageController):
         return True
     
     def __adjust_coordinates__(self, amounts: dict[str, float], relative: bool):
-        coords = [0, 0, 0]
-        clamped_amt = [0, 0, 0]
+        coords = [0.0, 0.0, 0.0]
+        clamped_amt = [0.0, 0.0, 0.0]
         coords[0] = amounts.get('x')
         coords[1] = amounts.get('y')
         coords[2] = amounts.get('z')
 
         for i in range(0, len(coords)):
+            bounds_lo, bounds_hi = self.bounds[i]
             if coords[i] == None:
                 if relative:
                     coords[i] = 0
@@ -86,19 +96,9 @@ class GrblStage(StageController):
             else:
                 # if bounds exceeded, set target coordinate to the boundary
                 if relative:
-                    if coords[i] + self.position[i] > self.bounds[i][1]:
-                        clamped_amt[i] = self.bounds[i][1] - self.position[i]
-                    elif coords[i] + self.position[i] < self.bounds[i][0]:
-                        clamped_amt[i] = self.bounds[i][0] - self.position[i]
-                    else:
-                        clamped_amt[i] = coords[i]
+                    clamped_amt[i] = clamp(coords[i] + self.position[i], bounds_lo, bounds_hi) - self.position[i]
                 else:
-                    if coords[i] > self.bounds[i][1]:
-                        clamped_amt[i] = self.bounds[i][1]
-                    elif coords[i] < self.bounds[i][0]:
-                        clamped_amt[i] = self.bounds[i][0]
-                    else:
-                        clamped_amt = coords[i]
+                    clamped_amt[i] = clamp(coords[i], bounds_lo, bounds_hi)
         print('a')
         print(self.position)
         print(coords)

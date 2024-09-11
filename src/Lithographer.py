@@ -3,6 +3,7 @@
 # Kent Wirant
 # Main lithography script
 
+from typing import Literal
 from tkinter import Button, Label
 from tkinter.ttk import Progressbar
 from collections import namedtuple
@@ -10,13 +11,9 @@ from PIL import  Image
 from time import sleep
 from stage_control.grbl_stage import GrblStage
 
-#import sys and use path insert to add lib files
-import sys
-from os.path import join, dirname, realpath
-sys.path.insert(0, join(dirname(dirname(realpath(__file__))), "lib"))
-from gui_lib import *
-from img_lib import *
-from backend_lib import *
+from lithographer_lib.gui_lib import *
+from lithographer_lib.img_lib import *
+from lithographer_lib.backend_lib import *
 
 # import configuration variables
 from config import RUN_WITH_CAMERA

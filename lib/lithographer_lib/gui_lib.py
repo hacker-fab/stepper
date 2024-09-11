@@ -10,14 +10,11 @@ from PIL import ImageTk, Image
 from time import time
 from os.path import basename
 from typing import Callable, Literal, Union
+from dataclasses import dataclass
 
 #import sys and use path insert to add lib files
-import sys
-from os.path import join, dirname, realpath
-sys.path.insert(0, join(dirname(dirname(realpath(__file__))), "lib"))
-from img_lib import *
-from gui_lib import *
-from backend_lib import *
+from .img_lib import rasterize, fit_image
+from .backend_lib import Smart_Image
 #endregion
 
 # widget to display info, errors, warning, and text
@@ -96,6 +93,12 @@ class Debug():
     self.__widget__.config(fg = colors[0],
                        bg = colors[1])
 
+@dataclass
+class CycleState:
+  text: str
+  fg_bg: tuple[str, str]
+  enter_exit: tuple[Callable | None, Callable | None]
+
 # creates a button that cycles through states
 # each state contains: text, colors, and entering / exiting functions
 class Cycle():
@@ -106,9 +109,7 @@ class Cycle():
   __gui__: GUI_Controller
   state: int
   # user-inputted fields
-  # tuple structure: (text, (fg, bg), (enter, exit))
-  cycle_state_t = tuple[str, tuple[str,str], tuple[Callable | None, Callable | None]]
-  __states__: list[cycle_state_t]
+  __states__: list[CycleState]
   func_always: Callable | None
   
   # create new Cycle widget
@@ -120,15 +121,15 @@ class Cycle():
     self.state = 0
     self.__states__ = []
     self.__widget__ = Button(gui.root, command=self.cycle)
-    if(name == None):
-      gui.add_widget("unnamed cycle widget "+str(Cycle.__total_cycles__), self)
+    if name is None:
+      gui.add_widget(f"unnamed cycle widget {Cycle.__total_cycles__}", self)
       Cycle.__total_cycles__ += 1
     else:
       gui.add_widget(name, self)
     
   # place widget on the grid
   def grid(self, row: int | None = None, col: int | None = None, colspan: int = 1, rowspan: int = 1):
-    if(row == None or col == None):
+    if row is None or col is None:
       self.__widget__.grid()
     else:
       self.__widget__.grid(row = row,
@@ -147,97 +148,99 @@ class Cycle():
                 colors: tuple[str,str] = ("black", "white"),
                 enter: Callable | None = None,
                 exit: Callable | None = None):
-    self.__states__.append((text, colors, (enter, exit)))
+    self.__states__.append(CycleState(text, colors, (enter, exit)))
     # update widget cosmetics to the first state added
-    if(len(self.__states__) == 1):
+    if len(self.__states__) == 1:
       self.__widget__.config( text = text,
                           fg = colors[0],
                           bg = colors[1])
   
   # get a state in cycle_state_t format with added index:
   # (index, cycle_state_t) = (index, (text, colors, (enter, exit)))
-  def get_state(self, index: int) -> cycle_state_t | None:
-    if(index < 0 or index >= len(self.__states__)):
-      if(self.__gui__.debug != None):
-        self.__gui__.debug.error("invalid cycle get target "+str(index)+" > "+str(len(self.__states__)-1))
+  def get_state(self, index: int) -> CycleState | None:
+    try:
+      return self.__states__[index]
+    except IndexError:
+      if self.__gui__.debug is not None:
+        self.__gui__.debug.error(f"invalid cycle get target {index} > {len(self.__states__)-1}")
       return None
-    return self.__states__[index]
   
   # jump to a state index
   def goto(self, index: int = 0):
     # check if index is valid
-    if(index < 0 or index >= len(self.__states__)):
-      if(self.__gui__.debug != None):
-        self.__gui__.debug.error("invalid cycle update target "+str(index)+" > "+str(len(self.__states__)-1))
+    if index < 0 or index >= len(self.__states__):
+      if self.__gui__.debug is not None:
+        self.__gui__.debug.error(f"invalid cycle update target {index} > {len(self.__states__)-1}")
       return
+
     # call exit function of previous state
-    if(self.__states__[self.state][2][1] != None):
-      self.__states__[self.state][2][1]()
+    if self.__states__[self.state].enter_exit[1] is not None:
+      self.__states__[self.state].enter_exit[1]()
     # update state
     self.state = index
-    self.__widget__.config( text = self.__states__[index][0],
-                        fg = self.__states__[index][1][0],
-                        bg = self.__states__[index][1][1])
-    if(self.__gui__.debug != None):
-      self.__gui__.debug.info("Cycle set to "+str(index)+": "+self.__states__[index][0].split("\n")[0])
+    self.__widget__.config( text = self.__states__[index].text,
+                        fg = self.__states__[index].fg_bg[0],
+                        bg = self.__states__[index].fg_bg[1])
+    if self.__gui__.debug is not None:
+      self.__gui__.debug.info(f"Cycle set to {index}: "+self.__states__[index].text.split("\n")[0])
     # call enter function of new state
-    if(self.__states__[index][2][0] != None):
-      self.__states__[index][2][0]()
+    if self.__states__[index].enter_exit[0] is not None:
+      self.__states__[index].enter_exit[0]()
     # call always function if specified
-    if(self.func_always != None):
+    if self.func_always is not None:
       self.func_always()
       
   # update the cycle to reflext current state
   # useful when using update_state
   def update(self):
-    self.__widget__.config(text = self.__states__[self.state][0],
-                           fg = self.__states__[self.state][1][0],
-                           bg = self.__states__[self.state][1][1])
+    self.__widget__.config(text = self.__states__[self.state].text,
+                           fg = self.__states__[self.state].fg_bg[0],
+                           bg = self.__states__[self.state].fg_bg[1])
   
   def cycle(self):
     if(len(self.__states__) == 0):
       if(self.__gui__.debug != None):
         self.__gui__.debug.warn("Tried to cycle with no states")
       return
-    self.goto((self.state + 1)% len(self.__states__))
+    self.goto((self.state + 1) % len(self.__states__))
 
   def state_name(self) -> str:
-    return self.__states__[self.state][0]
+    return self.__states__[self.state].text
   
   def get_state_names(self) -> list[str]:
-    return [state[0] for state in self.__states__]
+    return [state.text for state in self.__states__]
   
   def update_state(self, state: int,
                    text: str | None = None,
                    colors: tuple[str,str] | None = None,
                    enter_func: Callable | None = None,
                    exit_func: Callable | None = None,
-                   state_type: cycle_state_t | None = None):
+                   state_type: CycleState | None = None):
     # check if index is valid
-    if(state < 0 or state >= len(self.__states__)):
+    if state < 0 or state >= len(self.__states__):
       if(self.__gui__.debug != None):
-        self.__gui__.debug.error("invalid cycle update target "+str(state)+" > "+str(len(self.__states__)-1))
+        self.__gui__.debug.error(f"invalid cycle update target {state} > {len(self.__states__)-1}")
       return
     
     #if state_type is specified, set to that, update, and return
-    if(state_type != None):
+    if state_type is not None:
       self.__states__[state] = state_type
-      self.__widget__.config( text = state_type[0],
-                          fg = state_type[1][0],
-                          bg = state_type[1][1])
+      self.__widget__.config( text = state_type.text,
+                          fg = state_type.fg_bg[0],
+                          bg = state_type.fg_bg[1])
     else:
       # update state
-      temp_state = list(self.__states__[state])
-      if(text != None):
-        temp_state[0] = text
-      if(colors != None):
-        temp_state[1] = colors
-      temp_state[2] = ( enter_func if enter_func != None else temp_state[2][0],
-                        exit_func if exit_func != None else temp_state[2][1])
-      self.__states__[state] = tuple(temp_state)
+      temp_state = self.__states__[state]
+      if text is not None:
+        temp_state.text = text
+      if colors is not None:
+        temp_state.fg_bg = colors
+      temp_state.enter_exit = ( enter_func if enter_func is not None else temp_state.enter_exit[0],
+                        exit_func if exit_func is not None else temp_state.enter_exit[1])
+      self.__states__[state] = temp_state
     
     # if current state, update text forcefully
-    if(state == self.state):
+    if state == self.state:
       self.update()
       
 # creates thumbnail / image import widget
@@ -278,7 +281,7 @@ class Thumbnail():
     placeholder = Image.new("RGB", self.thumb_size)
     self.image = Smart_Image(placeholder)
     if(name == None):
-      gui.add_widget("unnamed thumbnail widget "+str(Cycle.__total_cycles__), self)
+      gui.add_widget(f"unnamed thumbnail widget {Cycle.__total_cycles__}", self)
       Thumbnail.__total_thumbnails__ += 1
     else:
       gui.add_widget(name, self)

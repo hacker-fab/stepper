@@ -7,12 +7,9 @@ from __future__ import annotations
 from PIL import  Image
 from typing import Callable, Literal
 
-#import sys and use path insert to add lib files
-import sys
-from os.path import join, dirname, realpath
-sys.path.insert(0, join(dirname(dirname(realpath(__file__))), "lib"))
-from img_lib import *
-from gui_lib import *
+from . import img_lib
+from . import gui_lib
+from .tuple_utils import *
 #endregion
 
 # a widget that stores an image and various other useful info
