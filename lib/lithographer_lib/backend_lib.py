@@ -7,7 +7,7 @@ from __future__ import annotations
 from PIL import  Image
 from typing import Callable, Literal
 
-from . import img_lib
+from .img_lib import slice_image
 from . import gui_lib
 from .tuple_utils import *
 #endregion
@@ -652,14 +652,14 @@ class Slicer():
                vertical_tiles: int = 0,
                tiling_pattern: pattern_type = 'snake',
                debug: Debug | None = None):
-    if(horizontal_tiles >= 0):
+    if horizontal_tiles >= 0:
       self.__horizontal_slices__ = horizontal_tiles
-    if(vertical_tiles >= 0):
+    if vertical_tiles >= 0:
       self.__vertical_slices__ = vertical_tiles
     self.__pattern__ = tiling_pattern
-    if(image != None):
+    if image is not None:
       self.__full_image__ = image.copy()
-      (self.__grid_size__, self.__sliced_images__) = slice( self.__full_image__,
+      (self.__grid_size__, self.__sliced_images__) = slice_image( self.__full_image__,
                                                             self.__horizontal_slices__,
                                                             self.__vertical_slices__)
     self.debug = debug
@@ -733,7 +733,7 @@ class Slicer():
     reslice: bool = False
     self.__index__ = 0
     
-    if(image!=None):
+    if image is not None:
       self.__full_image__ = image.copy()
       reslice = True
       
@@ -750,7 +750,7 @@ class Slicer():
       reslice = True
       
     if(reslice and self.__full_image__ != None):
-      (self.__grid_size__, self.__sliced_images__) = slice( self.__full_image__,
+      (self.__grid_size__, self.__sliced_images__) = slice_image( self.__full_image__,
                                                             self.__horizontal_slices__,
                                                             self.__vertical_slices__)
 

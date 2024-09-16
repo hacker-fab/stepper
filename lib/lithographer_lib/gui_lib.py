@@ -4,6 +4,7 @@
 
 #region: imports
 from __future__ import annotations
+from typing import Any
 from tkinter import Tk, Button, Toplevel, Entry, IntVar, DoubleVar, Variable, filedialog, Label, Widget, BooleanVar
 from tkinter.ttk import Progressbar
 from PIL import ImageTk, Image
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 #import sys and use path insert to add lib files
 from .img_lib import rasterize, fit_image
 from .backend_lib import Smart_Image
+from .tuple_utils import *
 #endregion
 
 # widget to display info, errors, warning, and text
@@ -258,6 +260,7 @@ class Thumbnail():
   
   def __init__(self, gui: GUI_Controller,
                thumb_size: tuple[int,int],
+               parent: Any | None = None,
                name: str | None = None,
                text: str = "",
                accept_alpha: bool = False,
@@ -270,7 +273,7 @@ class Thumbnail():
     self.func_on_success = func_on_success
     # build widget
     button: Button = Button(
-      gui.root,
+      parent if parent is not None else gui.root,
       command = self.__import_image__
       )
     if(self.text != ""):
@@ -395,6 +398,7 @@ class Intput():
   last_diff: int
   
   def __init__( self, gui: GUI_Controller,
+                parent: Any | None = None,
                 name: str | None = None,
                 default: int = 0,
                 min: int | None = None,
@@ -417,7 +421,7 @@ class Intput():
     self.value = self.min
     self.last_diff = default
     # setup widget
-    self.__widget__ = Entry(gui.root,
+    self.__widget__ = Entry(parent if parent is not None else gui.root,
                         textvariable = self.var,
                         justify=justify
                         )

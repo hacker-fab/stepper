@@ -3,27 +3,103 @@
 # Kent Wirant
 # Main lithography script
 
-from typing import Literal
+from typing import Literal, Optional, List
+from enum import Enum
 from tkinter import Button, Label
 from tkinter.ttk import Progressbar
+from tkinter import ttk
 from collections import namedtuple
 from PIL import  Image
 from time import sleep
-from stage_control.grbl_stage import GrblStage
+from stage_control.grbl_stage import GrblStage, StageController
+from hardware import Lithographer
 
 from lithographer_lib.gui_lib import *
 from lithographer_lib.img_lib import *
 from lithographer_lib.backend_lib import *
 
 # import configuration variables
-from config import RUN_WITH_CAMERA
-if(RUN_WITH_CAMERA):
+from config import RUN_WITH_CAMERA, RUN_WITH_STAGE
+
+if RUN_WITH_CAMERA:
   from config import camera as camera_hw
   import cv2
-from config import RUN_WITH_STAGE
-if(RUN_WITH_STAGE):
+
+if RUN_WITH_STAGE:
   from config import stage_file, baud_rate, scale_factor
   import serial
+
+class ShownImage(Enum):
+  Clear = 'clear'
+  Pattern = 'pattern'
+  Flatfield = 'flatfield'
+  RedFocus = 'red_focus'
+  UvFocus = 'uv_focus'
+
+class PatterningStatus(Enum):
+  Idle = 'idle'
+  Patterning = 'patterning'
+  Aborting = 'aborting'
+
+
+OnShownImageChange = Callable[[ShownImage], None]
+OnBeginPatterning = Callable[[], None]
+OnChangePatterningStatus = Callable[[PatterningStatus], None]
+
+class Event(Enum):
+  StageOffsetRequest = 'stageoffsetrequest'
+
+class EventDispatcher:
+  shown_image_change_listeners: List[OnShownImageChange]
+  begin_patterning_listeners: List[OnBeginPatterning]
+  change_patterning_status_listeners: List[OnChangePatterningStatus]
+
+  listeners: dict[Event, List[Callable]]
+
+  def __init__(self):
+    self.shown_image_change_listeners = []
+    self.begin_patterning_listeners = []
+    self.change_patterning_status_listeners = []
+    self.listeners = dict()
+
+  def on_event(self, event: Event, *args, **kwargs):
+    for l in self.listeners[event]:
+      l(*args, **kwargs)
+  
+  def on_event_cb(self, event: Event, *args, **kwargs):
+    return lambda: self.on_event(*args, **kwargs) 
+  
+  def add_event_listener(self, event: Event, listener: Callable):
+    if event not in self.listeners:
+      self.listeners[event] = []
+    self.listeners[event].append(listener)
+
+  def on_shown_image_change_cb(self, shown_image: ShownImage):
+    def callback():
+      for l in self.shown_image_change_listeners:
+        l(shown_image)
+    return callback
+
+  def on_begin_patterning_cb(self):
+    def callback():
+      for l in self.begin_patterning_listeners:
+        l()
+    return callback
+  
+  def on_change_patterning_status_cb(self, status: PatterningStatus):
+    def callback():
+      for l in self.change_patterning_status_listeners:
+        l(status)
+    return callback
+
+  def add_shown_image_change_listener(self, listener: OnShownImageChange):
+    self.shown_image_change_listeners.append(listener)
+
+  def add_begin_patterning_listener(self, listener: OnBeginPatterning):
+    self.begin_patterning_listeners.append(listener)
+  
+  def add_change_patterning_status_listener(self, listener: OnChangePatterningStatus):
+    self.change_patterning_status_listeners.append(listener)
 
 # TODO
 # - Camera Integration
@@ -74,160 +150,6 @@ GUI.add_widget("debug", debug)
 slicer: Slicer = Slicer(tiling_pattern='snake',
                         debug=debug)
 
-# main processing function
-# will apply and reset: posterizing, flatfield, resizing, and color channels
-# is smart, so it will only apply changes if necessary
-# can specify a smart image xor a thumbnail
-# NOTE this WILL modify the input smart image
-#TODO don't actually need to reset for flatfield, just modify the alpha channel. Not worth hassle right now
-#TODO allow toggling of what processing is applied to the image
-#TODO add an option to not modify input
-def process_img(image_in: Image.Image | Smart_Image | Thumbnail) -> Image.Image:
-  
-  # would use a switch, but python's match sucks and is impossible to use
-  img: Smart_Image
-  if(type(image_in) == Thumbnail):
-    img = image_in.image
-  elif(type(image_in) == Smart_Image):
-    img = image_in
-  elif(type(image_in) == Image.Image):
-    img = Smart_Image(image_in)
-  
-#region: convenience vars
-  color_channels: tuple#[bool,bool,bool] would type properly, but python throws a hissy fit if I do
-  match img.get("name"):
-    case "pattern":
-      color_channels = (pattern_red_cycle.state, pattern_green_cycle.state, pattern_blue_cycle.state)
-    case "red focus":
-      color_channels = (red_focus_red_cycle.state, red_focus_green_cycle.state, red_focus_blue_cycle.state)
-    case "uv focus":
-      color_channels = (uv_focus_red_cycle.state, uv_focus_green_cycle.state, uv_focus_blue_cycle.state)
-    case _:
-      if(type(image_in)!=Image.Image):
-        debug.warn("Unrecognized / unnamed smart image")
-      color_channels = (True, True, True)
-  saved_alpha: Image.Image | None = None
-  
-  # states of each type of processing in the following format:
-  # (processing enabled, option changed, applied to image)
-  State = namedtuple("State", ["enabled", "changed", "applied"])
-  posterize_state = State(bool(posterize_cycle.state), post_strength_intput.changed(), img.get("posterize", False))
-  flatfield_state = State(bool(flatfield_cycle.state), FF_strength_intput.changed(), img.get("flatfield", False))
-  #endregion
-  
-  #region: resetting
-  
-  # reset matrix  | enabled changed applied |
-  # --------------|-------------------------|
-  # reset + apply |    o       o       o    |
-  #         apply |    o       -       x    |
-  #   pass / save |    o       x       o    |
-  #         reset |    x       -       o    |
-  #          pass |    x       -       x    |
-  
-  # if flatfield settings haven't changed, no need to recalculate. Extract the alpha channel and reapply later
-  if(flatfield_state.enabled and not flatfield_state.changed and flatfield_state.applied and
-     (img.mode() == "RGBA" or img.mode() == "LA")):
-    saved_alpha = img.image.getchannel('A')
-    
-  # this is ugly but lets debug messages state what caused the reset
-  reset: bool = False
-  if(posterize_state.enabled and posterize_state.changed and posterize_state.applied):
-    debug.info("Posterizing settings changed, resetting...")
-    reset = True
-  elif(not posterize_state.enabled and posterize_state.applied):
-    debug.info("Posterizing disabled, resetting...")
-    reset = True
-  elif(flatfield_state.enabled and flatfield_state.changed and flatfield_state.applied):
-    debug.info("Flatfield settings changed, resetting...")
-    reset = True
-  elif(not flatfield_state.enabled and flatfield_state.applied):
-    debug.info("Flatfield disabled, resetting...")
-    reset = True
-  elif(img.get("color", (True, True, True)) != color_channels):
-    debug.info("Color settings changed, resetting...")
-    reset = True
-  
-  # reset
-  if(reset):
-    img.reset()
-      
-  #endregion
-  
-  #region: processing
-  
-  #TODO test what order is fastest
-  # need to apply if:
-  # enabled
-  # and
-  #   reset
-  #   or
-  #   changed or not applied
-  
-  # posterize
-  if(posterize_state.enabled and 
-     (reset or posterize_state.changed or not posterize_state.applied)):
-    debug.info("Posterizing...")
-    img.image = posterize(img.image, round((post_strength_intput.get()*255)/100))
-    img.add("posterize", True)
-  
-  # color channel toggling (must be after posterizing)
-  if(reset or img.get("color", (True, True, True)) != color_channels):
-    debug.info("Toggling color channels...")
-    img.image = toggle_channels(img.image, *color_channels)
-    img.add("color", color_channels)
-  
-  # early flatfield
-  if(flatfield_state.enabled and 
-     (reset or flatfield_state.changed or not flatfield_state.applied)):
-    # we need to apply flatfield, check if saved alpha works
-    if(saved_alpha != None and saved_alpha.size == img.size()):
-      debug.info("Applying flatfield correction...")
-      img.image.putalpha(saved_alpha)
-      img.add("flatfield", True)
-  
-  # resizeing
-  if(img.size() != fit_image(img.image, GUI.proj.size())):
-    debug.info("Resizing...")
-    img.image = img.image.resize(fit_image(img.image, GUI.proj.size()), Image.Resampling.LANCZOS)
-  
-  # flatfield and check to make sure it wasn't applied early
-  if(flatfield_state.enabled and not img.get("flatfield", False) and
-     (reset or flatfield_state.changed or not flatfield_state.applied)):
-    debug.info("Applying flatfield correction...")
-    if(saved_alpha != None and saved_alpha.size == img.size()):
-      img.image.putalpha(saved_alpha)
-    else:
-      alpha_channel = convert_to_alpha_channel(img.image,
-                                               new_scale=dec_to_alpha(FF_strength_intput.get()),
-                                               target_size=img.size(),
-                                               downsample_target=540)
-      img.image.putalpha(alpha_channel)
-    img.add("flatfield", True)
-  
-  #endregion
-  
-  if(type(image_in) == Thumbnail):
-    image_in.update()
-  return img.image
-
-#region: Camera and progress bars
-if(RUN_WITH_CAMERA):
-  camera_placeholder = rasterize(Image.new('RGB', (GUI.window_size[0],(GUI.window_size[0]*9)//16), (0,0,0)))
-  # TODO properly implement the camera image size
-  camera: Label = Label(
-    GUI.root,
-    image=camera_placeholder
-    )
-  camera.grid(
-    row = 0,
-    column = 0,
-    columnspan = GUI.grid_size[1],
-    sticky='nesw')
-  GUI.add_widget("camera", camera)
-else:
-  GUI.root.rowconfigure(0,weight=0)
-
 # overall pattern progress bar
 pattern_progress: Progressbar = Progressbar(
   GUI.root,
@@ -255,7 +177,98 @@ exposure_progress.grid(
 GUI.proj.progressbar = exposure_progress
 GUI.add_widget("exposure_progress", exposure_progress)
 
-#endregion
+class StagePositionFrame:
+  def __init__(self, gui, parent, event_dispatcher: EventDispatcher):
+    global stage
+    
+    self.frame = ttk.Frame(parent)
+
+    self.position_intputs = []
+    self.step_size_intputs = []
+
+    for i, coord, default in ((0, 'x', stage.x()), (1, 'y', stage.y()), (2, 'z', stage.z())):
+      self.position_intputs.append(Intput(
+        gui=GUI,
+        parent=self.frame,
+        name=f'{coord}_intput',
+        default=int(default)
+      ))
+      self.position_intputs[-1].grid(row=0,col=i)
+
+      self.step_size_intputs.append(Intput(
+          gui=gui,
+          parent=self.frame,
+          name=f'{coord}_step_intput',
+          default=10,
+          min=-1000,
+          max=1000
+      ))
+      self.step_size_intputs[-1].grid(row=5,col=i)
+
+      def callback_pos():
+        event_dispatcher.on_event(Event.StageOffsetRequest, { coord:  self.step_sizes()[i] })
+      def callback_neg():
+        event_dispatcher.on_event(Event.StageOffsetRequest, { coord: -self.step_sizes()[i] })
+
+      coord_inc_button = ttk.Button(self.frame, text=f'+{coord.upper()}', command=callback_pos)
+      coord_dec_button = ttk.Button(self.frame, text=f'-{coord.upper()}', command=callback_neg)
+
+      coord_inc_button.grid(row=1, column=i)
+      coord_dec_button.grid(row=2, column=i)
+
+    on_set_position = lambda: stage.set(self.position_intputs[0].get(), self.position_intputs[1].get(), self.position_intputs[2].get())
+    set_position_button = ttk.Button(self.frame, text='Set Stage Position', command = on_set_position)
+    set_position_button.grid(row=3, column=0, columnspan=3, sticky='ew')
+
+    ttk.Label(self.frame, text='Stage Step Size (microns)', anchor='center').grid(row=4, column=0, columnspan=3, sticky='ew')
+  
+  def step_sizes(self) -> tuple[int, int, int]:
+    return tuple(intput.get() for intput in self.step_size_intputs)
+
+class FineAdjustmentFrame:
+  def __init__(self, gui, parent):
+    global stage
+    
+    self.frame = ttk.Frame(parent)
+
+    self.position_intputs = []
+    self.step_size_intputs = []
+
+    for i, coord, default in ((0, 'x', stage.x()), (1, 'y', stage.y()), (2, 'theta', stage.z())):
+      self.position_intputs.append(Intput(
+        gui=GUI,
+        parent=self.frame,
+        name=f'fine_{coord}_intput',
+        default=int(default)
+      ))
+      self.position_intputs[-1].grid(row=0,col=i)
+      # TODO: FIXME:
+      #fine_adjust.update_funcs["x"]["fine x intput"] = lambda: fine_x_intput.set(int(fine_adjust.x()))
+
+      self.step_size_intputs.append(Intput(
+          gui=gui,
+          parent=self.frame,
+          name=f'{coord}_step_intput',
+          default=10,
+          min=-1000,
+          max=1000
+      ))
+      self.step_size_intputs[-1].grid(row=5,col=i)
+
+      coord_inc_button = ttk.Button(self.frame, text=f'+{coord.upper()}', command = lambda : fine_step_update(f'+{coord}'))
+      coord_dec_button = ttk.Button(self.frame, text=f'-{coord.upper()}', command = lambda : fine_step_update(f'-{coord}'))
+
+      coord_inc_button.grid(row=1, column=i)
+      coord_dec_button.grid(row=2, column=i)
+
+    on_set_position = lambda: stage.set(self.position_intputs[0].get(), self.position_intputs[1].get(), self.position_intputs[2].get())
+    set_position_button = ttk.Button(self.frame, text='Set Fine Adjustment', command = on_set_position)
+    set_position_button.grid(row=3, column=0, columnspan=3, sticky='ew')
+
+    ttk.Label(self.frame, text='Fine Adjustment Step Size', anchor='center').grid(row=4, column=0, columnspan=3, sticky='ew')
+  
+  def fine_step_size(self) -> tuple[int, int, int]:
+    return tuple(intput.get() for intput in self.step_size_intputs)
 
 #region: Debug and Help 
 # the debug widget needs to be added immedaitely, so this is all that needs to be here
@@ -334,393 +347,50 @@ help_popup.grid(GUI.grid_size[0]-1,GUI.grid_size[1]-1)
 GUI.add_widget("help_popup", help_popup)
 #endregion
 
-#region: imports / thumbnails
-import_row: int = 3
-import_col: int = 0
-
-#TODO: optimize so properties aren't reset unnecessarily
-showing_state: Literal['pattern','red_focus','uv_focus','flatfield', 'clear'] = 'clear'
-def highlight_button(button: Button | None) -> None:
-  global showing_state
-  if(button == pattern_button_fixed):
-    pattern_button_fixed.config(bg="gray", fg="white")
-    showing_state = 'pattern'
-  else:
-    pattern_button_fixed.config(bg="white", fg="black")
-  if(button == red_focus_button):
-    red_focus_button.config(bg="gray", fg="white")
-    showing_state = 'red_focus'
-  else:
-    red_focus_button.config(bg="white", fg="black")
-  if(button == uv_focus_button):
-    uv_focus_button.config(bg="gray", fg="white")
-    showing_state = 'uv_focus'
-  else:
-    uv_focus_button.config(bg="white", fg="black")
-  if(button == flatfield_button):
-    flatfield_button.config(bg="gray", fg="white")
-    showing_state = 'flatfield'
-  else:
-    flatfield_button.config(bg="white", fg="black")
-
-#region: Pattern
-def pattern_import_func() -> None:
-  pattern_thumb.image.add("name", "pattern", True)
-  process_img(pattern_thumb)
-  slicer.update(image=pattern_thumb.image.image,
-                horizontal_tiles=slicer_horiz_intput.get(),
-                vertical_tiles=slicer_vert_intput.get())
-  # pattern_thumb.temp_image = slicer.image()
-  raster = rasterize(slicer.image().resize(fit_image(slicer.image(), THUMBNAIL_SIZE), Image.Resampling.NEAREST))
-  next_tile_image.config(image=raster)
-  next_tile_image.image = raster
-  
-pattern_thumb: Thumbnail = Thumbnail(
-  gui=GUI,
-  name="pattern_thumb",
-  thumb_size=THUMBNAIL_SIZE,
-  func_on_success=pattern_import_func)
-pattern_thumb.grid(import_row,import_col, rowspan=4)
-
-
-def show_pattern_fixed(mode: Literal['update', 'slient']='update') -> None:
-  highlight_button(pattern_button_fixed)
-  process_img(pattern_thumb)
-  if(mode == 'update'):
-    pattern_thumb.update()
-    debug.info("Showing Pattern")
-  # apply affine transformation
-  GUI.proj.show(transform_image(pattern_thumb.image.image))
-pattern_button_fixed: Button = Button(
-  GUI.root,
-  text = 'Show Pattern',
-  command = show_pattern_fixed)
-pattern_button_fixed.grid(
-  row = import_row+4,
-  column = import_col,
-  sticky='nesw')
-GUI.add_widget("pattern_button_fixed", pattern_button_fixed)
-
-#endregion
-
-#region: Flatfield
-# return a guess for correction intensity, 0 to 50 %
-def guess_alpha():
+def guess_alpha(flatfield_thumb: Thumbnail):
   flatfield_thumb.image.add("name", "flatfield", True)
   brightness: tuple[int,int] = get_brightness_range(flatfield_thumb.image.image, downsample_target=480)
-  FF_strength_intput.set(round(((brightness[1]-brightness[0])*100)/510))
-flatfield_thumb: Thumbnail = Thumbnail( 
-  gui=GUI,
-  name="flatfield_thumb",
-  thumb_size=THUMBNAIL_SIZE,
-  accept_alpha=True,
-  func_on_success=guess_alpha)
-flatfield_thumb.grid(import_row,import_col+1, rowspan=4)
+  options_frame.set_flatfield_strength(round(((brightness[1]-brightness[0])*100)/510))
+  
+class ImageSelectFrame:
+  def __init__(self, gui, parent, name, button_text, import_command, select_command):
+    self.frame = ttk.Frame(parent)
 
-def show_flatfield(mode: Literal['update', 'slient']='update') -> None:
-  highlight_button(flatfield_button)
-  # resizeing
-  image: Image.Image = flatfield_thumb.image.image
-  if(image.size != fit_image(image, GUI.proj.size())):
-    debug.info("Resizing image for projection...")
-    flatfield_thumb.image.image = image.resize(fit_image(image, GUI.proj.size()), Image.Resampling.LANCZOS)
-  if(mode == 'update'):
-    debug.info("Showing flatfield image")
-  GUI.proj.show(transform_image(flatfield_thumb.image.image))
+    thumb: Thumbnail = Thumbnail(
+      gui=gui,
+      parent=self.frame,
+      name=name,
+      thumb_size=THUMBNAIL_SIZE,
+      func_on_success = import_command
+    )
+    thumb.grid(row=0, col=0)
 
-flatfield_button: Button = Button(
-  GUI.root,
-  text = 'Show flatfield',
-  command = show_flatfield)
-flatfield_button.grid(
-  row = import_row+4,
-  column = import_col+1,
-  sticky='nesw')
-GUI.add_widget("flatfield_button", flatfield_button)
+    self.select_button = ttk.Button(self.frame, text=button_text, command=select_command)
+    self.select_button.grid(row=1, column=0)
 
-#endregion
 
-#region: Red Focus
-red_focus_thumb: Thumbnail = Thumbnail(
-  gui=GUI,
-  name="red_focus_thumb",
-  thumb_size=THUMBNAIL_SIZE,
-  func_on_success=lambda: red_focus_thumb.image.add("name", "red focus", True))
-red_focus_thumb.grid(import_row+5,import_col, rowspan=4)
+OnShowCallback = Callable[[Literal['pattern', 'flatfield', 'red_focus', 'uv_focus']], None]
 
-#TODO replace with process_img
-def show_red_focus(mode: Literal['update', 'slient']='update') -> None:
-  highlight_button(red_focus_button)
-  # posterizeing
-  image: Image.Image = red_focus_thumb.image.image
-  if(posterize_cycle.state and (image.mode != 'L' or post_strength_intput.changed())):
-    debug.info("Posterizing image...")
-    red_focus_thumb.image.image = posterize(red_focus_thumb.image.image, round((post_strength_intput.get()*255)/100))
-    if(mode == 'update'):
-      red_focus_thumb.update()
-  elif(not posterize_cycle.state and image.mode == 'L'):
-    debug.info("Resetting image...")
-    red_focus_thumb.image.reset()
-    if(mode == 'update'):
-      red_focus_thumb.update()
-  # resizeing
-  image: Image.Image = red_focus_thumb.image.image
-  if(image.size != fit_image(image, GUI.proj.size())):
-    debug.info("Resizing image for projection...")
-    red_focus_thumb.image.image = image.resize(fit_image(image, GUI.proj.size()), Image.Resampling.LANCZOS)
-  # color channel toggling
-  if(not (uv_focus_red_cycle.state and uv_focus_green_cycle.state and uv_focus_blue_cycle.state)):
-    debug.info("Toggling color channels...")
-    image: Image.Image = toggle_channels (red_focus_thumb.image.image,
-                                          red_focus_red_cycle.state,
-                                          red_focus_green_cycle.state,
-                                          red_focus_blue_cycle.state)
-    if(mode == 'update'):
-      red_focus_thumb.update(image)
-  if(mode == 'update'):
-    debug.info("Showing red focus image")
-  GUI.proj.show(transform_image(image))
-red_focus_button: Button = Button(
-  GUI.root,
-  text = 'Show Red Focus',
-  command = show_red_focus)
-red_focus_button.grid(
-  row = import_row+9,
-  column = import_col,
-  sticky='nesw')
-GUI.add_widget("red_focus_button", red_focus_button)
-#endregion
+class MultiImageSelectFrame:
+  def __init__(self, gui, parent, event_dispatcher: EventDispatcher):
+    self.frame = ttk.Frame(parent)
 
-#region: UV Focus
-uv_focus_thumb: Thumbnail = Thumbnail(
-  gui=GUI,
-  name="uv_focus_thumb",
-  thumb_size=THUMBNAIL_SIZE,
-  func_on_success = lambda: uv_focus_thumb.image.add("name", "uv focus", True))
-uv_focus_thumb.grid(import_row+5,import_col+1, rowspan=4)
+    # TODO: Update slicer on pattern upload
+    pattern_frame = ImageSelectFrame(gui, self.frame, 'pattern_thumb', 'Show pattern', lambda t: (), event_dispatcher.on_shown_image_change_cb(ShownImage.Pattern))
+    flatfield_frame = ImageSelectFrame(gui, self.frame, 'flatfield_thumb', 'Show flatfield', guess_alpha, event_dispatcher.on_shown_image_change_cb(ShownImage.Flatfield))
+    red_focus_frame = ImageSelectFrame(gui, self.frame, 'red_focus_thumb', 'Show Red Focus', lambda t: t.image.add("name", 'red focus', True), event_dispatcher.on_shown_image_change_cb(ShownImage.RedFocus))
+    uv_focus_frame = ImageSelectFrame(gui, self.frame, 'uv_focus_thumb', 'Show UV Focus', lambda t: t.image.add("name", 'uv focus', True), event_dispatcher.on_shown_image_change_cb(ShownImage.UvFocus))
 
-def show_uv_focus(mode: Literal['update', 'slient']='update') -> None:
-  highlight_button(uv_focus_button)
-  # resizeing
-  image: Image.Image = uv_focus_thumb.image.image
-  if(image.size != fit_image(image, GUI.proj.size())):
-    debug.info("Resizing image for projection...")
-    uv_focus_thumb.image.image = image.resize(fit_image(image, GUI.proj.size()), Image.Resampling.LANCZOS)
-  # color channel toggling
-  if(not (uv_focus_red_cycle.state and uv_focus_green_cycle.state and uv_focus_blue_cycle.state)):
-    debug.info("Toggling color channels...")
-    image: Image.Image = toggle_channels (uv_focus_thumb.image.image,
-                                          uv_focus_red_cycle.state,
-                                          uv_focus_green_cycle.state,
-                                          uv_focus_blue_cycle.state)
-    if(mode == 'update'):
-      uv_focus_thumb.update(image)
-  if(mode == 'update'):
-    debug.info("Showing UV focus image")
-  GUI.proj.show(transform_image(image))
+    pattern_frame.frame.grid(row=0, column=0)
+    flatfield_frame.frame.grid(row=0, column=1)
+    red_focus_frame.frame.grid(row=1, column=0)
+    uv_focus_frame.frame.grid(row=1, column=1)
 
-uv_focus_button: Button = Button(
-  GUI.root,
-  text = 'Show UV Focus',
-  command = show_uv_focus)
-uv_focus_button.grid(
-  row = import_row+9,
-  column = import_col+1,
-  sticky='nesw')
-GUI.add_widget("uv_focus_button", uv_focus_button)
-#endregion
-
-#endregion
-
-GUI.root.grid_columnconfigure(2, minsize=SPACER_SIZE)
-
-#region: Stage and Fine Adjustment Smart Area
-
-#region: Smart Area
-stage_row: int = 3
-stage_col: int = 3
-#create smart area for stage and fine adjustment
-center_area: Smart_Area = Smart_Area(
-  gui=GUI,
-  debug=debug,
-  name="center area")
-#create button to toggle between stage and fine adjustment
-center_area_cycle: Cycle = Cycle(gui = GUI, name = "center_area_cycle")
-center_area_cycle.add_state(text = "- Stage Position (microns) -",
-                            enter = lambda: center_area.jump(0))
-center_area_cycle.add_state(text = "- Fine Adjustment -",
-                            colors = ("black","light blue"),
-                            enter = lambda: center_area.jump(1))
-center_area_cycle.grid(row = stage_row,
-                        col = stage_col,
-                        colspan = 3)
-
-#endregion
-
-#region: Stage Control
-
-stage: Stage_Controller = Stage_Controller(
-  debug=debug,
-  location_query = lambda: GUI.get_coords("camera", CAMERA_IMAGE_SIZE),
-  verbosity=1)
-def step_update(axis: Literal['-x','+x','-y','+y','-z','+z']):
-  # first check if the step size has changed
-  if(x_step_intput.changed() or y_step_intput.changed() or z_step_intput.changed()):
-    stage.step_size = (x_step_intput.get(), y_step_intput.get(), z_step_intput.get())
-  stage.step(axis)
-
-#region: Stage Position
-
-x_intput = Intput(
-  gui=GUI,
-  name="x_intput",
-  default=int(stage.x()))
-x_intput.grid(stage_row+1,stage_col,rowspan=2)
-stage.update_funcs["x"]["x intput"] = lambda: x_intput.set(int(stage.x()))
-
-y_intput = Intput(
-  gui=GUI,
-  name="y_intput",
-  default=int(stage.y()))
-y_intput.grid(stage_row+1,stage_col+1,rowspan=2)
-stage.update_funcs["y"]["y intput"] = lambda: y_intput.set(int(stage.y()))
-
-z_intput = Intput(
-  gui=GUI,
-  name="z_intput",
-  default=int(stage.z()))
-z_intput.grid(stage_row+1,stage_col+2,rowspan=2)
-stage.update_funcs["z"]["z intput"] = lambda: z_intput.set(int(stage.z()))
-
-#endregion
-
-#region: Stage Step size
-step_size_row: int = 7
-
-step_size_text: Label = Label(
-  GUI.root,
-  text = "Stage Step Size (microns)",
-  justify = 'center',
-  anchor = 'center'
-)
-step_size_text.grid(
-  row = stage_row+step_size_row,
-  column = stage_col,
-  columnspan = 3,
-  sticky='nesw'
-)
-GUI.add_widget("step_size_text", step_size_text)
-
-x_step_intput = Intput(
-  gui=GUI,
-  name="x_step_intput",
-  default=10,
-  min=-1000,
-  max=1000)
-x_step_intput.grid(stage_row+step_size_row+1,stage_col)
-
-y_step_intput = Intput(
-  gui=GUI,
-  name="y_step_intput",
-  default=10,
-  min=-1000,
-  max=1000)
-y_step_intput.grid(stage_row+step_size_row+1,stage_col+1)
-
-z_step_intput = Intput(
-  gui=GUI,
-  name="z_step_intput",
-  default=10,
-  min=-1000,
-  max=1000)
-z_step_intput.grid(stage_row+step_size_row+1,stage_col+2)
-
-#endregion
-
-#region: stepping buttons
-step_button_row = 3
-### X axis ###
-up_x_button: Button = Button(
-  GUI.root,
-  text = '+x',
-  command = lambda : step_update('+x')
-  )
-up_x_button.grid(
-  row = stage_row+step_button_row,
-  column = stage_col,
-  sticky='nesw')
-GUI.add_widget("up_x_button", up_x_button)
-
-down_x_button: Button = Button(
-  GUI.root,
-  text = '-x',
-  command = lambda : step_update('-x')
-  )
-down_x_button.grid(
-  row = stage_row+step_button_row+1,
-  column = stage_col,
-  sticky='nesw')
-GUI.add_widget("down_x_button", down_x_button)
-
-### Y axis ###
-up_y_button: Button = Button(
-  GUI.root,
-  text = '+y',
-  command = lambda : step_update('+y')
-  )
-up_y_button.grid(
-  row = stage_row+step_button_row,
-  column = stage_col+1,
-  sticky='nesw')
-GUI.add_widget("up_y_button", up_y_button)
-
-down_y_button: Button = Button(
-  GUI.root,
-  text = '-y',
-  command = lambda : step_update('-y')
-  )
-down_y_button.grid(
-  row = stage_row+step_button_row+1,
-  column = stage_col+1,
-  sticky='nesw')
-GUI.add_widget("down_y_button", down_y_button)
-
-### Z axis ###
-up_z_button: Button = Button(
-  GUI.root,
-  text = '+z',
-  command = lambda : step_update('+z')
-  )
-up_z_button.grid(
-  row = stage_row+step_button_row,
-  column = stage_col+2,
-  sticky='nesw')
-GUI.add_widget("up_z_button", up_z_button)
-
-down_z_button: Button = Button(
-  GUI.root,
-  text = '-z',
-  command = lambda : step_update('-z')
-  )
-down_z_button.grid(
-  row = stage_row+step_button_row+1,
-  column = stage_col+2,
-  sticky='nesw')
-GUI.add_widget("down_z_button", down_z_button)
-
-set_coords_button: Button = Button(
-  GUI.root,
-  text = 'Set Stage Position',
-  command = lambda : stage.set(x_intput.get(), y_intput.get(), z_intput.get())
-  )
-set_coords_button.grid(
-  row = stage_row+step_button_row+2,
-  column = stage_col,
-  columnspan = 3,
-  sticky='nesw')
-GUI.add_widget("set_coords_button", set_coords_button)
-
-#endregion
+    event_dispatcher.add_shown_image_change_listener(lambda img: self.highlight_button(img))
+  
+  def highlight_button(self, which: ShownImage):
+    # TODO:
+    pass
 
 #region: keyboard input
 
@@ -745,23 +415,6 @@ def unbind_stage_controls() -> None:
 
 #endregion
 
-center_area.add(0,["set_coords_button",
-                   "x_intput",
-                   "y_intput",
-                   "z_intput",
-                   "step_size_text",
-                   "x_step_intput",
-                   "y_step_intput",
-                   "z_step_intput",
-                   "up_x_button",
-                   "down_x_button",
-                   "up_y_button",
-                   "down_y_button",
-                   "up_z_button",
-                   "down_z_button"]) 
-center_area.add_func(0,bind_stage_controls, unbind_stage_controls)
-#endregion
-
 #region: Fine Adjustment Area
 
 # IMPORTANT:
@@ -772,22 +425,7 @@ center_area.add_func(0,bind_stage_controls, unbind_stage_controls)
 fine_adjust: Stage_Controller = Stage_Controller(
   debug=debug,
   verbosity=1)
-def transform_image(image: Image.Image, theta_factor: float = 0.1) -> Image.Image:
-  if(fine_adjustment_cycle.state == 1):
-    return better_transform(image, (*round_tuple(fine_adjust.xy()), (2*pi*fine_adjust.z())/360), GUI.proj.size(), border_size_intput.get())
-  return image
-def update_displayed_image() -> None:
-  match showing_state:
-    case 'clear':
-      return
-    case 'pattern':
-      show_pattern_fixed(mode='slient')
-    case 'flatfield':
-      show_flatfield(mode='slient')
-    case 'red_focus':
-      show_red_focus(mode='slient')
-    case 'uv_focus':
-      show_uv_focus(mode='slient')
+
 #TODO: Check to make sure there is no chance of the semaphore getting stuck on
 fine_step_busy: bool = False
 def fine_step_update(axis: Literal['-x','+x','-y','+y','-z','+z']):
@@ -798,8 +436,7 @@ def fine_step_update(axis: Literal['-x','+x','-y','+y','-z','+z']):
   fine_step_busy = True
   debug.info(f"Fine Step Update: {axis}")
   # first check if the step size has changed
-  if(fine_x_step_intput.changed() or fine_y_step_intput.changed() or fine_theta_step_floatput.changed()):
-    fine_adjust.step_size = (fine_x_step_intput.get(), fine_y_step_intput.get(), fine_theta_step_floatput.get())
+  fine_adjust.step_size = fine_adjustment_frame.fine_step_size()
   # next update the values
   fine_adjust.step(axis)
   # update image
@@ -807,174 +444,11 @@ def fine_step_update(axis: Literal['-x','+x','-y','+y','-z','+z']):
   # remove semaphore lock
   fine_step_busy = False
 
-#TODO: make whole background blue
-# create a light blue background label with no border first so it appears underneath the other widgets
-background_label: Label = Label(
-  GUI.root,
-  bg="light blue"
-  )
-background_label.grid(
-  row = stage_row+1,
-  column = stage_col,
-  rowspan = 9,
-  columnspan = 3,
-  sticky='nesw')
-GUI.add_widget("background_label", background_label)
-
-#region: Fine Adjustment Position
-fine_x_intput = Intput(
-  gui=GUI,
-  name="fine_x_intput",
-  default=int(fine_adjust.x()))
-fine_x_intput.grid(stage_row+1,stage_col,rowspan=2)
-fine_adjust.update_funcs["x"]["fine x intput"] = lambda: fine_x_intput.set(int(fine_adjust.x()))
-
-fine_y_intput = Intput(
-  gui=GUI,
-  name="fine_y_intput",
-  default=int(fine_adjust.y()))
-fine_y_intput.grid(stage_row+1,stage_col+1,rowspan=2)
-fine_adjust.update_funcs["y"]["fine y intput"] = lambda: fine_y_intput.set(int(fine_adjust.y()))
-
-fine_theta_floatput = Floatput(
-  gui=GUI,
-  name="fine_theta_floatput",
-  default=fine_adjust.z())
-fine_theta_floatput.grid(stage_row+1,stage_col+2,rowspan=2)
-fine_adjust.update_funcs["z"]["fine theta floatput"] = lambda: fine_theta_floatput.set(fine_adjust.z())
-
 #endregion
-
-#region: fine stepping buttons
-fine_step_button_row = 3
-### X axis ###
-fine_up_x_button: Button = Button(
-  GUI.root,
-  bg = "light blue",
-  text = '+x',
-  command = lambda : fine_step_update('+x')
-  )
-fine_up_x_button.grid(
-  row = stage_row+fine_step_button_row,
-  column = stage_col,
-  sticky='nesw')
-GUI.add_widget("fine_up_x_button", fine_up_x_button)
-
-fine_down_x_button: Button = Button(
-  GUI.root,
-  bg = "light blue",
-  text = '-x',
-  command = lambda : fine_step_update('-x')
-  )
-fine_down_x_button.grid(
-  row = stage_row+fine_step_button_row+1,
-  column = stage_col,
-  sticky='nesw')
-GUI.add_widget("fine_down_x_button", fine_down_x_button)
-
-### Y axis ###
-fine_up_y_button: Button = Button(
-  GUI.root,
-  bg = "light blue",
-  text = '+y',
-  command = lambda : fine_step_update('+y')
-  )
-fine_up_y_button.grid(
-  row = stage_row+fine_step_button_row,
-  column = stage_col+1,
-  sticky='nesw')
-GUI.add_widget("fine_up_y_button", fine_up_y_button)
-
-fine_down_y_button: Button = Button(
-  GUI.root,
-  bg = "light blue",
-  text = '-y',
-  command = lambda : fine_step_update('-y')
-  )
-fine_down_y_button.grid(
-  row = stage_row+fine_step_button_row+1,
-  column = stage_col+1,
-  sticky='nesw')
-GUI.add_widget("fine_down_y_button", fine_down_y_button)
-
-### Theta ###
-fine_up_theta_button: Button = Button(
-  GUI.root,
-  bg = "light blue",
-  text = '+theta',
-  command = lambda : fine_step_update('+z')
-  )
-fine_up_theta_button.grid(
-  row = stage_row+fine_step_button_row,
-  column = stage_col+2,
-  sticky='nesw')
-GUI.add_widget("fine_up_theta_button", fine_up_theta_button)
-
-fine_down_theta_button: Button = Button(
-  GUI.root,
-  bg = "light blue",
-  text = '-theta',
-  command = lambda : fine_step_update('-z')
-  )
-fine_down_theta_button.grid(
-  row = stage_row+fine_step_button_row+1,
-  column = stage_col+2,
-  sticky='nesw')
-GUI.add_widget("fine_down_theta_button", fine_down_theta_button)
 
 def set_and_update_fine_adjustment() -> None:
   fine_adjust.set(fine_x_intput.get(), fine_y_intput.get(), fine_theta_floatput.get())
   update_displayed_image()
-set_adjustment_button: Button = Button(
-  GUI.root,
-  text = 'Set Fine Adjustment',
-  bg="light blue",
-  command = set_and_update_fine_adjustment
-  )
-set_adjustment_button.grid(
-  row = stage_row+fine_step_button_row+2,
-  column = stage_col,
-  columnspan = 3,
-  sticky='nesw')
-GUI.add_widget("set_adjustment_button", set_adjustment_button)
-
-#endregion
-
-#region: Fine Adjustment Step size
-fine_step_size_row: int = 7
-
-fine_step_size_text: Label = Label(
-  GUI.root,
-  text = "Fine Adjustment Step Size",
-  bg = "light blue",
-  justify = 'center',
-  anchor = 'center'
-)
-fine_step_size_text.grid(
-  row = stage_row+fine_step_size_row,
-  column = stage_col,
-  columnspan = 3,
-  sticky='nesw'
-)
-GUI.add_widget("fine_step_size_text", fine_step_size_text)
-
-fine_x_step_intput = Intput(
-  gui=GUI,
-  name="fine_x_step_intput",
-  default=1)
-fine_x_step_intput.grid(stage_row+fine_step_size_row+1,stage_col)
-
-fine_y_step_intput = Intput(
-  gui=GUI,
-  name="fine_y_step_intput",
-  default=1)
-fine_y_step_intput.grid(stage_row+fine_step_size_row+1,stage_col+1)
-
-fine_theta_step_floatput = Floatput(
-  gui=GUI,
-  name="fine_theta_step_floatput",
-  default=1)
-fine_theta_step_floatput.grid(stage_row+fine_step_size_row+1,stage_col+2)
 
 #endregion
 
@@ -1000,201 +474,156 @@ def unbind_fine_controls() -> None:
   
 #endregion
 
-center_area.add(1,[ "background_label",
-                    "set_adjustment_button",
-                    "fine_x_intput",
-                    "fine_y_intput",
-                    "fine_theta_floatput",
-                    "fine_step_size_text",
-                    "fine_x_step_intput",
-                    "fine_y_step_intput",
-                    "fine_theta_step_floatput",
-                    "fine_up_x_button",
-                    "fine_down_x_button",
-                    "fine_up_y_button",
-                    "fine_down_y_button",
-                    "fine_up_theta_button",
-                    "fine_down_theta_button"])
-center_area.add_func(1,bind_fine_controls, unbind_fine_controls)
 #endregion
 
-center_area.jump(0)
+class OptionsFrame:
+  def __init__(self, gui, parent):
+    self.frame = ttk.Frame(parent)
 
-#endregion
+    ttk.Label(self.frame, text='Exposure Time (ms)', anchor='w').grid(row=0, column=0)
+    self.exposure_time_entry = Intput(gui, parent=self.frame, default=1000, min=0)
+    self.exposure_time_entry.grid(row=0, col=1, colspan=3)
 
-GUI.root.grid_columnconfigure(6, minsize=SPACER_SIZE)
+    ttk.Label(self.frame, text='Tiles (horiz, vert)', anchor='w').grid(row=1, column=0)
+    self.tiles_horiz_entry = Intput(gui, parent=self.frame, default=0, min=0)
+    self.tiles_horiz_entry.grid(row=1, col=1)
+    self.tiles_vert_entry = Intput(gui, parent=self.frame, default=0, min=0)
+    self.tiles_vert_entry.grid(row=1, col=2)
+    self.tiles_snake_button = ttk.Button(self.frame, text='Snake')
+    self.tiles_snake_button.grid(row=1, column=3, sticky='ew')
 
-#region: patterning and options Smart Area
+    ttk.Label(self.frame, text='Flatfield Strength (%)', anchor='w').grid(row=2, column=0)
+    self.flatfield_strength_entry = Intput(gui, parent=self.frame, default=0, min=0, max=100)
+    self.flatfield_strength_entry.grid(row=2, col=2)
+    self.flatfield_button = ttk.Button(self.frame, text='NOT Using Flatfield')
+    self.flatfield_button.grid(row=2, column=3, sticky='ew')
 
-#region: smart area
-pattern_row: int = 3
-pattern_col: int = 7
-#create smart area for patterning and options
-right_area: Smart_Area = Smart_Area(
-  gui=GUI,
-  debug=debug,
-  name="right area")
-#create button to toggle between patterning and options
-patterning_area_cycle: Cycle = Cycle(gui = GUI, name = "patterning_area_cycle")
-patterning_area_cycle.add_state(text = "- Options -",
-                                enter = lambda: right_area.jump(0))
-patterning_area_cycle.add_state(text = "- Patterning -",
-                                colors = ("white", "red"),
-                                enter = lambda: right_area.jump(1))
-patterning_area_cycle.grid(row = pattern_row,
-                        col = pattern_col,
-                        colspan = 4)
+    ttk.Label(self.frame, text='Posterize Cutoff (%)').grid(row=3, column=0)
+    self.posterize_cutoff_entry = Intput(gui, parent=self.frame, default=50, min=0, max=100)
+    self.posterize_cutoff_entry.grid(row=3, col=2)
+    self.posterize_button = ttk.Button(self.frame, text='NOT Posterizing')
+    self.posterize_button.grid(row=3, column=3, sticky='ew')
 
-#endregion
+    ttk.Label(self.frame, text='Fine Adj. Border (%)').grid(row=4, column=0)
+    self.fine_adj_border_entry = Intput(gui, parent=self.frame, default=20, min=0, max=100)
+    self.fine_adj_border_entry.grid(row=4, col=1)
+    self.fine_adj_button_1 = ttk.Button(self.frame, text='Button 1')
+    self.fine_adj_button_1.grid(row=4, column=2, sticky='ew')
+    self.fine_adj_button_2 = ttk.Button(self.frame, text='Button 2')
+    self.fine_adj_button_2.grid(row=4, column=3, sticky='ew')
 
-#region: Options
-options_row: int = 0
-options_col: int = 0
+    for i, ty in enumerate(('Pattern', 'Red Focus', 'UV Focus')):
+        ttk.Label(self.frame, text=f'{ty} Channels').grid(row=5+i, column=0)
+        #red = ToggleButton(self.frame, ButtonStyle('RED ENABLED', 'red'), ButtonStyle('Red Disabled', 'black'))
+        #red.widget.grid(row=5+i, column=1, sticky='ew')
+        #green = ToggleButton(self.frame, ButtonStyle('GREEN ENABLED', 'green'), ButtonStyle('Green Disabled', 'black'))
+        #green.widget.grid(row=5+i, column=2, sticky='ew')
+        #blue = ToggleButton(self.frame, ButtonStyle('BLUE ENABLED', 'blue'), ButtonStyle('Blue Disabled', 'black'))
+        #blue.widget.grid(row=5+i, column=3, sticky='ew')
+    
+    ttk.Label(self.frame, text='Calibration Controls').grid(row=8, column=0)
+    self.calibrate_button = ttk.Button(self.frame, text='Calibrate', command = lambda: stage.calibrate(
+        step_size = self.calibrate_entry.get(),
+        calibrate_backlash = 'symmetric',
+        return_to_start = True
+      )
+    )
+    self.calibrate_button.grid(row=8, column=1, sticky='ew')
+    self.calibrate_entry = Intput(gui, parent=self.frame, default=100, min=1)
+    self.calibrate_entry.grid(row=8, col=2)
+    self.goto_button = ttk.Button(self.frame, text='goto DISABLED')
+    self.goto_button.grid(row=8, column=3, sticky='ew')
+ 
+  def horiz_tiles(self) -> int:
+    return self.tiles_horiz_entry.get()
+  
+  def vert_tiles(self) -> int:
+    return self.tiles_vert_entry.get()
+  
+  # returns threshold percentage if posterizing is enabled, else None
+  def posterize_strength(self) -> Optional[int]:
+    # TODO: enable/disable
+    return self.posterize_cutoff_entry.get()
 
-#region: duration
-duration_text: Label = Label(
-  GUI.root,
-  text = "Exposure Time (ms)",
-  justify = 'left',
-  anchor = 'w'
-)
-duration_text.grid(
-  row = pattern_row+options_row+1,
-  column = pattern_col+options_col,
-  sticky='nesw'
-)
-GUI.add_widget("duration_text", duration_text)
+  def flatfield_strength(self) -> Optional[int]:
+    # TODO: enable/disable
+    return self.flatfield_strength_entry.get()
 
-duration_intput: Intput = Intput(
-  gui=GUI,
-  name="duration_intput",
-  default=1000,
-  min = 0)
-duration_intput.grid(pattern_row+options_row+1,pattern_col+options_col+1, colspan=3)
+  def set_flatfield_strength(self, strength: Optional[int]):
+    # TODO:
+    pass
+  
+  def pattern_channels(self) -> tuple[bool, bool, bool]:
+    # TODO:
+    return (False, False, False)
+ 
+  def red_focus_channels(self) -> tuple[bool, bool, bool]:
+    # TODO:
+    return (False, False, False)
+  
+  def uv_focus_channels(self) -> tuple[bool, bool, bool]:
+    # TODO:
+    return (False, False, False)
+  
+  def fine_adj_enabled(self) -> bool:
+    # TODO:
+    return False
 
-#endregion
 
-#region: slicer settings
+class PatterningFrame:
+  def __init__(self, gui, parent, event_dispatcher):
+    self.frame = ttk.Frame(parent)
+    self.event_dispatcher = event_dispatcher
 
-slicer_horiz_text: Label = Label(
-  GUI.root,
-  text = "Tiles (horiz, vert)",
-  justify = 'left',
-  anchor = 'w'
-)
-slicer_horiz_text.grid(
-  row = pattern_row+options_row+2,
-  column = pattern_col+options_col,
-  sticky='nesw'
-)
-GUI.add_widget("slicer_horiz_text", slicer_horiz_text)
+    #region: Current Tile
+    ttk.Label(self.frame, text='Next Pattern Image').grid(row=0, column=0)
 
-slicer_horiz_intput: Intput = Intput(
-  gui=GUI,
-  name="slicer_horiz_intput",
-  default=0,
-  min=0,
-)
-slicer_horiz_intput.grid(pattern_row+options_row+2,pattern_col+options_col+1)
+    tile_placeholder = rasterize(Image.new('RGB', THUMBNAIL_SIZE, (0,0,0)))
+    self.next_tile_image = Label(self.frame, image=tile_placeholder, justify='center', anchor='center')
+    self.next_tile_image.grid(row=1, column=0)
 
-slicer_vert_intput: Intput = Intput(
-  gui=GUI,
-  name="slicer_vert_intput",
-  default=0,
-  min=0,
-)
-slicer_vert_intput.grid(pattern_row+options_row+2,pattern_col+options_col+2)
+    lower_frame = ttk.Frame(self.frame)
+    lower_frame.grid(row=2, column=0)
 
+    self.clear_button = Button(lower_frame)
+    self.clear_button.grid(row=0, column=0)
+
+    pattern_button_timed = Button(lower_frame, text='Begin\nPatterning', command=event_dispatcher.on_begin_patterning_cb(), bg='red', fg='white')
+    pattern_button_timed.grid(row=0, column=1)
+
+    event_dispatcher.add_change_patterning_status_listener(lambda s: self.change_patterning_status(s))
+    self.change_patterning_status(PatterningStatus.Idle)
+  
+  def set_next_tile_image(self, image):
+    self.next_tile_image.config(image=image)
+
+  def change_patterning_status(self, status: PatterningStatus) -> None:
+    match status:
+      case PatterningStatus.Idle:
+        self.clear_button.config(text='Clear', bg='black', fg='white', command=self.event_dispatcher.on_shown_image_change_cb(ShownImage.Clear))
+      case PatterningStatus.Patterning:
+        # TODO: Disable/hide pattern button
+        self.clear_button.config(text='Abort', bg='red', fg='white', command=self.event_dispatcher.on_change_patterning_status_cb(PatterningStatus.Aborting))
+      case PatterningStatus.Aborting:
+        pass
+
+
+'''
 slicer_pattern_cycle: Cycle = Cycle(gui=GUI, name="slicer_pattern_cycle")
 slicer_pattern_cycle.add_state(text = "Snake", colors=("black","pale green"))
 slicer_pattern_cycle.add_state(text = "Row Major", colors=("black","light blue"))
 slicer_pattern_cycle.add_state(text = "Col Major", colors=("black","light pink"))
 slicer_pattern_cycle.grid(pattern_row+options_row+2,pattern_col+options_col+3)
 
-#endregion
-
-#region: flatfield
-FF_strength_text: Label = Label(
-  GUI.root,
-  text = "Flatfield Strength (%)",
-  justify = 'left',
-  anchor = 'w'
-)
-FF_strength_text.grid(
-  row = pattern_row+options_row+3,
-  column = pattern_col+options_col,
-  columnspan=2,
-  sticky='nesw'
-)
-GUI.add_widget("FF_strength_text", FF_strength_text)
-
-FF_strength_intput: Intput = Intput(
-  gui=GUI,
-  name="FF_strength_intput",
-  default=0,
-  min = 0,
-  max = 100)
-FF_strength_intput.grid(pattern_row+options_row+3,pattern_col+options_col+2)
-
 flatfield_cycle: Cycle = Cycle(gui=GUI, name="flatfield_cycle")
 flatfield_cycle.add_state(text = "NOT Using Flatfield")
 flatfield_cycle.add_state(text = "Using Flatfield", colors=("white", "gray"))
 flatfield_cycle.grid(pattern_row+options_row+3,pattern_col+options_col+3)
-#endregion
-
-#region: posterize
-post_strength_text: Label = Label(
-  GUI.root,
-  text = "Posterize Cutoff (%)",
-  justify = 'left',
-  anchor = 'w'
-)
-post_strength_text.grid(
-  row = pattern_row+options_row+4,
-  column = pattern_col+options_col,
-  columnspan=2,
-  sticky='nesw'
-)
-GUI.add_widget("post_strength_text", post_strength_text)
-
-post_strength_intput: Intput = Intput(
-  gui=GUI,
-  name="post_strength_intput",
-  default=50,
-  min=0,
-  max=100
-)
-post_strength_intput.grid(pattern_row+options_row+4,pattern_col+options_col+2)
 
 posterize_cycle: Cycle = Cycle(gui=GUI, name="posterize_cycle")
 posterize_cycle.add_state(text = "NOT Posterizing")
 posterize_cycle.add_state(text = "Now Posterizing", colors=("white", "gray"))
 posterize_cycle.grid(pattern_row+options_row+4,pattern_col+options_col+3)
-
-#endregion
-
-#region: fine adjustment
-fine_adjustment_text: Label = Label(
-  GUI.root,
-  text = "Fine Adj. Border (%)",
-  justify = 'left',
-  anchor = 'w'
-)
-fine_adjustment_text.grid(
-  row = pattern_row+options_row+5,
-  column = pattern_col+options_col,
-  sticky='nesw'
-)
-GUI.add_widget("fine_adjustment_text", fine_adjustment_text)
-
-border_size_intput: Intput = Intput(
-  gui=GUI,
-  name="border_size_intput",
-  default=20,
-  min=0,
-  max=100
-)
-border_size_intput.grid(pattern_row+options_row+5,pattern_col+options_col+1)
 
 reset_adj_cycle: Cycle = Cycle(gui=GUI, name="reset_adj_cycle")
 reset_adj_cycle.add_state(text = "Reset Nothing")
@@ -1313,44 +742,6 @@ uv_focus_blue_cycle.goto(1)
 uv_focus_blue_cycle.grid(pattern_row+options_row+8,pattern_col+options_col+3)
 #endregion
 
-#region: calibration
-
-calibration_label: Label = Label(
-  GUI.root,
-  text = "Calibration Controls",
-  justify = 'left',
-  anchor = 'w'
-)
-calibration_label.grid(
-  row = pattern_row+options_row+9,
-  column = pattern_col+options_col,
-  sticky='nesw'
-)
-GUI.add_widget("calibration_label", calibration_label)
-
-# button to begin calibration
-calibrate_button: Button = Button(
-  GUI.root,
-  text = 'Calibrate',
-  command = lambda: stage.calibrate(
-    step_size = calibrate_step_intput.get(),
-    calibrate_backlash = 'symmetric',
-    return_to_start = True)
-  )
-calibrate_button.grid(
-  row = pattern_row+options_row+9,
-  column = pattern_col+options_col+1,
-  sticky='nesw')
-GUI.add_widget("calibrate_button", calibrate_button)
-
-# intput for calibration step size
-calibrate_step_intput: Intput = Intput(
-  gui=GUI,
-  name="calibrate_step_intput",
-  default=100,
-  min=1)
-calibrate_step_intput.grid(pattern_row+options_row+9,pattern_col+options_col+2)
-
 # goto cycle
 def goto_func() -> None:
   # this is a little hacky, but I can't be bothered to rewrite the backend
@@ -1370,321 +761,7 @@ goto_cycle.goto(0)
 goto_cycle.grid(pattern_row+options_row+9,pattern_col+options_col+3)
 #endregion: calibration
 
-right_area.add(0,["duration_text",
-                  "duration_intput",
-                  "slicer_horiz_text",
-                  "slicer_horiz_intput",
-                  "slicer_vert_intput",
-                  "slicer_pattern_cycle",
-                  "FF_strength_text",
-                  "FF_strength_intput",
-                  "flatfield_cycle",
-                  "post_strength_text",
-                  "post_strength_intput",
-                  "posterize_cycle",
-                  "fine_adjustment_text",
-                  "border_size_intput",
-                  "reset_adj_cycle",
-                  "fine_adjustment_cycle",
-                  "pattern_rgb_text",
-                  "pattern_red_cycle",
-                  "pattern_green_cycle",
-                  "pattern_blue_cycle",
-                  "red_focus_rgb_text",
-                  "red_focus_red_cycle",
-                  "red_focus_green_cycle",
-                  "red_focus_blue_cycle",
-                  "uv_focus_rgb_text",
-                  "uv_focus_red_cycle",
-                  "uv_focus_green_cycle",
-                  "uv_focus_blue_cycle",
-                  "calibration_label",
-                  "calibrate_button",
-                  "calibrate_step_intput",
-                  "goto_cycle"])
-
-#endregion
-
-#region: Patterning Area
-
-#TODO: make the patterning area the same width as options, it's annoying that it changes
-
-#region: Current Tile
-current_tile_row = 1
-current_tile_col = 0
-
-Current_tile_text: Label = Label(
-  GUI.root,
-  text = "Next Pattern Image",
-)
-Current_tile_text.grid(
-  row = pattern_row+current_tile_row,
-  column = pattern_col+current_tile_col,
-  columnspan = 4,
-  sticky='nesw'
-)
-GUI.add_widget("Current_tile_text", Current_tile_text)
-
-tile_placeholder = rasterize(Image.new('RGB', THUMBNAIL_SIZE, (0,0,0)))
-next_tile_image: Label = Label(
-  GUI.root,
-  image = tile_placeholder,
-  justify = 'center',
-  anchor = 'center'
-)
-next_tile_image.grid(
-  row = pattern_row+current_tile_row+1,
-  column = pattern_col+current_tile_col,
-  rowspan=5,
-  columnspan=4,
-  sticky='nesw'
-)
-GUI.add_widget("next_tile_image", next_tile_image)
-
-#endregion
-
-# region: Danger Buttons
-buttons_row = 7
-buttons_col = 0
-pattern_rowspan = 3
-pattern_colspan = 3
-clear_rowspan = 3
-clear_colspan = 1
-
-pattern_status: Literal['idle','patterning', 'aborting'] = 'idle'
-def change_patterning_status(new_status: Literal['idle','patterning', 'aborting']) -> None:
-  global pattern_status
-  match pattern_status:
-    case 'idle':
-      match new_status:
-        case 'patterning':
-          # reset all "show" buttons
-          highlight_button(None)
-          # change clear button to abort button
-          clear_button.config(
-            text='Abort',
-            bg='red',
-            fg='white',
-            command=lambda: change_patterning_status('aborting'))
-          clear_button.grid(rowspan=pattern_rowspan if pattern_rowspan == clear_rowspan else pattern_rowspan+clear_rowspan,
-                            columnspan=pattern_colspan if pattern_colspan == clear_colspan else pattern_colspan+clear_colspan)
-          # disable pattern button
-          pattern_button_timed.config(
-            command=lambda: None)
-          pattern_status = 'patterning'
-        case 'aborting':
-          debug.warn("invalid state transition: idle -> aborting")
-        case 'idle':
-          debug.warn("invalid state transition: idle -> idle")
-    case 'patterning':
-      match new_status:
-        case 'idle':
-          # normal transition, reset changes
-          clear_button.config(
-            text='Clear',
-            bg='black',
-            fg='white',
-            command=clear_button_func)
-          clear_button.grid(rowspan=clear_rowspan, columnspan=clear_colspan)
-          # re-enable pattern button
-          pattern_button_timed.config(
-            command=begin_patterning)
-          pattern_status = 'idle'
-        case 'aborting':
-          # abort button was pressed while patterning, change global status and warn
-          pattern_status = 'aborting'
-          GUI.proj.clear()
-          debug.warn("aborting patterning...")
-        case 'patterning':
-          debug.warn("invalid state transition: patterning -> patterning")
-    case 'aborting':
-      match new_status:
-        case 'idle':
-          # abort resolved, reset changes
-          clear_button.config(
-            text='Clear',
-            bg='black',
-            fg='white',
-            command=clear_button_func)
-          clear_button.grid(rowspan=clear_rowspan, columnspan=clear_colspan)
-          # re-enable pattern button
-          pattern_button_timed.config(
-            command=begin_patterning)
-          pattern_status = 'idle'
-        case 'patterning':
-          debug.warn("invalid state transition: aborting -> patterning")
-        case 'aborting':
-          debug.warn("invalid state transition: aborting -> aborting")
-
-# big red danger button
-tile_number: int = 0
-def begin_patterning():
-  def update_next_tile_preview(mode: Literal['current','peek']='peek'):
-    #get either current image, or peek ahead to next image
-    preview: Image.Image | None
-    if(mode=='peek'):
-      preview = slicer.peek()
-    else:
-      preview = slicer.image()
-    #if at end of slicer, use blank image
-    if(preview == None):
-      preview = Image.new('RGB', THUMBNAIL_SIZE)
-    raster = rasterize(preview.resize(fit_image(preview, THUMBNAIL_SIZE), Image.Resampling.NEAREST))
-    next_tile_image.config(image=raster)
-    next_tile_image.image = raster
-  
-  global pattern_status
-  debug.info("Slicing pattern...")
-  slicer.update(image=pattern_thumb.image.image,
-                horizontal_tiles=slicer_horiz_intput.get(),
-                vertical_tiles=slicer_vert_intput.get(),
-                tiling_pattern=slicer.pattern_list[slicer_pattern_cycle.state])
-  pattern_progress['value'] = 0
-  pattern_progress['maximum'] = slicer.tile_count()
-  debug.info("Patterning "+str(slicer.tile_count())+" tiles for "+str(duration_intput.get())+"ms \n  Total time: "+str(round((slicer.tile_count()*duration_intput.get())/1000))+"s")
-  change_patterning_status('patterning')
-  # TODO implement fine adjustment with CV
-  # delta_vector: tuple[int,int,float] = (0,0,0)
-  while True:
-    # update next tile preview
-    update_next_tile_preview()
-    # get patterning image
-    image: Image.Image
-    if(slicer.tile_count() == 1):
-      image = process_img(pattern_thumb)
-    else:
-      img = Smart_Image(slicer.image())
-      img.add("name", "pattern")
-      image = process_img(img)
-    image = transform_image(image)
-    #TODO apply fine adjustment vector to image
-    #TODO remove once camera is implemented
-    #camera_image_preview = rasterize(image.resize(fit_image(image, (GUI.window_size[0],(GUI.window_size[0]*9)//16)), Image.Resampling.LANCZOS))
-    #camera.config(image=camera_image_preview)
-    #camera.image = camera_image_preview
-    #pattern
-    if(pattern_status == 'aborting'):
-      break
-    stage.lock()
-    debug.info("Patterning tile...")
-    result = GUI.proj.show(image, duration=duration_intput.get())
-    stage.unlock()
-    if(pattern_status == 'aborting'):
-      break
-    # if(result):
-    #   # TODO remove once camera is implemented
-    #   camera.config(image=camera_placeholder)
-    #   camera.image = camera_placeholder
-    # repeat
-    if(slicer.next()):
-      pattern_progress['value'] += 1
-      debug.info("Finished")
-      #TODO: implement CV
-      #delta_vector = tuple(map(float, input("Next vector [dX dY theta]:").split(None,3)))
-    else:
-      break
-    #TODO: delete this pause. This is to "emulate" the CV taking time to move the stage
-    sleep(0.5)
-  # restart slicer
-  slicer.restart()
-  # update next tile preview
-  update_next_tile_preview(mode='current')
-  # TODO remove once camera is implemented
-  # camera.config(image=camera_placeholder)
-  # camera.image = camera_placeholder
-  # reset fine adjustment parameters based on reset_adj_cycle
-  match reset_adj_cycle.state_name():
-    case "Reset Nothing":
-      pass
-    case "Reset XY only":
-      fine_adjust.set(0,0,fine_adjust.z())
-    case "Reset theta only":
-      fine_adjust.set(*fine_adjust.xy(),0)
-    case "Reset All":
-      fine_adjust.set(0,0,0)
-    case _:
-      debug.warn("Invalid state for reset_adj_cycle")
-  # give user feedback
-  pattern_progress['value'] = 0
-  if(pattern_status == 'aborting'):
-    debug.warn("Patterning aborted")
-  else:
-    debug.info("Done")
-  # return to idle state
-  change_patterning_status('idle')
-  
-pattern_button_timed: Button = Button(
-  GUI.root,
-  text = 'Begin\nPatterning',
-  command = begin_patterning,
-  bg = 'red',
-  fg = 'white')
-pattern_button_timed.grid(
-  row = pattern_row+buttons_row,
-  column = pattern_col+buttons_col+1,
-  columnspan=pattern_colspan,
-  rowspan=pattern_rowspan,
-  sticky='nesw')
-GUI.add_widget("pattern_button_timed", pattern_button_timed)
-
-# clear button has to come after to show ontop, annoying but inevitable
-def clear_button_func():
-  # reset all "show" buttons
-  pattern_button_fixed.config(bg="white", fg="black")
-  red_focus_button.config(bg="white", fg="black")
-  uv_focus_button.config(bg="white", fg="black")
-  flatfield_button.config(bg="white", fg="black")
-  # set global state to clear
-  global showing_state
-  showing_state = 'clear'
-  # clear the projection
-  GUI.proj.clear()
-
-clear_button: Button = Button(
-  GUI.root,
-  text = 'Clear',
-  bg='black',
-  fg='white',
-  command = clear_button_func)
-clear_button.grid(
-  row = pattern_row+buttons_row,
-  column = pattern_col+buttons_col,
-  columnspan=clear_colspan,
-  rowspan=clear_rowspan,
-  sticky='nesw')
-GUI.add_widget("clear_button", clear_button)
-
-#endregion
-
-right_area.add(1,["Current_tile_text",
-                  "next_tile_image",
-                  "pattern_button_timed",
-                  "clear_button"])
-
-right_area.jump(0)
-
-#endregion
-
-#region: Stage Control Setup
-if(RUN_WITH_STAGE):
-  serial_port = serial.Serial(stage_file, baud_rate)
-  print(f"Using serial port {serial_port.name}")
-  stage_low_level = GrblStage(serial_port, bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
-  stage.step_size = (x_step_intput.get(), y_step_intput.get(), z_step_intput.get()) # init defaults
-
-previous_xyz: tuple[int,int,int] = stage.xyz()
-def move_stage():
-  global previous_xyz
-  current = stage.xyz()
-  dx = scale_factor*(current[0]-previous_xyz[0])
-  dy = scale_factor*(current[1]-previous_xyz[1])
-  dz = scale_factor*(current[2]-previous_xyz[2])
-  previous_xyz = stage.xyz()
-  # print(f"test {dx} {dy} {dz}", flush=True)
-  stage_low_level.move_by({'x':dx,'y':dy,'z':dz})
-
-stage.update_funcs['any'] = {'any': move_stage}
-#endregion: Stage Control Setup
+'''
 
 #region: Camera Setup
 cv_stage_job = None
@@ -1696,7 +773,6 @@ gui_camera_preview_job_time = 0
 def cv_stage(camera_image):
   grayscale = cv2.normalize(camera_image, None, 0, 255, cv2.NORM_MINMAX)
   #stage_ll.updateImage(grayscale)
-
 
 # updates camera preview on GUI
 import numpy as np
@@ -1762,131 +838,214 @@ def setup_camera_from_py():
       debug.error('Failed to start stream capture for camera')
 #endregion: Camera Setup
 
-def benchmark():
-  from sys import exit
-  from numpy import random
-  from time import time
-  from os import path, getcwd
-  from io import TextIOWrapper
-  from datetime import datetime 
+class LithographerGui:
+  hardware: Lithographer
+
+  pattern_image: ProcessedImage
+  flatfield_image: ProcessedImage
+  red_focus_image: ProcessedImage
+  uv_focus_image: ProcessedImage
+
+  event_dispatcher: EventDispatcher
+
+  def __init__(self, gui, use_camera, stage: StageController):
+    self.event_dispatcher = EventDispatcher()
+    self.event_dispatcher.add_shown_image_change_listener(lambda img: self.on_shown_image_change(img))
+    self.event_dispatcher.add_begin_patterning_listener(lambda: self.begin_patterning())
+    self.event_dispatcher.add_change_patterning_status_listener(lambda status: self.on_change_patterning_status(status))
+
+    self.hardware = Lithographer(stage, projector)
+
+    self.event_dispatcher.add_event_listener(
+      Event.StageOffsetRequest,
+      lambda offsets: self.hardware.stage.move_by(offsets, commit=True)
+    )
+
+    if use_camera:
+      camera_placeholder = rasterize(Image.new('RGB', (GUI.window_size[0],(GUI.window_size[0]*9)//16), (0,0,0)))
+      # TODO properly implement the camera image size
+      self.camera_label = Label(gui.root, image=camera_placeholder)
+      self.camera_label.grid(row = 0, column = 0, sticky='nesw')
+    else:
+      self.camera_label = None
+
+    self.stage_notebook = ttk.Notebook(GUI.root)
+    self.stage_notebook.grid(row=3, column=2)
+    self.stage_position_frame = StagePositionFrame(GUI, self.stage_notebook, self.event_dispatcher)
+    self.stage_notebook.add(self.stage_position_frame.frame, text='Stage Position')
+    self.fine_adjustment_frame = FineAdjustmentFrame(GUI, self.stage_notebook)
+    self.stage_notebook.add(self.fine_adjustment_frame.frame, text='Fine Adjustment')
+
+    self.config_notebook = ttk.Notebook(GUI.root)
+    self.config_notebook.grid(row=3, column=3)
+    self.options_frame = OptionsFrame(GUI, self.config_notebook)
+    self.config_notebook.add(self.options_frame.frame, text='Options')
+    self.patterning_frame = PatterningFrame(GUI, self.config_notebook, self.event_dispatcher)
+    self.config_notebook.add(self.patterning_frame.frame, text='Patterning')
+
+    def pattern_image_settings() -> ImageProcessSettings:
+      return ImageProcessSettings(self.options_frame.posterize_strength(), self.options_frame.flatfield_strength(), self.options_frame.pattern_channels())
+
+    # TODO: Red focus has no flatfield correction, is this intentional?
+    def red_focus_image_settings() -> ImageProcessSettings:
+      return ImageProcessSettings(self.options_frame.posterize_strength(), None, self.options_frame.red_focus_channels())
+    
+    # TODO: UV focus has no flatfield or posterization, is this intentional?
+    def uv_focus_image_settings() -> ImageProcessSettings:
+      return ImageProcessSettings(None, None, self.options_frame.uv_focus_channels())
+
+    # TODO: Automatically recompute preview on settings change
+    self.pattern_image = ProcessedImage(Image.new('RGB', THUMBNAIL_SIZE), pattern_image_settings)
+    self.red_focus_image = ProcessedImage(Image.new('RGB', THUMBNAIL_SIZE), red_focus_image_settings)
+    self.uv_focus_image = ProcessedImage(Image.new('RGB', THUMBNAIL_SIZE), uv_focus_image_settings)
+
+    self.multi_image_select_frame = MultiImageSelectFrame(gui, gui.root, self.event_dispatcher)
+    self.multi_image_select_frame.frame.grid(row=3, column=0)
+
+    self.patterning_status = PatterningStatus.Idle
+
+    gui.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
+    gui.debug.info("Debug info will appear here")
   
-  debug.warn("!!! Benchmarking !!!")
-  center_area.jump(1)
-  #options
-  iterations = 5
-  target_res_size = (3840, 2160) #4K
-  processing_repeats: int = 3
+  def cleanup(self):
+    print("Patterning GUI closed.")
+    print('TODO: Cleanup')
+    #GUI.root.destroy()
+    #if RUN_WITH_STAGE:
+      #serial_port.close()
+
   
-  #region: create and open log file
-  log_file: TextIOWrapper
-  if(path.exists(path.join(getcwd(), "benchmark.log"))):
-    log_file = open("benchmark.log", "a")
-    log_file.write("\n\n")
-  else:
-    log_file = open("benchmark.log", "w")
-    log_file.write("Lithographer Benchmark Log\n\n")
-  log_file.write("Benchmark\n")
-  log_file.write("| "+str(datetime.now())+"\n")
-  log_file.write("| Lithographer Version: "+str(VERSION)+"\n")
-  log_file.write("| Iterations: "+str(iterations)+"\n")
-  log_file.write("| Resolution: "+str(target_res_size)+"\n")
-  log_file.write("| Processing Repeats: "+str(processing_repeats)+"\n")
-  log_file.flush()
-  #endregion
+  def transform_image(self, image: Image.Image, theta_factor: float = 0.1) -> Image.Image:
+    if self.options_frame.fine_adj_enabled():
+      return better_transform(image, (*round_tuple(fine_adjust.xy()), (2*pi*fine_adjust.z())/360), GUI.proj.size(), border_size_intput.get())
+    return image
   
-  #region: Test image generation
-  log_file.write("Image Generation\n| ")
-  images = []
-  times = []
-  for i in range(iterations):
-    temp = time()
-    images.append(Image.fromarray((random.rand(target_res_size[1],target_res_size[0],3)*255).astype('uint8')).convert('RGB'))
-    times.append(time()-temp)
-    log_file.write("#")
-    log_file.flush()
-  log_file.write("\n")
-  log_file.write("| max: "+str(round((max(times)*1000)))+" ms\n")
-  log_file.write("| avg: "+str(round((sum(times)*1000)/(iterations)))+" ms\n")
-  log_file.write("| min: "+str(round((min(times)*1000)))+" ms\n")
-  log_file.flush()
-  #endregion
+  def on_shown_image_change(self, which: ShownImage):
+    match which:
+      case ShownImage.Clear:
+        self.hardware.projector.clear()
+      case ShownImage.Pattern:
+        debug.info("Showing Pattern")
+        self.hardware.projector.show(self.transform_image(self.pattern_image.processed()))
+      case ShownImage.Flatfield:
+        debug.info("Showing flatfield image")
+        self.hardware.projector.show(self.transform_image(self.flatfield_image.processed()))
+      case ShownImage.RedFocus:
+        debug.info("Showing red focus")
+        self.hardware.projector.show.show(self.transform_image(self.red_focus_image.processed()))
+      case ShownImage.UvFocus:
+        self.hardware.projector.show.info("Showing UV focus")
+        GUI.proj.show(self.transform_image(self.uv_focus_image.processed()))
   
-  #region: Image processing
-  log_file.write("Image processing\n| ")
-  posterize_cycle.goto(1)
-  flatfield_cycle.goto(1)
-  fine_adjustment_cycle.goto(1)
-  processed_times = []
-  proj_size = GUI.proj.size()
-  proj_size = (proj_size[0]//2, proj_size[1]//2)
-  for i in range(processing_repeats):
-    processed_times.append([])
-  # process all the images with fully random settings
-  for image in images:
-    #randomize transform amounts
-    border_size_intput.set(random.randint(0,99))
-    fine_x_intput.set(random.randint(-proj_size[0], proj_size[0]))
-    fine_y_intput.set(random.randint(-proj_size[1], proj_size[1]))
-    fine_theta_floatput.set(random.randint(-360,360))
-    set_and_update_fine_adjustment()
-    #randomize posterize cutoff
-    post_strength_intput.set(random.randint(0,99))
-    # randomize flatfield strength
-    FF_strength_intput.set(random.randint(0,99))  
-    #randomize color channels
-    pattern_red_cycle.goto(random.randint(0,2))
-    pattern_green_cycle.goto(random.randint(0,2))
-    pattern_blue_cycle.goto(random.randint(0,2))
-    #set thumb image to this image
-    pattern_thumb.image = Smart_Image(image)
-    pattern_thumb.image.add("name", "pattern", True)
-    pattern_thumb.update()
-    #apply processing
-    for i in range(processing_repeats):
-      temp = time()
-      GUI.proj.show(transform_image(process_img(pattern_thumb)))
-      processed_times[i].append(time()-temp)
-    log_file.write("#")
-    log_file.flush()
-  log_file.write("\n")
-  GUI.proj.clear()
-  log_file.write("| First processing:\n")
-  log_file.write("| | max: "+str(round((max(processed_times[0])*1000)))+" ms\n")
-  log_file.write("| | avg: "+str(round((sum(processed_times[0])*1000)/(iterations)))+" ms\n")
-  log_file.write("| | min: "+str(round((min(processed_times[0])*1000)))+" ms\n")
-  if(processing_repeats > 1):
-    # merge the times for the 3rd+ processing
-    repeat_times = []
-    for image in range(iterations):
-      image_sum = 0
-      for rep in range(1, processing_repeats):
-        image_sum += processed_times[rep][image]
-      repeat_times.append(image_sum/(processing_repeats-1))
-    log_file.write("| repeat processing:\n")
-    log_file.write("| | max: "+str(round((max(repeat_times)*1000)))+" ms\n")
-    log_file.write("| | avg: "+str(round((sum(repeat_times)*1000)/(iterations)))+" ms\n")
-    log_file.write("| | min: "+str(round((min(repeat_times)*1000)))+" ms\n")
-  log_file.flush()
-  #endregion
-  
-  log_file.close()
-  GUI.proj.__TL__.destroy()
-  GUI.root.quit()
-  exit()
-# benchmark()
-# cleanup function for graceful program exit
-def cleanup():
-  print("Patterning GUI closed.")
-  GUI.root.destroy()
-  if(RUN_WITH_STAGE):  
-    serial_port.close()
+  def change_patterning_status(self, status: PatterningStatus):
+    (self.event_dispatcher.on_change_patterning_status_cb(status))()
+    self.patterning_status = status
+
+  def on_change_patterning_status(self, status: PatterningStatus, notify=False):
+    self.patterning_status = status
+
+  def begin_patterning(self):
+    def update_next_tile_preview(mode: Literal['current','peek']='peek'):
+      #get either current image, or peek ahead to next image
+      preview: Image.Image | None
+      preview = slicer.peek() if mode == 'peek' else slicer.image()
+      #if at end of slicer, use blank image
+      if preview is None:
+        preview = Image.new('RGB', THUMBNAIL_SIZE)
+      raster = rasterize(preview.resize(fit_image(preview, THUMBNAIL_SIZE), Image.Resampling.NEAREST))
+      self.patterning_frame.set_next_tile_image(raster)
+    
+    global pattern_status
+    debug.info("Slicing pattern...")
+    slicer.update(image=self.pattern_image.processed(),
+                  horizontal_tiles=self.options_frame.horiz_tiles(),
+                  vertical_tiles=self.options_frame.vert_tiles(),
+                  tiling_pattern=slicer.pattern_list[slicer_pattern_cycle.state])
+    pattern_progress['value'] = 0
+    pattern_progress['maximum'] = slicer.tile_count()
+    debug.info(f"Patterning {slicer.tile_count()} tiles for {duration_intput.get()}ms\nTotal time: {str(round((slicer.tile_count()*duration_intput.get())/1000))}s")
+
+    # TODO implement fine adjustment with CV
+    # delta_vector: tuple[int,int,float] = (0,0,0)
+    self.change_patterning_status(PatterningStatus.Patterning)
+    while True:
+      # update next tile preview
+      update_next_tile_preview()
+      # get patterning image
+      image = process_img2(slicer.image(), ImageProcessSettings(self.options_frame.posterize_strength(), self.options_frame.flatfield_strength(), self.options_frame.pattern_channels()))
+      #TODO apply fine adjustment vector to image
+      #TODO remove once camera is implemented
+      #camera_image_preview = rasterize(image.resize(fit_image(image, (GUI.window_size[0],(GUI.window_size[0]*9)//16)), Image.Resampling.LANCZOS))
+      #camera.config(image=camera_image_preview)
+      #camera.image = camera_image_preview
+      #pattern
+      if self.patterning_status == PatterningStatus.Aborting:
+        break
+      stage.lock()
+      debug.info("Patterning tile...")
+      GUI.proj.show(image, duration=duration_intput.get())
+      stage.unlock()
+      if self.patterning_status == PatterningStatus.Aborting:
+        break
+
+      # if(result):
+      #   # TODO remove once camera is implemented
+      #   camera.config(image=camera_placeholder)
+      #   camera.image = camera_placeholder
+      # repeat
+      if slicer.next():
+        pattern_progress['value'] += 1
+        debug.info("Finished")
+        #TODO: implement CV
+        #delta_vector = tuple(map(float, input("Next vector [dX dY theta]:").split(None,3)))
+      else:
+        break
+      #TODO: delete this pause. This is to "emulate" the CV taking time to move the stage
+      sleep(0.5)
+    # restart slicer
+    slicer.restart()
+    # update next tile preview
+    update_next_tile_preview(mode='current')
+    # TODO remove once camera is implemented
+    # camera.config(image=camera_placeholder)
+    # camera.image = camera_placeholder
+    # reset fine adjustment parameters based on reset_adj_cycle
+    match reset_adj_cycle.state_name():
+      case "Reset Nothing":
+        pass
+      case "Reset XY only":
+        fine_adjust.set(0,0,fine_adjust.z())
+      case "Reset theta only":
+        fine_adjust.set(*fine_adjust.xy(),0)
+      case "Reset All":
+        fine_adjust.set(0,0,0)
+      case _:
+        debug.warn("Invalid state for reset_adj_cycle")
+
+    # give user feedback
+    pattern_progress['value'] = 0
+    if self.patterning_status == PatterningStatus.Aborting:
+      debug.warn("Patterning aborted")
+    else:
+      debug.info("Done")
+    self.change_patterning_status(PatterningStatus.Idle)
+
+
+
 
 # attach cleanup function to GUI close event
-GUI.root.protocol("WM_DELETE_WINDOW", cleanup)
-GUI.debug.info("Debug info will appear here")
 
 if(RUN_WITH_CAMERA):
   setup_camera_from_py()
+
+if RUN_WITH_STAGE:
+  serial_port = serial.Serial(stage_file, baud_rate)
+  print(f"Using serial port {serial_port.name}")
+  stage = GrblStage(serial_port, bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
+else:
+  stage = StageController()
+
+lithographer = LithographerGui(GUI, False, stage)
 
 GUI.mainloop()
 

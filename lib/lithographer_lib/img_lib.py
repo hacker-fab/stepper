@@ -11,32 +11,27 @@ from math import pi
 
 from .tuple_utils import *
 
-def toggle_channels(image: Image.Image, red: bool | int = True, green: bool | int = True, blue: bool | int = True) -> Image.Image:
+def toggle_channels(image: Image.Image, red: bool = True, green: bool = True, blue: bool = True) -> Image.Image:
   img_cpy: Image.Image = image.copy()
   # check image is RGB or RGBA
-  if(img_cpy.mode != "RGB" and img_cpy.mode != "RGBA"):
+  if img_cpy.mode != "RGB" and img_cpy.mode != "RGBA":
     img_cpy = img_cpy.convert("RGB")
-  if(red and green and blue):
+
+  if red and green and blue:
     return img_cpy
+
   # at least one channel is off, create blank image for those channels
   blank: Image.Image = Image.new("L", img_cpy.size)
+
   # split image into channels
   channels: tuple[Image.Image,...] = img_cpy.split()
-  assert(len(channels)==3 or len(channels)==4)
-  output: list[Image.Image] = []
-  if(red):
-    output.append(channels[0])
-  else:
-    output.append(blank)
-  if(green):
-    output.append(channels[1])
-  else:
-    output.append(blank)
-  if(blue):
-    output.append(channels[2])
-  else:
-    output.append(blank)
-  return Image.merge("RGB", tuple(output))
+  assert(len(channels) in (3, 4))
+
+  return Image.merge('RGB', (
+    channels[0] if red   else blank,
+    channels[1] if green else blank,
+    channels[2] if blue  else blank,
+  ))
 
 # return max image size that will fit in [win_size] without cropping
 def fit_image(image: Image.Image, win_size: tuple[int,int]) -> tuple[int,int]:
@@ -177,13 +172,14 @@ def convert_to_alpha_channel(input_image: Image.Image,
   # copy the image
   mask: Image.Image = input_image.copy()
   # convert it to grayscale to normalize all values
-  if(mask.mode != "L"):
+  if mask.mode != "L":
     mask = mask.convert("L")
+
   # Invert all colors since we want the mask, not the image itself
   mask = invert(mask)
-  if (new_scale!=None):
+  if new_scale is not None:
     # if no target, save current size
-    if (target_size == (0,0)):
+    if target_size == (0,0):
       target_size = mask.size
     # downsample
     while mask.width > downsample_target or mask.height > downsample_target:
@@ -242,8 +238,8 @@ def LA_to_L(image: Image.Image) -> Image.Image:
 # This function is just a wrapper for ImageTk.PhotoImage() because of a bug
 # for whatever reason, photoimage removes the alpha channel from LA images
 # so this converts inputted LA images to RGBA before passing to PhotoImage
-def rasterize(image: Image.Image) -> ImageTk.PhotoImage:
-  if(image.mode == "LA"):
+def image_to_tk_image(image: Image.Image) -> ImageTk.PhotoImage:
+  if image.mode == "LA":
     return ImageTk.PhotoImage(image.convert("RGBA"))
   else:
     return ImageTk.PhotoImage(image)
@@ -253,11 +249,11 @@ def rasterize(image: Image.Image) -> ImageTk.PhotoImage:
 # 50  = (0,   255)
 # 100 = (0,   0)
 def dec_to_alpha(dec: int) -> tuple[int,int]:
-  if(dec < 0):
+  if dec < 0:
     return (255,255)
-  if(dec <= 50):
+  if dec <= 50:
     return (255-ceil((255*dec)/50),255)
-  if(dec <= 100):
+  if dec <= 100:
     return (0,255-ceil((255*(dec-50))/50))
   return (0,0)
 def alpha_to_dec(alpha: tuple[int,int]) -> int:
@@ -320,14 +316,14 @@ def better_transform(image: Image.Image,
   return img_cpy
 
 # slices image into parts
-def slice(image: Image.Image,
+def slice_image(image: Image.Image,
           horizontal_tiles: int = 0,
           vertical_tiles: int = 0,
           output_resolution: tuple[int,int] = (0,0)
           ) -> tuple[tuple[int,int],tuple[Image.Image,...]]:
   
   # if no parameters specified, return original image
-  if(horizontal_tiles <= 0 and vertical_tiles <= 0 and output_resolution == (0,0)):
+  if horizontal_tiles <= 0 and vertical_tiles <= 0 and output_resolution == (0,0):
     return ((1,1),(image.copy(),))
 
   input_ratio: float = image.size[0] / image.size[1]
@@ -339,7 +335,7 @@ def slice(image: Image.Image,
     
   grid: tuple[int,int]
   slice_size: tuple[int,int]
-  if(horizontal_tiles > 0 and vertical_tiles > 0):
+  if horizontal_tiles > 0 and vertical_tiles > 0:
     # both specified, make this the new ratio
     output_ratio = horizontal_tiles / vertical_tiles
     grid = (horizontal_tiles, vertical_tiles)
