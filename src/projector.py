@@ -6,7 +6,16 @@ from lithographer_lib.img_lib import image_to_tk_image
 
 class ProjectorController:
     def show(self, image: Image.Image, duration: Optional[int] = None, update_func: Optional[Callable] = None):
-        print(f'ignoring show image (duration {duration}) on dummy projector')
+        if duration is not None:
+            end = time() + duration / 1000
+            print(f'end: {time()} {end}')
+
+            while time() < end:
+                progress = 1.0 - ((end - time()) * 1000 / duration)
+                if update_func is not None:
+                    print(progress)
+                    update_func(progress)
+            self.clear()
     
     def size(self) -> tuple[int, int]:
         return (1920, 1080)
@@ -44,7 +53,7 @@ class TkProjector(ProjectorController):
     # show an image
     # if a duration is specified, show the image for that many milliseconds
     # Calls update_func during patterning with a single argument from 0.0-1.0 indicating progress
-    def show(self, image: Image.Image, duration: Optional[int] = None, update_func: Optional[Callable[[float]]] = None):
+    def show(self, image: Image.Image, duration: Optional[int] = None, update_func: Optional[Callable[[float], None]] = None):
         print(f'ignoring show image (duration {duration}) on dummy projector')
         #if(self.__is_patterning__):
         #  if(self.debug != None):

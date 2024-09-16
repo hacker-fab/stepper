@@ -4,7 +4,7 @@
 
 #region: imports
 from __future__ import annotations
-from typing import Any
+from typing import Any, Optional
 from tkinter import Tk, Button, Toplevel, Entry, IntVar, DoubleVar, Variable, filedialog, Label, Widget, BooleanVar
 from tkinter.ttk import Progressbar
 from PIL import ImageTk, Image
@@ -14,7 +14,7 @@ from typing import Callable, Literal, Union
 from dataclasses import dataclass
 
 #import sys and use path insert to add lib files
-from .img_lib import rasterize, fit_image
+from .img_lib import image_to_tk_image, fit_image
 from .backend_lib import Smart_Image
 from .tuple_utils import *
 #endregion
@@ -358,7 +358,7 @@ class Thumbnail():
     if(new_size != img.size):
       img = img.resize(new_size, Image.Resampling.NEAREST)
     
-    photoImage = rasterize(img)
+    photoImage = image_to_tk_image(img)
     self.__widget__.config(image = photoImage)
     self.__widget__.image = photoImage
     
@@ -376,6 +376,33 @@ class Thumbnail():
   # remove widget from the grid
   def grid_remove(self):
     self.__widget__.grid_remove()
+
+class IntEntry:
+  widget: Entry
+  _var: Variable
+  
+  def __init__(
+      self,
+      parent,
+      default: int = 0,
+      min_value: Optional[int] = None,
+      max_value: Optional[int] = None,
+      justify: Literal['left', 'center', 'right'] = "center",
+  ):
+    self._var = IntVar()
+    self._var.set(default)
+
+    self.widget = Entry(parent, textvariable=self._var, justify=justify)
+
+    self.min_value = min_value
+    self.max_value = max_value
+
+  def get(self) -> int:
+    return self._var.get()
+  
+  def set(self, value: int):
+    self._var.set(value)
+
     
 # creates a better int input field
 class Intput():
@@ -634,91 +661,6 @@ class Floatput():
     # passed all checks
     return True
 
-# creates a fullscreen window and displays specified images to it
-class Projector_Controller():
-  ### Internal Fields ###
-  __TL__: Toplevel
-  __label__: Label
-  __root__: Tk
-  __is_patterning__: bool = False
-  # just a black image to clear with
-  __clearImage__: ImageTk.PhotoImage
-  ### optional user args ###
-  debug: Debug | None = None
-  progressbar: Progressbar | None = None
-  
-  def __init__( self,
-                root: Tk,
-                title: str = "Projector",
-                background: str = "#000000",
-                debug: Debug | None = None
-                ):
-    # store user inputs
-    self.title = title
-    self.__root__ = root
-    self.debug = debug
-    # setup projector window
-    self.__TL__ = Toplevel(root)
-    self.__TL__.title(self.title)
-    self.__TL__.attributes('-fullscreen',True)
-    self.__TL__['background'] = background
-    self.__TL__.grid_columnconfigure(0, weight=1)
-    self.__TL__.grid_rowconfigure(0, weight=1)
-    # create projection Label
-    self.__label__ = Label(self.__TL__, bg='black')
-    self.__label__.grid(row=0,column=0,sticky="nesw")
-    # generate dummy black image
-    self.__clearImage__ = rasterize(Image.new("L", self.size())) 
-    self.update()
-    
-  # show an image
-  # if a duration is specified, show the image for that many milliseconds
-  def show(self, image: Image.Image, duration: int = 0) -> bool:
-    if(self.__is_patterning__):
-      if(self.debug != None):
-        self.debug.warn("Tried to show image while another is still showing")
-      return False
-    # warn if image isn't correct size
-    if(image.size != fit_image(image, self.size())):
-      if(self.debug != None):
-        self.debug.warn("projecting image with incorrect size:\n  "+str(image.size)+" instead of "+str(self.size()))
-    photo: ImageTk.PhotoImage = rasterize(image)
-    self.__label__.config(image = photo)
-    self.__label__.image = photo
-    if(duration > 0):
-      self.__is_patterning__ = True
-      end = time() + duration / 1000
-      # update and begin
-      self.update()
-      while(time() < end and self.__is_patterning__):
-        if(self.progressbar != None):
-          self.progressbar['value'] = 100 - ((end - time()) / duration * 100000)
-          self.__root__.update()
-        pass
-      self.clear()
-    else:
-      self.update()
-    return True
-  
-  # clear the projector window
-  def clear(self):
-    self.__label__.config(image = self.__clearImage__)
-    self.__label__.image = self.__clearImage__
-    self.__is_patterning__ = False
-    if(self.progressbar != None):
-      self.progressbar['value'] = 0
-    self.update()
-
-  # get size of projector window
-  def size(self, update: bool = True) -> tuple[int,int]:
-    if(update): self.update()
-    return (self.__TL__.winfo_width(), self.__TL__.winfo_height())
-  
-  #update the projector window
-  def update(self):
-    self.__root__.update()
-    self.__TL__.update()
-
 # creates a new window with specified text. Useful for a help menu
 class TextPopup():
   ### Internal Fields ###
@@ -804,7 +746,6 @@ class GUI_Controller():
   window_size: tuple[int,int]
   resizeable: bool
   debug: Debug | None = None
-  proj: Projector_Controller | None = None
   colors: dict[str, tuple[str,str]]
   #endregion
   
@@ -814,7 +755,6 @@ class GUI_Controller():
                 add_window_size: tuple[int,int] = (0, 0),
                 title: str = "GUI Controller",
                 resizeable: bool = True,
-                add_projector: bool = True,
                 ):
     # store user input variables
     self.grid_size = grid_size
@@ -834,9 +774,6 @@ class GUI_Controller():
       self.root.grid_rowconfigure(row, weight=1)
     for col in range(self.grid_size[1]):
       self.root.grid_columnconfigure(col, weight=1)
-    # create projector window
-    if(add_projector):
-      self.proj: Projector_Controller = Projector_Controller(self.root)
     # create dictionary of widgets
     self.__widgets__ = {}
 
@@ -844,8 +781,6 @@ class GUI_Controller():
     # if a debug widget is added, save it as the debug field
     if(type(widget) == Debug):
       self.debug = widget
-      if(self.proj != None):
-        self.proj.debug = widget
     else:
       self.__widgets__[name] = widget
     self.update()

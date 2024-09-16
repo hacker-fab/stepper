@@ -110,9 +110,20 @@ class Lithographer:
     projector: ProjectorController
 
     def __init__(self, stage: StageController, projector: ProjectorController):
-       self.red_focus = ProcessedImage()
-       self.uv_focus = ProcessedImage()
-       self.pattern = ProcessedImage()
+        self.red_focus = ProcessedImage()
+        self.uv_focus = ProcessedImage()
+        self.pattern = ProcessedImage()
 
-       self.stage = StageWrapper(stage)
-       self.projector = projector
+        self.stage = StageWrapper(stage)
+        self.projector = projector
+    
+    def sliced_pattern_tile(self, tile_row: int, tile_col: int) -> Image.Image:
+        assert(tile_row == 0 and tile_col == 0) # TODO:
+        return self.pattern.processed()
+    
+    def do_pattern(self, tile_row: int, tile_col: int, duration: int, update_func: Callable[[float], None]):
+        img = self.sliced_pattern_tile(tile_row, tile_col)
+        # Processing steps happened before slicing, don't need to reapply them
+        # TODO: Flatfield would need to be reapplied here!
+        img = process_img(img, ImageProcessSettings(None, None, (True, True, True), self.projector.size()))
+        return self.projector.show(img, duration, update_func)

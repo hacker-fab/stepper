@@ -12,6 +12,7 @@ from collections import namedtuple
 from PIL import  Image
 from time import sleep
 from stage_control.grbl_stage import GrblStage, StageController
+from projector import ProjectorController, TkProjector
 from hardware import Lithographer
 
 from lithographer_lib.gui_lib import *
@@ -48,6 +49,7 @@ OnChangePatterningStatus = Callable[[PatterningStatus], None]
 
 class Event(Enum):
   StageOffsetRequest = 'stageoffsetrequest'
+  StageSetRequest = 'stagesetrequest'
 
 class EventDispatcher:
   shown_image_change_listeners: List[OnShownImageChange]
@@ -150,60 +152,20 @@ GUI.add_widget("debug", debug)
 slicer: Slicer = Slicer(tiling_pattern='snake',
                         debug=debug)
 
-# overall pattern progress bar
-pattern_progress: Progressbar = Progressbar(
-  GUI.root,
-  orient='horizontal',
-  mode='determinate',
-  )
-pattern_progress.grid(
-  row = 1,
-  column = 0,
-  columnspan = GUI.grid_size[1],
-  sticky='nesw')
-GUI.add_widget("pattern_progress", pattern_progress)
-
-# Current exposure Progress
-exposure_progress: Progressbar = Progressbar(
-  GUI.root,
-  orient='horizontal',
-  mode='determinate',
-  )
-exposure_progress.grid(
-  row = 2,
-  column = 0,
-  columnspan = GUI.grid_size[1],
-  sticky='nesw')
-GUI.proj.progressbar = exposure_progress
-GUI.add_widget("exposure_progress", exposure_progress)
 
 class StagePositionFrame:
   def __init__(self, gui, parent, event_dispatcher: EventDispatcher):
-    global stage
-    
     self.frame = ttk.Frame(parent)
 
     self.position_intputs = []
     self.step_size_intputs = []
 
-    for i, coord, default in ((0, 'x', stage.x()), (1, 'y', stage.y()), (2, 'z', stage.z())):
-      self.position_intputs.append(Intput(
-        gui=GUI,
-        parent=self.frame,
-        name=f'{coord}_intput',
-        default=int(default)
-      ))
-      self.position_intputs[-1].grid(row=0,col=i)
+    for i, coord in ((0, 'x'), (1, 'y'), (2, 'z')):
+      self.position_intputs.append(IntEntry(parent=self.frame, default=0))
+      self.position_intputs[-1].widget.grid(row=0,column=i)
 
-      self.step_size_intputs.append(Intput(
-          gui=gui,
-          parent=self.frame,
-          name=f'{coord}_step_intput',
-          default=10,
-          min=-1000,
-          max=1000
-      ))
-      self.step_size_intputs[-1].grid(row=5,col=i)
+      self.step_size_intputs.append(IntEntry(parent=self.frame, default=10, min_value=-1000, max_value=1000))
+      self.step_size_intputs[-1].widget.grid(row=5,column=i)
 
       def callback_pos():
         event_dispatcher.on_event(Event.StageOffsetRequest, { coord:  self.step_sizes()[i] })
@@ -216,11 +178,17 @@ class StagePositionFrame:
       coord_inc_button.grid(row=1, column=i)
       coord_dec_button.grid(row=2, column=i)
 
-    on_set_position = lambda: stage.set(self.position_intputs[0].get(), self.position_intputs[1].get(), self.position_intputs[2].get())
-    set_position_button = ttk.Button(self.frame, text='Set Stage Position', command = on_set_position)
+    def callback_set():
+      x, y, z = self.position()
+      event_dispatcher.on_event(Event.StageSetRequest, { 'x': x, 'y': y, 'z': z })
+
+    set_position_button = ttk.Button(self.frame, text='Set Stage Position', command=callback_set)
     set_position_button.grid(row=3, column=0, columnspan=3, sticky='ew')
 
     ttk.Label(self.frame, text='Stage Step Size (microns)', anchor='center').grid(row=4, column=0, columnspan=3, sticky='ew')
+  
+  def position(self) -> tuple[int, int, int]:
+    return tuple(intput.get() for intput in self.position_intputs)
   
   def step_sizes(self) -> tuple[int, int, int]:
     return tuple(intput.get() for intput in self.step_size_intputs)
@@ -234,12 +202,12 @@ class FineAdjustmentFrame:
     self.position_intputs = []
     self.step_size_intputs = []
 
-    for i, coord, default in ((0, 'x', stage.x()), (1, 'y', stage.y()), (2, 'theta', stage.z())):
+    for i, coord in ((0, 'x'), (1, 'y'), (2, 'theta')):
       self.position_intputs.append(Intput(
         gui=GUI,
         parent=self.frame,
         name=f'fine_{coord}_intput',
-        default=int(default)
+        default=0
       ))
       self.position_intputs[-1].grid(row=0,col=i)
       # TODO: FIXME:
@@ -578,7 +546,7 @@ class PatterningFrame:
     #region: Current Tile
     ttk.Label(self.frame, text='Next Pattern Image').grid(row=0, column=0)
 
-    tile_placeholder = rasterize(Image.new('RGB', THUMBNAIL_SIZE, (0,0,0)))
+    tile_placeholder = image_to_tk_image(Image.new('RGB', THUMBNAIL_SIZE, (0,0,0)))
     self.next_tile_image = Label(self.frame, image=tile_placeholder, justify='center', anchor='center')
     self.next_tile_image.grid(row=1, column=0)
 
@@ -841,10 +809,7 @@ def setup_camera_from_py():
 class LithographerGui:
   hardware: Lithographer
 
-  pattern_image: ProcessedImage
-  flatfield_image: ProcessedImage
-  red_focus_image: ProcessedImage
-  uv_focus_image: ProcessedImage
+  #flatfield_image: ProcessedImage
 
   event_dispatcher: EventDispatcher
 
@@ -854,15 +819,20 @@ class LithographerGui:
     self.event_dispatcher.add_begin_patterning_listener(lambda: self.begin_patterning())
     self.event_dispatcher.add_change_patterning_status_listener(lambda status: self.on_change_patterning_status(status))
 
-    self.hardware = Lithographer(stage, projector)
+    self.hardware = Lithographer(stage, ProjectorController())
 
     self.event_dispatcher.add_event_listener(
       Event.StageOffsetRequest,
       lambda offsets: self.hardware.stage.move_by(offsets, commit=True)
     )
 
+    self.event_dispatcher.add_event_listener(
+      Event.StageSetRequest,
+      lambda coords: self.hardware.stage.move_to(coords, commit=True)
+    )
+
     if use_camera:
-      camera_placeholder = rasterize(Image.new('RGB', (GUI.window_size[0],(GUI.window_size[0]*9)//16), (0,0,0)))
+      camera_placeholder = image_to_tk_image(Image.new('RGB', (GUI.window_size[0],(GUI.window_size[0]*9)//16), (0,0,0)))
       # TODO properly implement the camera image size
       self.camera_label = Label(gui.root, image=camera_placeholder)
       self.camera_label.grid(row = 0, column = 0, sticky='nesw')
@@ -883,6 +853,13 @@ class LithographerGui:
     self.patterning_frame = PatterningFrame(GUI, self.config_notebook, self.event_dispatcher)
     self.config_notebook.add(self.patterning_frame.frame, text='Patterning')
 
+    self.exposure_progress = Progressbar(GUI.root, orient='horizontal', mode='determinate', maximum=1000)
+    self.exposure_progress.grid(row = 2, column = 0, sticky='ew')
+
+    self.pattern_progress = Progressbar(GUI.root, orient='horizontal', mode='determinate')
+    self.pattern_progress.grid(row = 1, column = 0, sticky='ew')
+
+    '''
     def pattern_image_settings() -> ImageProcessSettings:
       return ImageProcessSettings(self.options_frame.posterize_strength(), self.options_frame.flatfield_strength(), self.options_frame.pattern_channels())
 
@@ -893,11 +870,7 @@ class LithographerGui:
     # TODO: UV focus has no flatfield or posterization, is this intentional?
     def uv_focus_image_settings() -> ImageProcessSettings:
       return ImageProcessSettings(None, None, self.options_frame.uv_focus_channels())
-
-    # TODO: Automatically recompute preview on settings change
-    self.pattern_image = ProcessedImage(Image.new('RGB', THUMBNAIL_SIZE), pattern_image_settings)
-    self.red_focus_image = ProcessedImage(Image.new('RGB', THUMBNAIL_SIZE), red_focus_image_settings)
-    self.uv_focus_image = ProcessedImage(Image.new('RGB', THUMBNAIL_SIZE), uv_focus_image_settings)
+    '''
 
     self.multi_image_select_frame = MultiImageSelectFrame(gui, gui.root, self.event_dispatcher)
     self.multi_image_select_frame.frame.grid(row=3, column=0)
@@ -910,14 +883,15 @@ class LithographerGui:
   def cleanup(self):
     print("Patterning GUI closed.")
     print('TODO: Cleanup')
-    #GUI.root.destroy()
+    GUI.root.destroy()
     #if RUN_WITH_STAGE:
       #serial_port.close()
 
   
   def transform_image(self, image: Image.Image, theta_factor: float = 0.1) -> Image.Image:
-    if self.options_frame.fine_adj_enabled():
-      return better_transform(image, (*round_tuple(fine_adjust.xy()), (2*pi*fine_adjust.z())/360), GUI.proj.size(), border_size_intput.get())
+  #  if self.options_frame.fine_adj_enabled():
+  #    return better_transform(image, (*round_tuple(fine_adjust.xy()), (2*pi*fine_adjust.z())/360), GUI.proj.size(), border_size_intput.get())
+    # TODO: Implement fine adjust
     return image
   
   def on_shown_image_change(self, which: ShownImage):
@@ -945,34 +919,29 @@ class LithographerGui:
     self.patterning_status = status
 
   def begin_patterning(self):
-    def update_next_tile_preview(mode: Literal['current','peek']='peek'):
-      #get either current image, or peek ahead to next image
-      preview: Image.Image | None
-      preview = slicer.peek() if mode == 'peek' else slicer.image()
-      #if at end of slicer, use blank image
-      if preview is None:
-        preview = Image.new('RGB', THUMBNAIL_SIZE)
-      raster = rasterize(preview.resize(fit_image(preview, THUMBNAIL_SIZE), Image.Resampling.NEAREST))
-      self.patterning_frame.set_next_tile_image(raster)
+    # TODO: Update patterning preview
+
+    def update_func(exposure_progress):
+      global GUI
+      self.exposure_progress['value'] = round(exposure_progress * 1000)
+      GUI.update()
     
-    global pattern_status
-    debug.info("Slicing pattern...")
-    slicer.update(image=self.pattern_image.processed(),
-                  horizontal_tiles=self.options_frame.horiz_tiles(),
-                  vertical_tiles=self.options_frame.vert_tiles(),
-                  tiling_pattern=slicer.pattern_list[slicer_pattern_cycle.state])
-    pattern_progress['value'] = 0
-    pattern_progress['maximum'] = slicer.tile_count()
-    debug.info(f"Patterning {slicer.tile_count()} tiles for {duration_intput.get()}ms\nTotal time: {str(round((slicer.tile_count()*duration_intput.get())/1000))}s")
+    #duration = duration_intput.get() # TODO:
+    # TODO: Duration
+    duration = 8000
+    
+    self.pattern_progress['value'] = 0
+    self.pattern_progress['maximum'] = 1
+    #debug.info(f"Patterning {slicer.tile_count()} tiles for {duration}ms\nTotal time: {str(round((slicer.tile_count()*duration)/1000))}s")
+    debug.info(f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration)/1000))}s")
 
     # TODO implement fine adjustment with CV
     # delta_vector: tuple[int,int,float] = (0,0,0)
     self.change_patterning_status(PatterningStatus.Patterning)
     while True:
       # update next tile preview
-      update_next_tile_preview()
+      # update_next_tile_preview()
       # get patterning image
-      image = process_img2(slicer.image(), ImageProcessSettings(self.options_frame.posterize_strength(), self.options_frame.flatfield_strength(), self.options_frame.pattern_channels()))
       #TODO apply fine adjustment vector to image
       #TODO remove once camera is implemented
       #camera_image_preview = rasterize(image.resize(fit_image(image, (GUI.window_size[0],(GUI.window_size[0]*9)//16)), Image.Resampling.LANCZOS))
@@ -981,35 +950,23 @@ class LithographerGui:
       #pattern
       if self.patterning_status == PatterningStatus.Aborting:
         break
-      stage.lock()
-      debug.info("Patterning tile...")
-      GUI.proj.show(image, duration=duration_intput.get())
-      stage.unlock()
+      self.exposure_progress['value'] = 0
+      self.hardware.do_pattern(0, 0, duration, update_func=update_func)
+      self.exposure_progress['value'] = 1000
       if self.patterning_status == PatterningStatus.Aborting:
         break
 
-      # if(result):
-      #   # TODO remove once camera is implemented
-      #   camera.config(image=camera_placeholder)
-      #   camera.image = camera_placeholder
-      # repeat
-      if slicer.next():
-        pattern_progress['value'] += 1
-        debug.info("Finished")
-        #TODO: implement CV
-        #delta_vector = tuple(map(float, input("Next vector [dX dY theta]:").split(None,3)))
-      else:
-        break
-      #TODO: delete this pause. This is to "emulate" the CV taking time to move the stage
-      sleep(0.5)
+      self.pattern_progress['value'] += 1
+      break
+
     # restart slicer
-    slicer.restart()
-    # update next tile preview
-    update_next_tile_preview(mode='current')
+    # restart slicer
+    #slicer.restart()
     # TODO remove once camera is implemented
     # camera.config(image=camera_placeholder)
     # camera.image = camera_placeholder
     # reset fine adjustment parameters based on reset_adj_cycle
+    '''
     match reset_adj_cycle.state_name():
       case "Reset Nothing":
         pass
@@ -1021,9 +978,10 @@ class LithographerGui:
         fine_adjust.set(0,0,0)
       case _:
         debug.warn("Invalid state for reset_adj_cycle")
+    '''
 
     # give user feedback
-    pattern_progress['value'] = 0
+    self.pattern_progress['value'] = 0
     if self.patterning_status == PatterningStatus.Aborting:
       debug.warn("Patterning aborted")
     else:
@@ -1035,17 +993,19 @@ class LithographerGui:
 
 # attach cleanup function to GUI close event
 
-if(RUN_WITH_CAMERA):
-  setup_camera_from_py()
+def main():
+  if(RUN_WITH_CAMERA):
+    setup_camera_from_py()
 
-if RUN_WITH_STAGE:
-  serial_port = serial.Serial(stage_file, baud_rate)
-  print(f"Using serial port {serial_port.name}")
-  stage = GrblStage(serial_port, bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
-else:
-  stage = StageController()
+  if RUN_WITH_STAGE:
+    serial_port = serial.Serial(stage_file, baud_rate)
+    print(f"Using serial port {serial_port.name}")
+    stage = GrblStage(serial_port, bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
+  else:
+    stage = StageController()
 
-lithographer = LithographerGui(GUI, False, stage)
+  lithographer = LithographerGui(GUI, False, stage)
 
-GUI.mainloop()
+  GUI.mainloop()
 
+main()
