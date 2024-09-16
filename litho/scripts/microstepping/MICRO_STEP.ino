@@ -1,0 +1,47 @@
+// Credit for basis of the code: https://forum.arduino.cc/t/cnc-shield-v3-nextion/1188821/18
+// Library used: https://github.com/laurb9/StepperDriver
+#include <Stepper.h>
+#include <Arduino.h>
+#include <BasicStepperDriver.h>
+#include <MultiDriver.h>
+#include <SoftwareSerial.h>
+
+SoftwareSerial mySerial(A0, A1);  // RX, TX
+int L = 40;  // Adjust the number of rotations as needed
+int state = 0;
+int EN = 8;  // Change the stepper enable pin to match CNC Shield
+
+
+#define DIR_X 5  // Change these pin numbers to match CNC Shield
+#define STEP_X 2
+#define DIR_Y 6
+#define STEP_Y 3
+#define MICROSTEPSX 2
+#define MICROSTEPSY 16
+#define MOTOR_STEPS 400
+
+// Right now only motor X is used
+BasicStepperDriver stepperX(MOTOR_STEPS, DIR_X, STEP_X);
+BasicStepperDriver stepperY(MOTOR_STEPS, DIR_Y, STEP_Y);
+
+void setup() {
+  // Set up control pins
+  pinMode(EN, OUTPUT);
+  digitalWrite(EN, LOW);
+  numMessages, endBytes = 0;
+  Serial.begin(9600);
+  mySerial.begin(9600);
+  // Set up default microsteps
+  stepperX.begin(200, MICROSTEPSX);
+  stepperY.begin(200, MICROSTEPSY);
+  delay(500);
+  Serial.println("Setup complete.");  
+}
+
+void loop() {
+  // Move microsteps
+  stepperX.move(1600);
+  delay(2000);
+  stepperX.move(-1600);
+  delay(2000);
+}
