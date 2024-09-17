@@ -6,6 +6,7 @@ from lithographer_lib.img_lib import image_to_tk_image
 
 class ProjectorController:
     def show(self, image: Image.Image, duration: Optional[int] = None, update_func: Optional[Callable] = None):
+        print(f'ignoring show image (duration {duration}) on dummy projector')
         if duration is not None:
             end = time() + duration / 1000
             print(f'end: {time()} {end}')
@@ -13,8 +14,8 @@ class ProjectorController:
             while time() < end:
                 progress = 1.0 - ((end - time()) * 1000 / duration)
                 if update_func is not None:
-                    print(progress)
-                    update_func(progress)
+                    if update_func(progress):
+                        break
             self.clear()
     
     def size(self) -> tuple[int, int]:
@@ -45,7 +46,7 @@ class TkProjector(ProjectorController):
         self.label.grid(row=0,column=0,sticky="nesw")
 
         # generate dummy black image
-        self.clear_image = ImageTk.PhotoImage(Image.new('L', self.size()))
+        self.clear_image = image_to_tk_image(Image.new('L', self.size()))
 
     def size(self) -> tuple[int, int]:
         return (self.window.winfo_width(), self.window.winfo_height())
@@ -54,7 +55,6 @@ class TkProjector(ProjectorController):
     # if a duration is specified, show the image for that many milliseconds
     # Calls update_func during patterning with a single argument from 0.0-1.0 indicating progress
     def show(self, image: Image.Image, duration: Optional[int] = None, update_func: Optional[Callable[[float], None]] = None):
-        print(f'ignoring show image (duration {duration}) on dummy projector')
         #if(self.__is_patterning__):
         #  if(self.debug != None):
         #    self.debug.warn("Tried to show image while another is still showing")
@@ -63,8 +63,8 @@ class TkProjector(ProjectorController):
         #if(image.size != fit_image(image, self.size())):
         #  if(self.debug != None):
         #    self.debug.warn("projecting image with incorrect size:\n  "+str(image.size)+" instead of "+str(self.size()))
-        photo = image_to_tk_image(image)
-        self.label.configure(image = photo) # type:ignore
+        self.photo = image_to_tk_image(image)
+        self.label.configure(image = self.photo) # type:ignore
         if duration is not None:
             end = time() + duration / 1000
 

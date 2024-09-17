@@ -14,7 +14,7 @@ from typing import Callable, Literal, Union
 from dataclasses import dataclass
 
 #import sys and use path insert to add lib files
-from .img_lib import image_to_tk_image, fit_image
+from .img_lib import image_to_tk_image, fit_image, RGBA_to_RGB, LA_to_L
 from .backend_lib import Smart_Image
 from .tuple_utils import *
 #endregion
@@ -247,65 +247,46 @@ class Cycle():
       
 # creates thumbnail / image import widget
 class Thumbnail(): 
-  __widget__: Button
-  __gui__: GUI_Controller
-  __total_thumbnails__: int = 0
+  widget: Button
   # image stuff
-  image: Smart_Image
+  image: Image.Image
+  thumb_image: ImageTk.PhotoImage
   thumb_size: tuple[int, int]
   # optional fields
   text: str
   accept_alpha: bool
   func_on_success: Callable | None
   
-  def __init__(self, gui: GUI_Controller,
+  def __init__(self, parent,
                thumb_size: tuple[int,int],
-               parent: Any | None = None,
-               name: str | None = None,
-               text: str = "",
+               text: str = '',
                accept_alpha: bool = False,
-               func_on_success: Callable | None = None):
+               on_import: Callable | None = None):
     # assign vars
-    self.__gui__ = gui
     self.thumb_size = thumb_size
     self.text = text
     self.accept_alpha = accept_alpha
-    self.func_on_success = func_on_success
+    self.on_import = on_import
     # build widget
-    button: Button = Button(
-      parent if parent is not None else gui.root,
-      command = self.__import_image__
-      )
-    if(self.text != ""):
-      button.config(text = self.text,
-                    compound = "top")
-    self.__widget__ = button
+    self.widget = Button(parent, text=self.text, command=self._import_image, compound='top')
+
+    self.thumb_size = thumb_size
     # create placeholder images
-    placeholder = Image.new("RGB", self.thumb_size)
-    self.image = Smart_Image(placeholder)
-    if(name == None):
-      gui.add_widget(f"unnamed thumbnail widget {Cycle.__total_cycles__}", self)
-      Thumbnail.__total_thumbnails__ += 1
-    else:
-      gui.add_widget(name, self)
-    self.update(placeholder)
+    self.image = Image.new('RGB', self.thumb_size)
+    self._refresh()
   
   # prompt user for a new image
-  def __import_image__(self):
+  def _import_image(self):
     def is_valid_ext(path: str) -> bool:
-      ext: str = path[-5:].lower()
-      match ext[-4:]:
-        case ".jpg":
-          return True
-        case ".png":
-          return True
-      match ext[-5:]:
-        case ".jpeg":
-          return True
-      return False
+      path = path.lower()
+      return path.endswith('.jpg') or path.endswith('.jpeg') or path.endswith('.png')
+
     # get image
     path: str = filedialog.askopenfilename(title ='Open')
-    if(self.__gui__.debug != None):
+
+    # TODO: Debug
+    '''
+    if self._gui.debug is not None:
       if(path == ''):
         self.__gui__.debug.warn(self.text+(" " if self.text!="" else "")+"import cancelled")
         return
@@ -314,6 +295,8 @@ class Thumbnail():
         return
       else:
         self.__gui__.debug.info(self.text+(" " if self.text!="" else "")+"set to "+basename(path))
+    '''
+
     img = Image.open(path).copy()
     # check type
     # ensure image is RGB or L
@@ -323,60 +306,34 @@ class Thumbnail():
       case "L":
         pass
       case "RGBA":
-        if(not self.accept_alpha):
+        if not self.accept_alpha:
           img = RGBA_to_RGB(img)
-          if(self.__gui__.debug != None):
-            self.__gui__.debug.warn("RGBA images are not permitted, auto converted to RGB")
+          #if(self.__gui__.debug != None):
+          #  self.__gui__.debug.warn("RGBA images are not permitted, auto converted to RGB")
       case "LA":
         if(not self.accept_alpha):
           img = LA_to_L(img)
-          if(self.__gui__.debug != None):
-            self.__gui__.debug.warn("LA images are not permitted, auto converted to L")
+          #if(self.__gui__.debug != None):
+          #  self.__gui__.debug.warn("LA images are not permitted, auto converted to L")
       case _:
-        if(self.__gui__.debug != None):
-          self.__gui__.debug.error("Invalid image mode: "+img.mode)
+        #if(self.__gui__.debug != None):
+        #  self.__gui__.debug.error("Invalid image mode: "+img.mode)
         return
-    # update image
-    self.image = Smart_Image(img)
-    self.image.add("path", path, True)
+
     # update
-    self.update()
+    self.image = img
+    self._refresh()
+
     # call optional func if specified
-    if(self.func_on_success != None):
-      self.func_on_success()
+    if self.on_import is not None:
+      (self.on_import)(self)
+  
+  def _refresh(self):
+    new_size = fit_image(self.image, self.thumb_size)
+    self.thumb_image = image_to_tk_image(self.image.resize(new_size))
+    self.widget.configure(image = self.thumb_image) # type:ignore
     
-  # update the thumbnail, optionally specify a new image
-  # new image will only apply to preview, not stored smart image
-  def update(self, new_image: Image.Image | None = None):
-    img: Image.Image
-    if(new_image == None):
-      img = self.image.image
-    else:
-      img = new_image
-    new_size: tuple[int, int] = fit_image(img, win_size=self.thumb_size)
-    
-    if(new_size != img.size):
-      img = img.resize(new_size, Image.Resampling.NEAREST)
-    
-    photoImage = image_to_tk_image(img)
-    self.__widget__.config(image = photoImage)
-    self.__widget__.image = photoImage
-    
-  # place widget on the grid
-  def grid(self, row: int | None = None, col: int | None = None, colspan: int = 1, rowspan: int = 1):
-    if(row == None or col == None):
-      self.__widget__.grid()
-    else:
-      self.__widget__.grid(row = row,
-                       column = col,
-                       rowspan = rowspan,
-                       columnspan = colspan,
-                       sticky = "nesw")
-
-  # remove widget from the grid
-  def grid_remove(self):
-    self.__widget__.grid_remove()
-
+# TODO:
 class IntEntry:
   widget: Entry
   _var: Variable
@@ -385,20 +342,26 @@ class IntEntry:
       self,
       parent,
       default: int = 0,
+      var: Optional[Variable] = None,
       min_value: Optional[int] = None,
       max_value: Optional[int] = None,
       justify: Literal['left', 'center', 'right'] = "center",
   ):
-    self._var = IntVar()
+    self._var = var if var is not None else IntVar()
     self._var.set(default)
 
-    self.widget = Entry(parent, textvariable=self._var, justify=justify)
+    self.default = default
 
     self.min_value = min_value
     self.max_value = max_value
 
+    self.widget = Entry(parent, textvariable=self._var, justify=justify)
+
   def get(self) -> int:
-    return self._var.get()
+    if self.widget.get() == '':
+      return self.default
+    else:
+      return self._var.get()
   
   def set(self, value: int):
     self._var.set(value)

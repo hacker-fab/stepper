@@ -121,7 +121,7 @@ class Lithographer:
         assert(tile_row == 0 and tile_col == 0) # TODO:
         return self.pattern.processed()
     
-    def do_pattern(self, tile_row: int, tile_col: int, duration: int, update_func: Callable[[float], None]):
+    def do_pattern(self, tile_row: int, tile_col: int, duration: int, update_func: Callable[[float], bool]):
         img = self.sliced_pattern_tile(tile_row, tile_col)
         # Processing steps happened before slicing, don't need to reapply them
         # TODO: Flatfield would need to be reapplied here!
