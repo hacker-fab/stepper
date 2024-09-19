@@ -1,14 +1,18 @@
 import serial
 import tomllib
-from hardware import Lithographer, ImageProcessSettings
+import cv2
+from functools import partial
+from hardware import Lithographer, ImageProcessSettings, StageWrapper
 from typing import Callable, List, Optional
 from PIL import Image
+from camera.camera_module import CameraModule
+from camera.webcam import Webcam
 from stage_control.stage_controller import StageController
 from stage_control.grbl_stage import GrblStage
 from projector import ProjectorController, TkProjector
 from enum import Enum
 from lithographer_lib.gui_lib import IntEntry, Thumbnail
-from lithographer_lib.img_lib import image_to_tk_image
+from lithographer_lib.img_lib import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar
 
@@ -70,42 +74,95 @@ class EventDispatcher:
   def add_shown_image_change_listener(self, listener: OnShownImageChange):
     self.shown_image_change_listeners.append(listener)
 
+class CameraFrame:
+  def __init__(self, parent, c: CameraModule):
+    self.frame = ttk.Frame(parent)
+    self.label = ttk.Label(self.frame, text='live hackerfab reaction')
+    self.label.grid(row=0, column=0)
+    self.image_focus = 0
+
+    self.gui_img = None
+    self.camera = c
+
+    def cameraCallback(image, dimensions, format):
+      self.gui_camera_preview(image, dimensions)
+
+    if not self.camera.open():
+      print('Camera failed to start')
+    else:
+      self.camera.setSetting('image_format', "rgb888")
+      self.camera.setStreamCaptureCallback(cameraCallback)
+      if not self.camera.startStreamCapture():
+        print('Failed to start stream capture for camera')
+  
+  def cleanup(self):
+    self.camera.close()
+
+  def gui_camera_preview(self, camera_image, dimensions):
+    img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
+    img_lapl = cv2.Laplacian(img, cv2.CV_64F)
+    focus_score = img_lapl.var()
+    self.image_focus = focus_score
+
+    pil_img = Image.fromarray(camera_image, mode='RGB')
+    new_size = fit_image(pil_img, (600, 400))
+    self.gui_img = image_to_tk_image(pil_img.resize(new_size))
+    self.label.configure(image=self.gui_img) # type:ignore
+
 class StagePositionFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent, stage: StageWrapper, event_dispatcher: EventDispatcher):
     self.frame = ttk.Frame(parent)
 
     self.position_intputs = []
     self.step_size_intputs = []
 
+    # Absolute
+
+    self.absolute_frame = ttk.LabelFrame(self.frame, text='Position')
+    self.absolute_frame.grid(row=0, column=0)
+
     for i, coord in ((0, 'x'), (1, 'y'), (2, 'z')):
-      self.position_intputs.append(IntEntry(parent=self.frame, default=0))
+      self.position_intputs.append(IntEntry(parent=self.absolute_frame, default=0))
       self.position_intputs[-1].widget.grid(row=0,column=i)
-
-      self.step_size_intputs.append(IntEntry(parent=self.frame, default=10, min_value=-1000, max_value=1000))
-      self.step_size_intputs[-1].widget.grid(row=5,column=i)
-
-      def callback_pos():
-        event_dispatcher.on_event(Event.StageOffsetRequest, { coord:  self.step_sizes()[i] })
-      def callback_neg():
-        event_dispatcher.on_event(Event.StageOffsetRequest, { coord: -self.step_sizes()[i] })
-
-      coord_inc_button = ttk.Button(self.frame, text=f'+{coord.upper()}', command=callback_pos)
-      coord_dec_button = ttk.Button(self.frame, text=f'-{coord.upper()}', command=callback_neg)
-
-      coord_inc_button.grid(row=1, column=i)
-      coord_dec_button.grid(row=2, column=i)
 
     def callback_set():
       x, y, z = self.position()
       event_dispatcher.on_event(Event.StageSetRequest, { 'x': x, 'y': y, 'z': z })
 
-    set_position_button = ttk.Button(self.frame, text='Set Stage Position', command=callback_set)
-    set_position_button.grid(row=3, column=0, columnspan=3, sticky='ew')
+    set_position_button = ttk.Button(self.absolute_frame, text='Set Stage Position', command=callback_set)
+    set_position_button.grid(row=1, column=0, columnspan=3, sticky='ew')
 
-    ttk.Label(self.frame, text='Stage Step Size (microns)', anchor='center').grid(row=4, column=0, columnspan=3, sticky='ew')
+    # Relative 
+
+    self.relative_frame = ttk.LabelFrame(self.frame, text='Adjustment')
+    self.relative_frame.grid(row=1, column=0)
+
+    for i, coord in ((0, 'x'), (1, 'y'), (2, 'z')):
+      self.step_size_intputs.append(IntEntry(parent=self.relative_frame, default=10, min_value=-1000, max_value=1000))
+      self.step_size_intputs[-1].widget.grid(row=3,column=i)
+
+      def callback_pos(index, c):
+        event_dispatcher.on_event(Event.StageOffsetRequest, { c:  self.step_sizes()[index] })
+        self.position_intputs[index].set(stage.stage_position[c])
+      def callback_neg(index, c):
+        event_dispatcher.on_event(Event.StageOffsetRequest, { c: -self.step_sizes()[index] })
+        self.position_intputs[index].set(stage.stage_position[c])
+
+      coord_inc_button = ttk.Button(self.relative_frame, text=f'+{coord.upper()}', command=partial(callback_pos, i, coord))
+      coord_dec_button = ttk.Button(self.relative_frame, text=f'-{coord.upper()}', command=partial(callback_neg, i, coord))
+
+      coord_inc_button.grid(row=0, column=i)
+      coord_dec_button.grid(row=1, column=i)
+
+    ttk.Label(self.relative_frame, text='Step Size (microns)', anchor='center').grid(row=2, column=0, columnspan=3, sticky='ew')
+    
   
   def position(self) -> tuple[int, int, int]:
     return tuple(intput.get() for intput in self.position_intputs)
+  
+  def set_position(self, pos: tuple[int, int, int]):
+    for i in range(3):
+      self.position_intputs[i].set(pos[i])
   
   def step_sizes(self) -> tuple[int, int, int]:
     return tuple(intput.get() for intput in self.step_size_intputs)
@@ -124,7 +181,6 @@ class MultiImageSelectFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
     self.frame = ttk.Frame(parent)
 
-    # TODO: Update slicer on pattern upload
     self.pattern_frame = ImageSelectFrame(self.frame, 'Show pattern', lambda t: event_dispatcher.on_event(Event.ImportPattern), event_dispatcher.on_shown_image_change_cb(ShownImage.Pattern))
     self.red_focus_frame = ImageSelectFrame(self.frame, 'Show Red Focus', lambda t: event_dispatcher.on_event(Event.ImportRedFocus), event_dispatcher.on_shown_image_change_cb(ShownImage.RedFocus))
     self.uv_focus_frame = ImageSelectFrame(self.frame, 'Show UV Focus', None, event_dispatcher.on_shown_image_change_cb(ShownImage.UvFocus))
@@ -234,7 +290,7 @@ class LithographerGui:
 
   event_dispatcher: EventDispatcher
 
-  def __init__(self, stage: StageController, title='Lithographer'):
+  def __init__(self, stage: StageController, camera, title='Lithographer'):
     self.root = Tk()
 
     self.event_dispatcher = EventDispatcher()
@@ -262,22 +318,28 @@ class LithographerGui:
       lambda coords: self.hardware.stage.move_to(coords, commit=True)
     )
 
-    self.settings_notebook = ttk.Notebook(self.root)
-    self.stage_position_frame = StagePositionFrame(self.settings_notebook, self.event_dispatcher)
+    self.camera = CameraFrame(self.root, camera)
+    self.camera.frame.grid(row=0, column=0)
+
+    self.bottom_panel = ttk.Frame(self.root)
+    self.bottom_panel.grid(row=2, column=0)
+
+    self.settings_notebook = ttk.Notebook(self.bottom_panel)
+    self.stage_position_frame = StagePositionFrame(self.settings_notebook, self.hardware.stage, self.event_dispatcher)
     self.settings_notebook.add(self.stage_position_frame.frame, text='Stage')
     self.exposure_frame = ExposureFrame(self.settings_notebook, self.event_dispatcher)
     self.settings_notebook.add(self.exposure_frame.frame, text='Exposure')
 
-    self.settings_notebook.grid(row=3, column=1)
+    self.settings_notebook.grid(row=0, column=1)
 
     self.pattern_progress = Progressbar(self.root, orient='horizontal', mode='determinate')
     self.pattern_progress.grid(row = 1, column = 0, sticky='ew')
 
-    self.multi_image_select_frame = MultiImageSelectFrame(self.root, self.event_dispatcher)
-    self.multi_image_select_frame.frame.grid(row=3, column=0)
+    self.multi_image_select_frame = MultiImageSelectFrame(self.bottom_panel, self.event_dispatcher)
+    self.multi_image_select_frame.frame.grid(row=0, column=0)
 
-    self.patterning_frame = PatterningFrame(self.root, self.event_dispatcher)
-    self.patterning_frame.frame.grid(row=3, column = 2, sticky='nesw')
+    self.patterning_frame = PatterningFrame(self.bottom_panel, self.event_dispatcher)
+    self.patterning_frame.frame.grid(row=0, column=2, sticky='nesw')
 
     self.patterning_status = PatterningStatus.Idle
 
@@ -308,6 +370,7 @@ class LithographerGui:
   def cleanup(self):
     print("Patterning GUI closed.")
     print('TODO: Cleanup')
+    self.camera.cleanup()
     self.root.destroy()
     #if RUN_WITH_STAGE:
       #serial_port.close()
@@ -336,15 +399,14 @@ class LithographerGui:
   def begin_patterning(self):
     # TODO: Update patterning preview
 
+    print('Patterning at ', self.hardware.stage.stage_position)
+
     def update_func(exposure_progress):
-      global GUI
       self.patterning_frame.exposure_progress['value'] = round(exposure_progress * 1000)
       self.root.update()
       return self.patterning_status == PatterningStatus.Aborting
     
-    #duration = duration_intput.get() # TODO:
-    # TODO: Duration
-    duration = 8000
+    duration = self.exposure_frame.exposure_time_entry.get()
     
     self.pattern_progress['value'] = 0
     self.pattern_progress['maximum'] = 1
@@ -370,8 +432,14 @@ class LithographerGui:
     else:
       print("Done")
     self.change_patterning_status(PatterningStatus.Idle)
+  
+  def autofocus(self):
+    self.hardware.stage.move_by({ 'z': -100.0 })
 
-# attach cleanup function to GUI close event
+
+import camera.amscope.amscope_camera as amscope_camera
+#import camera.flir.flir_camera as flir 
+
 
 def main():
   with open('default.toml', 'rb') as f:
@@ -381,16 +449,17 @@ def main():
   if stage_config['enabled']:
     serial_port = serial.Serial(stage_config['port'], stage_config['baud-rate'])
     print(f'Using serial port {serial_port.name}')
-    stage = GrblStage(serial_port, bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
+    stage = GrblStage(serial_port, stage_config['scale-factor'], bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
   else:
     stage = StageController()
 
   camera_config = config['camera']
   if camera_config['enabled']:
-    print('TODO: Use camera')
-  #  setup_camera_from_py()
+    # TODO: Why doesn't this import properly?
+    #lithographer = LithographerGui(stage, flir.FlirCamera())
+    pass
 
-  lithographer = LithographerGui(stage)
+  lithographer = LithographerGui(stage, Webcam())
   lithographer.root.mainloop()
 
 main()

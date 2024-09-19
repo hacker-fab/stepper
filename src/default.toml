@@ -5,4 +5,4 @@ enabled = false
 enabled = false
 port = "COM6"
 baud-rate = 115200
-scale-factor = 0.0128534 # 50 steps / 3890 microns
+scale-factor = 0.0128534 # 50 units / 3890 microns

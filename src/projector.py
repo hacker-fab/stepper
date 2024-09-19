@@ -69,7 +69,7 @@ class TkProjector(ProjectorController):
             end = time() + duration / 1000
 
             while time() < end:
-                progress = 1.0 - ((end - time()) / duration)
+                progress = 1.0 - ((end - time()) * 1000 / duration)
                 if update_func is not None:
                     update_func(progress)
             self.clear()

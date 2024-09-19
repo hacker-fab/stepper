@@ -21,38 +21,44 @@ class GrblStage(StageController):
     # controller_target must be an open file (may be serial port for example)
     def __init__(self, 
                  controller_target, 
+                 scale_factor: float, # units per micron
                  bounds: tuple[tuple[float,float],tuple[float,float],tuple[float,float]] = ((-10,10),(-10,10),(-10,10)), 
-                 # axes: tuple[str] = ('x','y','z'),
-                 position: List[float]=[0,0,0]):
+                 ):
         self.controller_target = controller_target
+        self.scale_factor = scale_factor
 
         try:
             # set origin based on initial position
-            self.controller_target.write(bytes(f'G92 {-position[0]} {-position[1]} {-position[2]}\n', encoding='utf-8')) 
+            self.controller_target.write(b'G92 0 0 0\n') 
         except:
             print(f'Error: Could not open motor control file "{controller_target}"')
 
-        if len(position) == len(bounds): # == len(axes):
-            self.bounds = bounds
-            self.axes = ('x', 'y', 'z')
-            self.position = position
-        else:
-            # this should never be printed under current logic
-            print('Error: Axes, bounds, and/or position tuples have mismatching dimensions.')
+        self.bounds = bounds
+        self.axes = ('x', 'y', 'z')
+        self.position = [0.0, 0.0, 0.0]
 
         for b in bounds:
             assert b[0] <= b[1]
 
     def __del__(self):
         self.controller_target.write(b'G91\n') # set to relative mode for safety
+    
+    def _move_relative(self, microns: tuple[float, float, float]):
+        x, y, z = tuple(m * self.scale_factor for m in microns)
+        self.controller_target.write(b'G91\n') # set relative movement mode
+        self.controller_target.write(bytes(f'G0 x{x} y{y} z{z}\n', encoding='utf-8')) # move by this amount
+    
+    def _move_absolute(self, microns: tuple[float, float, float]):
+        x, y, z = tuple(m * self.scale_factor for m in microns)
+        self.controller_target.write(b'G90\n') # set absolute movement mode
+        self.controller_target.write(bytes(f'G0 x{x} y{y} z{z}\n', encoding='utf-8')) # move by this amount
 
     # pass in list of amounts to move by. Dictionary in "axis: amount" format
     def move_by(self, amounts: dict[str, float]):
         # first make sure axes are valid
         if self.__axes_valid__(list(amounts.keys())):
             x, y, z = self.__adjust_coordinates__(amounts, True)
-            self.controller_target.write(b'G91\n') # set relative movement mode
-            self.controller_target.write(bytes(f'G0 x{x} y{y} z{z}\n', encoding='utf-8')) # move by this amount
+            self._move_relative((x, y, z))
             # if that worked, update internal position
             self.position[0] += x
             self.position[1] += y
@@ -61,13 +67,11 @@ class GrblStage(StageController):
         else:
             print('Error: tried to move on invalid axis')
 
-
     def move_to(self, amounts: dict[str, float]):
         # first make sure axes are valid
         if self.__axes_valid__(list(amounts.keys())):
             x, y, z = self.__adjust_coordinates__(amounts, False)
-            self.controller_target.write(b'G90\n') # set absolute movement mode
-            self.controller_target.write(bytes(f'G0 x{x} y{y} z{z}\n', encoding='utf-8')) # move by this amount
+            self._move_absolute((x, y, z))
             # if that worked, update internal position
             self.position[0] = x
             self.position[1] = y
