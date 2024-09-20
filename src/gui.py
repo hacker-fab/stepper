@@ -1,5 +1,5 @@
 import serial
-import tomllib
+#import tomllib
 import cv2
 from functools import partial
 from hardware import Lithographer, ImageProcessSettings, StageWrapper
@@ -15,6 +15,7 @@ from lithographer_lib.gui_lib import IntEntry, Thumbnail
 from lithographer_lib.img_lib import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar
+import numpy
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int,int] = (160,90)
@@ -75,7 +76,7 @@ class EventDispatcher:
     self.shown_image_change_listeners.append(listener)
 
 class CameraFrame:
-  def __init__(self, parent, c: CameraModule):
+  def __init__(self, parent, stage, c: CameraModule):
     self.frame = ttk.Frame(parent)
     self.label = ttk.Label(self.frame, text='live hackerfab reaction')
     self.label.grid(row=0, column=0)
@@ -83,6 +84,8 @@ class CameraFrame:
 
     self.gui_img = None
     self.camera = c
+    self.stage = stage
+    self.last_pos = self.p()
 
     def cameraCallback(image, dimensions, format):
       self.gui_camera_preview(image, dimensions)
@@ -94,6 +97,9 @@ class CameraFrame:
       self.camera.setStreamCaptureCallback(cameraCallback)
       if not self.camera.startStreamCapture():
         print('Failed to start stream capture for camera')
+
+  def p(self):
+    return (self.stage.stage_position['x'], self.stage.stage_position['y'], self.stage.stage_position['z'])
   
   def cleanup(self):
     self.camera.close()
@@ -101,10 +107,18 @@ class CameraFrame:
   def gui_camera_preview(self, camera_image, dimensions):
     img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
     img_lapl = cv2.Laplacian(img, cv2.CV_64F)
+    avg = numpy.average(img)
     focus_score = img_lapl.var()
     self.image_focus = focus_score
+    print(f'Focus score {self.image_focus / avg}')
+
 
     pil_img = Image.fromarray(camera_image, mode='RGB')
+
+	
+    x,y,z=self.p()
+    pil_img.save(f'img_{x}_{y}_{z}.png')
+
     new_size = fit_image(pil_img, (600, 400))
     self.gui_img = image_to_tk_image(pil_img.resize(new_size))
     self.label.configure(image=self.gui_img) # type:ignore
@@ -318,7 +332,7 @@ class LithographerGui:
       lambda coords: self.hardware.stage.move_to(coords, commit=True)
     )
 
-    self.camera = CameraFrame(self.root, camera)
+    self.camera = CameraFrame(self.root, self.hardware.stage, camera)
     self.camera.frame.grid(row=0, column=0)
 
     self.bottom_panel = ttk.Frame(self.root)
@@ -438,12 +452,17 @@ class LithographerGui:
 
 
 import camera.amscope.amscope_camera as amscope_camera
-#import camera.flir.flir_camera as flir 
+import camera.flir.flir_camera as flir 
 
 
 def main():
-  with open('default.toml', 'rb') as f:
-    config = tomllib.load(f)
+  #with open('default.toml', 'rb') as f:
+  #  config = tomllib.load(f)
+  config = {
+    'stage': { 'enabled': True, 'port': 'COM3', 'baud-rate': 115200, 'scale-factor': 0.0128534 },
+    'camera': { 'enabled': True }
+  }
+	
 
   stage_config = config['stage']
   if stage_config['enabled']:
@@ -455,11 +474,11 @@ def main():
 
   camera_config = config['camera']
   if camera_config['enabled']:
-    # TODO: Why doesn't this import properly?
-    #lithographer = LithographerGui(stage, flir.FlirCamera())
-    pass
+    camera = flir.FlirCamera()
+  else:
+    camera = Webcam()
 
-  lithographer = LithographerGui(stage, Webcam())
+  lithographer = LithographerGui(stage, camera)
   lithographer.root.mainloop()
 
 main()

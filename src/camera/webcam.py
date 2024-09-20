@@ -11,7 +11,7 @@ class Webcam(CameraModule):
         self.should_stop = threading.Event()
     
     def open(self):
-        self.camera = cv2.VideoCapture(1)
+        self.camera = cv2.VideoCapture(0)
         return self.camera.isOpened()
     
     def close(self):
