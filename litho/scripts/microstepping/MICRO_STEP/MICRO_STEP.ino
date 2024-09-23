@@ -16,7 +16,7 @@ int EN = 8;  // Change the stepper enable pin to match CNC Shield
 #define STEP_X 2
 #define DIR_Y 6
 #define STEP_Y 3
-#define MICROSTEPSX 2
+#define MICROSTEPSX 1
 #define MICROSTEPSY 16
 #define MOTOR_STEPS 400
 
@@ -28,7 +28,6 @@ void setup() {
   // Set up control pins
   pinMode(EN, OUTPUT);
   digitalWrite(EN, LOW);
-  numMessages, endBytes = 0;
   Serial.begin(9600);
   mySerial.begin(9600);
   // Set up default microsteps
