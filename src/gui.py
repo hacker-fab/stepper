@@ -1,6 +1,8 @@
 import serial
 #import tomllib
 import cv2
+import numpy as np
+import time
 from functools import partial
 from hardware import Lithographer, ImageProcessSettings, StageWrapper
 from typing import Callable, List, Optional
@@ -105,22 +107,18 @@ class CameraFrame:
     self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
-    img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
-    img_lapl = cv2.Laplacian(img, cv2.CV_64F)
-    avg = numpy.average(img)
-    focus_score = img_lapl.var()
-    self.image_focus = focus_score
-    print(f'Focus score {self.image_focus / avg}')
+    resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
 
+    start_time = time.time()
+    img = cv2.cvtColor(resized_img, cv2.COLOR_RGB2GRAY)
+    img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+    mean = np.sum(img) / (img.shape[0] * img.shape[1])
+    img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
+    self.image_focus = img_lapl.var() / mean
+    end_time = time.time()
+    print(f'Took {(end_time - start_time)*1000}ms to process')
 
-    pil_img = Image.fromarray(camera_image, mode='RGB')
-
-	
-    x,y,z=self.p()
-    pil_img.save(f'img_{x}_{y}_{z}.png')
-
-    new_size = fit_image(pil_img, (600, 400))
-    self.gui_img = image_to_tk_image(pil_img.resize(new_size))
+    self.gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
     self.label.configure(image=self.gui_img) # type:ignore
 
 class StagePositionFrame:
