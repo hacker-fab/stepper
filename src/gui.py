@@ -41,10 +41,12 @@ class Event(Enum):
   StageSetRequest = 'stagesetrequest'
   ImportPattern = 'importpattern'
   ImportRedFocus = 'importredfocus'
+  ImportUvFocus = 'importuvfocus'
   PosterizeChange = 'posterizechange'
   BeginPatterning = 'beginpatterning'
   AbortPatterning = 'abortpatterning'
   ChangePatterningStatus = 'changepatterningstatus'
+  AutoFocus = 'autofocus'
 
 class EventDispatcher:
   shown_image_change_listeners: List[OnShownImageChange]
@@ -81,7 +83,7 @@ class CameraFrame:
   def __init__(self, parent, stage, c: CameraModule):
     self.frame = ttk.Frame(parent)
     self.label = ttk.Label(self.frame, text='live hackerfab reaction')
-    self.label.grid(row=0, column=0)
+    self.label.grid(row=0, column=0, sticky='nesw')
     self.image_focus = 0
 
     self.gui_img = None
@@ -107,19 +109,21 @@ class CameraFrame:
     self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
-    resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
-
     start_time = time.time()
-    img = cv2.cvtColor(resized_img, cv2.COLOR_RGB2GRAY)
+    resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
+    img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
     self.image_focus = img_lapl.var() / mean
     end_time = time.time()
-    print(f'Took {(end_time - start_time)*1000}ms to process')
+    #print(f'Took {(end_time - start_time)*1000}ms to process')
+    print(self.image_focus)
 
-    self.gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
-    self.label.configure(image=self.gui_img) # type:ignore
+    resized_img = cv2.resize(resized_img, (0, 0), fx=0.5, fy=0.5)
+    gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
+    self.label.configure(image=gui_img) # type:ignore
+    self.gui_img = gui_img
 
 class StagePositionFrame:
   def __init__(self, parent, stage: StageWrapper, event_dispatcher: EventDispatcher):
@@ -195,7 +199,7 @@ class MultiImageSelectFrame:
 
     self.pattern_frame = ImageSelectFrame(self.frame, 'Show pattern', lambda t: event_dispatcher.on_event(Event.ImportPattern), event_dispatcher.on_shown_image_change_cb(ShownImage.Pattern))
     self.red_focus_frame = ImageSelectFrame(self.frame, 'Show Red Focus', lambda t: event_dispatcher.on_event(Event.ImportRedFocus), event_dispatcher.on_shown_image_change_cb(ShownImage.RedFocus))
-    self.uv_focus_frame = ImageSelectFrame(self.frame, 'Show UV Focus', None, event_dispatcher.on_shown_image_change_cb(ShownImage.UvFocus))
+    self.uv_focus_frame = ImageSelectFrame(self.frame, 'Show UV Focus', lambda t: event_dispatcher.on_event(Event.ImportUvFocus), event_dispatcher.on_shown_image_change_cb(ShownImage.UvFocus))
 
     self.pattern_frame.frame.grid(row=0, column=0)
     self.red_focus_frame.frame.grid(row=1, column=0)
@@ -208,6 +212,9 @@ class MultiImageSelectFrame:
   
   def red_focus_image(self):
     return self.red_focus_frame.thumb.image
+
+  def uv_focus_image(self):
+    return self.uv_focus_frame.thumb.image
   
   def highlight_button(self, which: ShownImage):
     # TODO:
@@ -278,6 +285,9 @@ class PatterningFrame:
 
     self.set_image(Image.new('RGB', (1, 1)))
 
+    self.autofocus_button = ttk.Button(self.frame, text='Autofocus', command=event_dispatcher.on_event_cb(Event.AutoFocus))
+    self.autofocus_button.grid(row=5, column=0, sticky='ew')
+
     def on_change_patterning_status(status: PatterningStatus):
       if status == PatterningStatus.Idle:
         self.begin_patterning_button['state'] = 'normal'
@@ -313,8 +323,11 @@ class LithographerGui:
 
     self.event_dispatcher.add_event_listener(Event.ImportPattern, lambda: self.refresh_pattern())
     self.event_dispatcher.add_event_listener(Event.ImportRedFocus, lambda: self.refresh_red_focus())
+    self.event_dispatcher.add_event_listener(Event.ImportUvFocus, lambda: self.refresh_uv_focus())
     self.event_dispatcher.add_event_listener(Event.PosterizeChange, lambda: self.refresh_pattern())
     self.event_dispatcher.add_event_listener(Event.PosterizeChange, lambda: self.refresh_red_focus())
+    self.event_dispatcher.add_event_listener(Event.PosterizeChange, lambda: self.refresh_uv_focus())
+    self.event_dispatcher.add_event_listener(Event.AutoFocus, lambda: self.autofocus())
 
     self.shown_image = ShownImage.Clear
 
@@ -367,6 +380,16 @@ class LithographerGui:
     ))
 
     self.patterning_frame.set_image(self.hardware.pattern.processed())
+
+  def refresh_uv_focus(self):
+    self.hardware.uv_focus.update(image=self.multi_image_select_frame.uv_focus_image(), settings=ImageProcessSettings(
+      posterization=self.exposure_frame.posterize_strength(),
+      flatfield=None,
+      color_channels=(False, False, True),
+      size=self.hardware.projector.size()
+    ))
+
+    self.patterning_frame.set_image(self.hardware.uv_focus.processed())
 
   def refresh_red_focus(self):
     self.hardware.red_focus.update(image=self.multi_image_select_frame.red_focus_image(), settings=ImageProcessSettings(
@@ -446,7 +469,41 @@ class LithographerGui:
     self.change_patterning_status(PatterningStatus.Idle)
   
   def autofocus(self):
+    def non_blocking_delay(t):
+      start = time.time()
+      while time.time() - start < t:
+        self.root.update()
+
+
+    print('Starting autofocus')
+
     self.hardware.stage.move_by({ 'z': -100.0 })
+
+    non_blocking_delay(1.0)
+
+    last_focus = self.camera.image_focus
+    for i in range(30):
+      self.hardware.stage.move_by({ 'z': 10.0 })
+      non_blocking_delay(0.5)
+      if last_focus > self.camera.image_focus:
+        print(f'Successful coarse autofocus {i}')
+        break
+      last_focus = self.camera.image_focus
+
+    self.hardware.stage.move_by({ 'z': -20.0 })
+    non_blocking_delay(1.0)
+    last_focus = self.camera.image_focus
+    for i in range(30):
+      self.hardware.stage.move_by({ 'z': 2.0 })
+      non_blocking_delay(0.5)
+      if last_focus > self.camera.image_focus:
+        print(f'Successful fine autofocus {i}')
+        break
+      last_focus = self.camera.image_focus
+
+    self.hardware.stage.move_by({ 'z': -2.0 })
+
+    print('Finished autofocus')
 
 
 import camera.amscope.amscope_camera as amscope_camera
