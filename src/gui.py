@@ -3,6 +3,8 @@ import serial
 import cv2
 import numpy as np
 import time
+import queue
+from datetime import datetime
 from functools import partial
 from hardware import Lithographer, ImageProcessSettings, StageWrapper
 from typing import Callable, List, Optional
@@ -16,8 +18,9 @@ from enum import Enum
 from lithographer_lib.gui_lib import IntEntry, Thumbnail
 from lithographer_lib.img_lib import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
-from tkinter import ttk, Tk, BooleanVar, IntVar
 import numpy
+from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar
+
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int,int] = (160,90)
@@ -47,6 +50,7 @@ class Event(Enum):
   AbortPatterning = 'abortpatterning'
   ChangePatterningStatus = 'changepatterningstatus'
   AutoFocus = 'autofocus'
+  Snapshot = 'snapshot'
 
 class EventDispatcher:
   shown_image_change_listeners: List[OnShownImageChange]
@@ -79,12 +83,63 @@ class EventDispatcher:
   def add_shown_image_change_listener(self, listener: OnShownImageChange):
     self.shown_image_change_listeners.append(listener)
 
+class SnapshotFrame:
+  '''
+  Presents a frame with a filename entry and a button to save screenshots of the current camera view.
+  '''
+
+  def __init__(self, parent, event_dispatcher: EventDispatcher):
+    self.frame = ttk.Frame(parent)
+    self.frame.grid(row=1, column=0)
+    
+    # TODO: Allow %X, %Y, %Z formats to save position on chip
+    self.name_var = StringVar(value='output_%T.png')
+    self.name_var.trace_add('write', lambda _a, _b, _c: self._refresh_name_preview())
+
+    self.counter = 0
+
+    self.name_entry = ttk.Entry(self.frame, textvariable=self.name_var)
+    self.name_entry.grid(row=0, column=0)
+
+    self.name_preview = ttk.Label(self.frame)
+    self.name_preview.grid(row=0, column=1)
+
+    def on_snapshot_button():
+      event_dispatcher.on_event(Event.Snapshot, self._next_filename())
+      self.counter += 1
+      self._refresh_name_preview()
+
+    self.button = ttk.Button(self.frame, text='Take Snapshot', command=on_snapshot_button)
+    self.button.grid(row=0, column=2)
+
+    self._refresh_name_preview()
+  
+  def _next_filename(self):
+    counter_str = str(self.counter)
+    time_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+
+    name = self.name_var.get()
+    name = name.replace('%C', counter_str).replace('%c', counter_str)
+    name = name.replace('%T', time_str).replace('%t', time_str)
+    return name
+
+  def _refresh_name_preview(self):
+    self.name_preview.configure(text=f'Output File: {self._next_filename()}')
+
+
 class CameraFrame:
-  def __init__(self, parent, stage, c: CameraModule):
+  def __init__(self, parent, stage, event_dispatcher: EventDispatcher, c: CameraModule):
     self.frame = ttk.Frame(parent)
     self.label = ttk.Label(self.frame, text='live hackerfab reaction')
     self.label.grid(row=0, column=0, sticky='nesw')
+    
+    self.snapshot = SnapshotFrame(self.frame, event_dispatcher)
+    self.snapshot.frame.grid(row=1, column=0)
+
     self.image_focus = 0
+
+    self.snapshots_pending = queue.Queue()
+    event_dispatcher.add_event_listener(Event.Snapshot, lambda filename: self.snapshots_pending.put(filename))
 
     self.gui_img = None
     self.camera = c
@@ -92,6 +147,14 @@ class CameraFrame:
     self.last_pos = self.p()
 
     def cameraCallback(image, dimensions, format):
+      try:
+        filename = self.snapshots_pending.get_nowait()
+        print(f'Saving image {filename}')
+        img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        cv2.imwrite(filename, img)
+      except queue.Empty:
+        pass
+
       self.gui_camera_preview(image, dimensions)
 
     if not self.camera.open():
@@ -343,7 +406,7 @@ class LithographerGui:
       lambda coords: self.hardware.stage.move_to(coords, commit=True)
     )
 
-    self.camera = CameraFrame(self.root, self.hardware.stage, camera)
+    self.camera = CameraFrame(self.root, self.hardware.stage, self.event_dispatcher, camera)
     self.camera.frame.grid(row=0, column=0)
 
     self.bottom_panel = ttk.Frame(self.root)
