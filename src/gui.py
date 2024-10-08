@@ -38,25 +38,145 @@ class PatterningStatus(Enum):
 OnShownImageChange = Callable[[ShownImage], None]
 
 class Event(Enum):
-  StageOffsetRequest = 'stageoffsetrequest'
-  StageSetRequest = 'stagesetrequest'
-  ImportPattern = 'importpattern'
-  ImportRedFocus = 'importredfocus'
-  PosterizeChange = 'posterizechange'
-  BeginPatterning = 'beginpatterning'
-  AbortPatterning = 'abortpatterning'
-  ChangePatterningStatus = 'changepatterningstatus'
   Snapshot = 'snapshot'
 
+  EnterRedMode = 'enterredmode'
+  EnterUvMode = 'enteruvmode'
+
+  ShownImageChanged = 'shownimagechanged'
+  StagePositionChanged = 'stagepositionchanged'
+  PatternImageChanged = 'patternimagechanged'
+  MovementLockChanged = 'movementlockchanged'
+  ExposurePatternProgressChanged = 'exposurepatternprogresschanged'
+  PatterningBusyChanged = 'patterningbusychanged'
+
+class MovementLock(Enum):
+  '''Disables or enables moving the stage position manually'''
+  Unlocked = 'unlocked'
+  '''X, Y, and Z are free to move'''
+  XYLocked = 'xylocked'
+  '''Only Z (focus) is free to move to avoid smearing UV focus pattern'''
+  Locked = 'locked'
+  '''No positions can move to avoid disrupting patterning'''
+
 class EventDispatcher:
-  shown_image_change_listeners: List[OnShownImageChange]
+  hardware: Lithographer
 
   listeners: dict[Event, List[Callable]]
 
-  def __init__(self):
-    self.shown_image_change_listeners = []
-    self.change_patterning_status_listeners = []
+  exposure_time: int
+  posterize_strength: Optional[int]
+  patterning_progress: float # ranges from 0.0 to 1.0
+
+  shown_image: ShownImage
+  autofocus_busy: bool
+  patterning_busy: bool
+
+  pattern_image: Image.Image
+  red_focus_image: Image.Image
+  uv_focus_image: Image.Image
+
+  def __init__(self, stage, proj, root):
     self.listeners = dict()
+
+    self.hardware = Lithographer(stage, proj) # TODO:
+
+    self.root = root
+
+    self.posterize_strength = None
+
+    self.shown_image = ShownImage.Clear
+    self.autofocus_busy = False
+
+  def _update_projector(self):
+    match self.shown_image:
+      case ShownImage.Clear:
+        self.hardware.projector.clear()
+      case ShownImage.RedFocus:
+        # TODO:
+        pass
+
+  def _refresh_pattern(self):
+    self.hardware.pattern.update(image=self.pattern_image, settings=ImageProcessSettings(
+      posterization=self.posterize_strength,
+      flatfield=None,
+      color_channels=(False, False, True),
+      size=self.hardware.projector.size()
+    ))
+
+    self.on_event(Event.PatternImageChanged)
+
+  def _refresh_red_focus(self):
+    self.hardware.red_focus.update(image=self.red_focus_image, settings=ImageProcessSettings(
+      posterization=self.posterize_strength,
+      flatfield=None,
+      color_channels=(True, False, False),
+      size=self.hardware.projector.size()
+    ))
+
+    if self.shown_image == ShownImage.RedFocus:
+      self.on_event(Event.ShownImageChanged)
+  
+  def _refresh_uv_focus(self):
+    # TODO:
+
+    if self.shown_image == ShownImage.UvFocus:
+      self.on_event(Event.ShownImageChanged)
+  
+  def set_posterize_strength(self, strength):
+    self.posterize_strength = strength
+    self._refresh_red_focus()
+    self._refresh_uv_focus()
+    self._refresh_pattern()
+  
+  def set_shown_image(self, shown_image: ShownImage):
+    self.shown_image = shown_image
+    self.on_event(Event.ShownImageChanged)
+  
+  def set_stage_position(self, x: float, y: float, z: float):
+    print('TODO: Actually set stage position')
+    self.hardware.stage.move_to({ 'x': x, 'y': y, 'z': z }, commit=True)
+    self.on_event(Event.StagePositionChanged)
+  
+  def set_pattern_image(self, img: Image.Image):
+    self.pattern_image = img
+    self._refresh_pattern()
+  
+  def set_red_focus_image(self, img: Image.Image):
+    self.red_focus_image = img
+    self._refresh_red_focus()
+  
+  def set_uv_focus_image(self, img: Image.Image):
+    self.uv_focus_image = img
+    self._refresh_uv_focus()
+  
+  def set_patterning_busy(self, busy: bool):
+    self.patterning_busy = busy
+    self.on_event(Event.MovementLockChanged)
+    self.on_event(Event.PatterningBusyChanged)
+
+  def set_progress(self, pattern_progress: float, exposure_progress: float):
+    self.patterning_progress = pattern_progress
+    self.exposure_progress = exposure_progress
+    self.on_event(Event.ExposurePatternProgressChanged)
+  
+  def abort_patterning(self):
+    self.should_abort = True
+    print('Aborting patterning')
+  
+  def stage_position(self):
+    pos = self.hardware.stage.stage_position
+    return (pos['x'], pos['y'], pos['z'])
+    
+  def movement_lock(self):
+    if self.patterning_busy:
+      return MovementLock.Locked
+    elif self.autofocus_busy:
+      return MovementLock.XYLocked
+    elif self.shown_image == ShownImage.UvFocus or self.shown_image == ShownImage.Pattern:
+      return MovementLock.XYLocked
+    else:
+      return MovementLock.Unlocked
 
   def on_event(self, event: Event, *args, **kwargs):
     for l in self.listeners[event]:
@@ -69,15 +189,35 @@ class EventDispatcher:
     if event not in self.listeners:
       self.listeners[event] = []
     self.listeners[event].append(listener)
+  
+  def begin_patterning(self):
+    # TODO: Update patterning preview
 
-  def on_shown_image_change_cb(self, shown_image: ShownImage):
-    def callback():
-      for l in self.shown_image_change_listeners:
-        l(shown_image)
-    return callback
+    print('Patterning at ', self.hardware.stage.stage_position)
 
-  def add_shown_image_change_listener(self, listener: OnShownImageChange):
-    self.shown_image_change_listeners.append(listener)
+    def update_func(exposure_progress):
+      self.set_progress(0.0, exposure_progress)
+      self.root.update()
+      return self.should_abort
+    
+    duration = self.exposure_time
+    
+    print(f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration)/1000))}s")
+
+    self.set_patterning_busy(True)
+    self.set_progress(0.0, 0.0)
+    self.hardware.do_pattern(0, 0, duration, update_func=update_func)
+    self.set_progress(1.0, 1.0)
+    self.set_patterning_busy(False)
+
+    if self.should_abort:
+      print('Patterning aborted')
+      self.should_abort = False
+
+
+
+
+
 
 class SnapshotFrame:
   '''
@@ -172,17 +312,20 @@ class CameraFrame:
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
     self.image_focus = img_lapl.var() / mean
     end_time = time.time()
-    print(f'Took {(end_time - start_time)*1000}ms to process')
+    #print(f'Took {(end_time - start_time)*1000}ms to process')
 
     self.gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
     self.label.configure(image=self.gui_img) # type:ignore
 
 class StagePositionFrame:
-  def __init__(self, parent, stage: StageWrapper, event_dispatcher: EventDispatcher):
+  def __init__(self, parent, event_dispatcher: EventDispatcher):
     self.frame = ttk.Frame(parent)
 
     self.position_intputs = []
     self.step_size_intputs = []
+
+    self.xy_widgets = []
+    self.z_widgets = []
 
     # Absolute
 
@@ -192,13 +335,13 @@ class StagePositionFrame:
     for i, coord in ((0, 'x'), (1, 'y'), (2, 'z')):
       self.position_intputs.append(IntEntry(parent=self.absolute_frame, default=0))
       self.position_intputs[-1].widget.grid(row=0,column=i)
-
+    
     def callback_set():
-      x, y, z = self.position()
-      event_dispatcher.on_event(Event.StageSetRequest, { 'x': x, 'y': y, 'z': z })
+      x, y, z = self._position()
+      event_dispatcher.set_stage_position(x, y, z)
 
-    set_position_button = ttk.Button(self.absolute_frame, text='Set Stage Position', command=callback_set)
-    set_position_button.grid(row=1, column=0, columnspan=3, sticky='ew')
+    self.set_position_button = ttk.Button(self.absolute_frame, text='Set Stage Position', command=callback_set)
+    self.set_position_button.grid(row=1, column=0, columnspan=3, sticky='ew')
 
     # Relative 
 
@@ -210,11 +353,13 @@ class StagePositionFrame:
       self.step_size_intputs[-1].widget.grid(row=3,column=i)
 
       def callback_pos(index, c):
-        event_dispatcher.on_event(Event.StageOffsetRequest, { c:  self.step_sizes()[index] })
-        self.position_intputs[index].set(stage.stage_position[c])
+        pos = list(event_dispatcher.stage_position())
+        pos[index] += self.step_sizes()[index]
+        event_dispatcher.set_stage_position(*pos)
       def callback_neg(index, c):
-        event_dispatcher.on_event(Event.StageOffsetRequest, { c: -self.step_sizes()[index] })
-        self.position_intputs[index].set(stage.stage_position[c])
+        pos = list(event_dispatcher.stage_position())
+        pos[index] -= self.step_sizes()[index]
+        event_dispatcher.set_stage_position(*pos)
 
       coord_inc_button = ttk.Button(self.relative_frame, text=f'+{coord.upper()}', command=partial(callback_pos, i, coord))
       coord_dec_button = ttk.Button(self.relative_frame, text=f'-{coord.upper()}', command=partial(callback_neg, i, coord))
@@ -222,13 +367,50 @@ class StagePositionFrame:
       coord_inc_button.grid(row=0, column=i)
       coord_dec_button.grid(row=1, column=i)
 
+      if i in (0, 1):
+       self.xy_widgets.append(coord_inc_button)
+       self.xy_widgets.append(coord_dec_button)
+       self.xy_widgets.append(self.position_intputs[i].widget)
+       self.xy_widgets.append(self.step_size_intputs[i].widget)
+      else:
+        self.z_widgets.append(coord_inc_button)
+        self.z_widgets.append(coord_dec_button)
+        self.xy_widgets.append(self.position_intputs[i].widget)
+        self.xy_widgets.append(self.step_size_intputs[i].widget)
+
     ttk.Label(self.relative_frame, text='Step Size (microns)', anchor='center').grid(row=2, column=0, columnspan=3, sticky='ew')
-    
+
+    self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
+
+    def on_lock_change():
+      lock = event_dispatcher.movement_lock()
+      match lock:
+        case MovementLock.Unlocked:
+          for w in self.all_widgets:
+            w.configure(state='normal')
+        case MovementLock.XYLocked:
+          for w in self.xy_widgets:
+            w.configure(state='disabled')
+          for w in self.z_widgets:
+            w.configure(state='disabled')
+          self.set_position_button.configure(state='normal')
+        case MovementLock.Locked:
+          for w in self.all_widgets:
+            w.configure(state='disabled')
+
+    event_dispatcher.add_event_listener(Event.MovementLockChanged, on_lock_change)
+
+    def on_position_change():
+      pos = event_dispatcher.stage_position()
+      for i in range(3):
+        self.position_intputs[i].set(pos[i])
+
+    event_dispatcher.add_event_listener(Event.StagePositionChanged, on_position_change)
   
-  def position(self) -> tuple[int, int, int]:
+  def _position(self) -> tuple[int, int, int]:
     return tuple(intput.get() for intput in self.position_intputs)
   
-  def set_position(self, pos: tuple[int, int, int]):
+  def _set_position(self, pos: tuple[int, int, int]):
     for i in range(3):
       self.position_intputs[i].set(pos[i])
   
@@ -249,21 +431,41 @@ class MultiImageSelectFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
     self.frame = ttk.Frame(parent)
 
-    self.pattern_frame = ImageSelectFrame(self.frame, 'Show pattern', lambda t: event_dispatcher.on_event(Event.ImportPattern), event_dispatcher.on_shown_image_change_cb(ShownImage.Pattern))
-    self.red_focus_frame = ImageSelectFrame(self.frame, 'Show Red Focus', lambda t: event_dispatcher.on_event(Event.ImportRedFocus), event_dispatcher.on_shown_image_change_cb(ShownImage.RedFocus))
-    self.uv_focus_frame = ImageSelectFrame(self.frame, 'Show UV Focus', None, event_dispatcher.on_shown_image_change_cb(ShownImage.UvFocus))
+    def show_cb(img):
+      def cb():
+        event_dispatcher.set_shown_image(img)
+      return cb
+
+    self.pattern_frame   = ImageSelectFrame(
+      self.frame, 'Show pattern',
+      lambda t: event_dispatcher.set_pattern_image(self.pattern_image()),
+      show_cb(ShownImage.Pattern)
+    )
+    self.red_focus_frame = ImageSelectFrame(
+      self.frame, 'Show Red Focus',
+      lambda t: event_dispatcher.set_red_focus_image(self.red_focus_image()),
+      show_cb(ShownImage.RedFocus)
+    )
+    self.uv_focus_frame = ImageSelectFrame(
+      self.frame, 'Show UV Focus',
+      lambda t: event_dispatcher.set_uv_focus_image(self.uv_focus_image()),
+      show_cb(ShownImage.UvFocus)
+    )
 
     self.pattern_frame.frame.grid(row=0, column=0)
     self.red_focus_frame.frame.grid(row=1, column=0)
     self.uv_focus_frame.frame.grid(row=1, column=1)
 
-    event_dispatcher.add_shown_image_change_listener(lambda img: self.highlight_button(img))
+    event_dispatcher.add_event_listener(Event.ShownImageChanged, lambda: self.highlight_button(event_dispatcher.shown_image))
   
   def pattern_image(self):
     return self.pattern_frame.thumb.image
   
   def red_focus_image(self):
     return self.red_focus_frame.thumb.image
+  
+  def uv_focus_image(self):
+    return self.uv_focus_frame.thumb.image
   
   def highlight_button(self, which: ShownImage):
     # TODO:
@@ -276,13 +478,17 @@ class ExposureFrame:
     self.frame.columnconfigure(0, weight=1)
 
     ttk.Label(self.frame, text='Exposure Time (ms)', anchor='w').grid(row=0, column=0)
-    self.exposure_time_entry = IntEntry(self.frame, default=1000, min_value=0)
+    self.exposure_time_entry = IntEntry(self.frame, default=8000, min_value=0)
     self.exposure_time_entry.widget.grid(row=0, column=1, columnspan=2, sticky='nesw')
+
+    def on_exposure_time_change(_a, _b, _c):
+      event_dispatcher.exposure_time = self.exposure_time_entry._var.get()
+    self.exposure_time_entry._var.trace_add('write', on_exposure_time_change)
 
     # Posterization
 
     def on_posterize_change(*args):
-      event_dispatcher.on_event(Event.PosterizeChange)
+      event_dispatcher.set_posterize_strength(self._posterize_strength())
 
     def on_posterize_check():
       if self.posterize_enable_var.get():
@@ -309,7 +515,7 @@ class ExposureFrame:
     self.posterize_cutoff_entry.widget['state'] = 'disabled'
 
   # returns threshold percentage if posterizing is enabled, else None
-  def posterize_strength(self) -> Optional[int]:
+  def _posterize_strength(self) -> Optional[int]:
     if self.posterize_enable_var.get():
       return self.posterize_cutoff_entry.get()
     else:
@@ -322,10 +528,10 @@ class PatterningFrame:
     self.preview_tile = ttk.Label(self.frame, text='Next Pattern Tile', compound='top') # type:ignore
     self.preview_tile.grid(row=0, column=0)
 
-    self.begin_patterning_button = ttk.Button(self.frame, text='Begin Patterning', command=event_dispatcher.on_event_cb(Event.BeginPatterning), state='enabled')
+    self.begin_patterning_button = ttk.Button(self.frame, text='Begin Patterning', command=lambda: event_dispatcher.begin_patterning(), state='enabled')
     self.begin_patterning_button.grid(row=1, column=0)
 
-    self.abort_patterning_button = ttk.Button(self.frame, text='Abort Patterning', command=event_dispatcher.on_event_cb(Event.AbortPatterning), state='disabled')
+    self.abort_patterning_button = ttk.Button(self.frame, text='Abort Patterning', command=lambda: event_dispatcher.abort_patterning(), state='disabled')
     self.abort_patterning_button.grid(row=2, column=0)
 
     ttk.Label(self.frame, text='Exposure Progress', anchor='s').grid(row=3, column=0)
@@ -334,25 +540,62 @@ class PatterningFrame:
 
     self.set_image(Image.new('RGB', (1, 1)))
 
-    def on_change_patterning_status(status: PatterningStatus):
-      if status == PatterningStatus.Idle:
-        self.begin_patterning_button['state'] = 'normal'
-        self.abort_patterning_button['state'] = 'disabled'
-      elif status == PatterningStatus.Patterning:
+    def on_change_patterning_status():
+      if event_dispatcher.patterning_busy:
         self.begin_patterning_button['state'] = 'disabled'
         self.abort_patterning_button['state'] = 'normal'
+      else:
+        self.begin_patterning_button['state'] = 'normal'
+        self.abort_patterning_button['state'] = 'disabled'
 
-    event_dispatcher.add_event_listener(Event.ChangePatterningStatus, on_change_patterning_status)
+    event_dispatcher.add_event_listener(Event.PatterningBusyChanged, on_change_patterning_status)
 
   def set_image(self, img: Image.Image):
     # TODO: What is the correct size?
     self.thumb_image = image_to_tk_image(img.resize(THUMBNAIL_SIZE))
     self.preview_tile.configure(image=self.thumb_image) # type:ignore
-  
+
+class RedModeFrame:
+  def __init__(self, parent, event_dispatcher: EventDispatcher):
+    self.frame = ttk.Frame(parent, name='redmodeframe')
+
+class UvModeFrame:
+  def __init__(self, parent, event_dispatcher):
+    self.frame = ttk.Frame(parent, name='uvmodeframe')
+    self.position_label = ttk.Label(self.frame, text='Stage Position Goes Here')
+    self.position_label.grid(row=0, column=0)
+    self.exposure_frame = ExposureFrame(self.frame, event_dispatcher)
+    self.exposure_frame.frame.grid(row=0, column=1)
+    self.patterning_frame = PatterningFrame(self.frame, event_dispatcher)
+    self.patterning_frame.frame.grid(row=0, column=2)
+
+class ModeSelectFrame:
+  def __init__(self, parent, event_dispatcher: EventDispatcher):
+    self.notebook = ttk.Notebook(parent)
+
+    self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher)
+    self.notebook.add(self.red_mode_frame.frame, text='Red Mode', )
+    self.uv_mode_frame = UvModeFrame(self.notebook, event_dispatcher)
+    self.notebook.add(self.uv_mode_frame.frame, text='UV Mode')
+
+    def on_tab_change():
+      event_dispatcher.on_event(self._current_tab())
+    self.notebook.bind('<<NotebookTabChanged>>', lambda _: on_tab_change())
+   
+    def on_tab_event(evt):
+      self.notebook.select(1 if evt == Event.EnterUvMode else 0)
+
+    event_dispatcher.add_event_listener(Event.EnterRedMode, lambda: on_tab_event(Event.EnterRedMode))
+    event_dispatcher.add_event_listener(Event.EnterUvMode, lambda: on_tab_event(Event.EnterUvMode))
+
+  def _current_tab(self):
+    if 'redmode' in self.notebook.select():
+      return Event.EnterRedMode
+    else:
+      return Event.EnterUvMode
+
 class LithographerGui:
   root: Tk
-
-  hardware: Lithographer
 
   #flatfield_image: ProcessedImage
 
@@ -361,30 +604,9 @@ class LithographerGui:
   def __init__(self, stage: StageController, camera, title='Lithographer'):
     self.root = Tk()
 
-    self.event_dispatcher = EventDispatcher()
-    self.event_dispatcher.add_shown_image_change_listener(lambda img: self.on_shown_image_change(img))
-    self.event_dispatcher.add_event_listener(Event.BeginPatterning, lambda: self.begin_patterning())
-    self.event_dispatcher.add_event_listener(Event.AbortPatterning, lambda: self.change_patterning_status(PatterningStatus.Aborting))
-    self.event_dispatcher.add_event_listener(Event.ChangePatterningStatus, lambda status: self.on_change_patterning_status(status))
-
-    self.event_dispatcher.add_event_listener(Event.ImportPattern, lambda: self.refresh_pattern())
-    self.event_dispatcher.add_event_listener(Event.ImportRedFocus, lambda: self.refresh_red_focus())
-    self.event_dispatcher.add_event_listener(Event.PosterizeChange, lambda: self.refresh_pattern())
-    self.event_dispatcher.add_event_listener(Event.PosterizeChange, lambda: self.refresh_red_focus())
+    self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root)
 
     self.shown_image = ShownImage.Clear
-
-    self.hardware = Lithographer(stage, TkProjector(self.root))
-
-    self.event_dispatcher.add_event_listener(
-      Event.StageOffsetRequest,
-      lambda offsets: self.hardware.stage.move_by(offsets, commit=True)
-    )
-
-    self.event_dispatcher.add_event_listener(
-      Event.StageSetRequest,
-      lambda coords: self.hardware.stage.move_to(coords, commit=True)
-    )
 
     self.camera = CameraFrame(self.root, self.event_dispatcher, camera)
     self.camera.frame.grid(row=0, column=0)
@@ -392,13 +614,14 @@ class LithographerGui:
     self.bottom_panel = ttk.Frame(self.root)
     self.bottom_panel.grid(row=2, column=0)
 
-    self.settings_notebook = ttk.Notebook(self.bottom_panel)
-    self.stage_position_frame = StagePositionFrame(self.settings_notebook, self.hardware.stage, self.event_dispatcher)
-    self.settings_notebook.add(self.stage_position_frame.frame, text='Stage')
-    self.exposure_frame = ExposureFrame(self.settings_notebook, self.event_dispatcher)
-    self.settings_notebook.add(self.exposure_frame.frame, text='Exposure')
+    self.stage_position_frame = StagePositionFrame(self.bottom_panel, self.event_dispatcher)
+    self.stage_position_frame.frame.grid(row=0, column=1)
 
-    self.settings_notebook.grid(row=0, column=1)
+    self.mode_select_frame = ModeSelectFrame(self.bottom_panel, self.event_dispatcher)
+    self.mode_select_frame.notebook.grid(row=0, column=2)
+
+    self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
+    self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
 
     self.pattern_progress = Progressbar(self.root, orient='horizontal', mode='determinate')
     self.pattern_progress.grid(row = 1, column = 0, sticky='ew')
@@ -406,34 +629,10 @@ class LithographerGui:
     self.multi_image_select_frame = MultiImageSelectFrame(self.bottom_panel, self.event_dispatcher)
     self.multi_image_select_frame.frame.grid(row=0, column=0)
 
-    self.patterning_frame = PatterningFrame(self.bottom_panel, self.event_dispatcher)
-    self.patterning_frame.frame.grid(row=0, column=2, sticky='nesw')
-
     self.patterning_status = PatterningStatus.Idle
 
     self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
     #self.debug.info("Debug info will appear here")
-  
-  def refresh_pattern(self):
-    self.hardware.pattern.update(image=self.multi_image_select_frame.pattern_image(), settings=ImageProcessSettings(
-      posterization=self.exposure_frame.posterize_strength(),
-      flatfield=None,
-      color_channels=(False, False, True),
-      size=self.hardware.projector.size()
-    ))
-
-    self.patterning_frame.set_image(self.hardware.pattern.processed())
-
-  def refresh_red_focus(self):
-    self.hardware.red_focus.update(image=self.multi_image_select_frame.red_focus_image(), settings=ImageProcessSettings(
-      posterization=self.exposure_frame.posterize_strength(),
-      flatfield=None,
-      color_channels=(True, False, False),
-      size=self.hardware.projector.size()
-    ))
-
-    if self.shown_image == ShownImage.RedFocus:
-      self.hardware.projector.show(self.hardware.red_focus.processed())
   
   def cleanup(self):
     print("Patterning GUI closed.")
@@ -443,64 +642,6 @@ class LithographerGui:
     #if RUN_WITH_STAGE:
       #serial_port.close()
 
-  def on_shown_image_change(self, which: ShownImage):
-    self.shown_image = which
-    match which:
-      case ShownImage.Clear:
-        self.hardware.projector.clear()
-      case ShownImage.Pattern:
-        self.hardware.projector.show(self.hardware.pattern.processed())
-      #case ShownImage.Flatfield:
-      #  self.hardware.projector.show(self.hardware.flatfield.processed())
-      case ShownImage.RedFocus:
-        self.hardware.projector.show(self.hardware.red_focus.processed())
-      case ShownImage.UvFocus:
-        self.hardware.projector.show(self.hardware.uv_focus.processed())
-  
-  def change_patterning_status(self, status: PatterningStatus):
-    self.event_dispatcher.on_event(Event.ChangePatterningStatus, status)
-    self.patterning_status = status
-
-  def on_change_patterning_status(self, status: PatterningStatus, notify=False):
-    self.patterning_status = status
-
-  def begin_patterning(self):
-    # TODO: Update patterning preview
-
-    print('Patterning at ', self.hardware.stage.stage_position)
-
-    def update_func(exposure_progress):
-      self.patterning_frame.exposure_progress['value'] = round(exposure_progress * 1000)
-      self.root.update()
-      return self.patterning_status == PatterningStatus.Aborting
-    
-    duration = self.exposure_frame.exposure_time_entry.get()
-    
-    self.pattern_progress['value'] = 0
-    self.pattern_progress['maximum'] = 1
-    print(f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration)/1000))}s")
-
-    self.change_patterning_status(PatterningStatus.Patterning)
-    while True:
-      if self.patterning_status == PatterningStatus.Aborting:
-        break
-      self.patterning_frame.exposure_progress['value'] = 0
-      self.hardware.do_pattern(0, 0, duration, update_func=update_func)
-      self.patterning_frame.exposure_progress['value'] = 1000
-      if self.patterning_status == PatterningStatus.Aborting:
-        break
-
-      self.pattern_progress['value'] += 1
-      break
-
-    # give user feedback
-    self.pattern_progress['value'] = 0
-    if self.patterning_status == PatterningStatus.Aborting:
-      print("Patterning aborted")
-    else:
-      print("Done")
-    self.change_patterning_status(PatterningStatus.Idle)
-  
   def autofocus(self):
     self.hardware.stage.move_by({ 'z': -100.0 })
 
