@@ -1,5 +1,5 @@
 import serial
-import tomllib
+#import tomllib
 import cv2
 import numpy as np
 import time
@@ -19,6 +19,11 @@ from lithographer_lib.gui_lib import IntEntry, Thumbnail
 from lithographer_lib.img_lib import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar
+
+if False:
+  import camera.amscope.amscope_camera as amscope_camera
+  import camera.flir.flir_camera as flir 
+
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int,int] = (160,90)
@@ -75,6 +80,8 @@ class EventDispatcher:
   pattern_image: Image.Image
   red_focus_image: Image.Image
   uv_focus_image: Image.Image
+
+  focus_score: float
 
   def __init__(self, stage, proj, root):
     self.listeners = dict()
@@ -160,6 +167,9 @@ class EventDispatcher:
     self.exposure_progress = exposure_progress
     self.on_event(Event.ExposurePatternProgressChanged)
   
+  def set_focus_score(self, focus_score: float):
+    self.focus_score = focus_score
+  
   def abort_patterning(self):
     self.should_abort = True
     print('Aborting patterning')
@@ -213,7 +223,43 @@ class EventDispatcher:
     if self.should_abort:
       print('Patterning aborted')
       self.should_abort = False
+  
+  def autofocus(self):
+    def non_blocking_delay(t):
+      start = time.time()
+      while time.time() - start < t:
+        self.root.update()
 
+
+    print('Starting autofocus')
+
+    self.hardware.stage.move_by({ 'z': -100.0 })
+
+    non_blocking_delay(1.0)
+
+    last_focus = self.focus_score
+    for i in range(30):
+      self.hardware.stage.move_by({ 'z': 10.0 })
+      non_blocking_delay(0.5)
+      if last_focus > self.focus_score:
+        print(f'Successful coarse autofocus {i}')
+        break
+      last_focus = self.focus_score
+
+    self.hardware.stage.move_by({ 'z': -20.0 })
+    non_blocking_delay(1.0)
+    last_focus = self.focus_score
+    for i in range(30):
+      self.hardware.stage.move_by({ 'z': 2.0 })
+      non_blocking_delay(0.5)
+      if last_focus > self.focus_score:
+        print(f'Successful fine autofocus {i}')
+        break
+      last_focus = self.focus_score
+
+    self.hardware.stage.move_by({ 'z': -2.0 })
+
+    print('Finished autofocus')
 
 
 
@@ -267,7 +313,7 @@ class CameraFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule):
     self.frame = ttk.Frame(parent)
     self.label = ttk.Label(self.frame, text='live hackerfab reaction')
-    self.label.grid(row=0, column=0)
+    self.label.grid(row=0, column=0, sticky='nesw')
     
     self.snapshot = SnapshotFrame(self.frame, event_dispatcher)
     self.snapshot.frame.grid(row=1, column=0)
@@ -298,15 +344,14 @@ class CameraFrame:
       self.camera.setStreamCaptureCallback(cameraCallback)
       if not self.camera.startStreamCapture():
         print('Failed to start stream capture for camera')
-  
+
   def cleanup(self):
     self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
-    resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
-
     start_time = time.time()
-    img = cv2.cvtColor(resized_img, cv2.COLOR_RGB2GRAY)
+    resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
+    img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
@@ -314,8 +359,10 @@ class CameraFrame:
     end_time = time.time()
     #print(f'Took {(end_time - start_time)*1000}ms to process')
 
-    self.gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
-    self.label.configure(image=self.gui_img) # type:ignore
+    resized_img = cv2.resize(resized_img, (0, 0), fx=0.5, fy=0.5)
+    gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
+    self.label.configure(image=gui_img) # type:ignore
+    self.gui_img = gui_img
 
 class StagePositionFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -463,7 +510,7 @@ class MultiImageSelectFrame:
   
   def red_focus_image(self):
     return self.red_focus_frame.thumb.image
-  
+
   def uv_focus_image(self):
     return self.uv_focus_frame.thumb.image
   
@@ -539,6 +586,9 @@ class PatterningFrame:
     self.exposure_progress.grid(row=4, column = 0, sticky='ew')
 
     self.set_image(Image.new('RGB', (1, 1)))
+
+    self.autofocus_button = ttk.Button(self.frame, text='Autofocus', command=lambda: event_dispatcher.autofocus())
+    self.autofocus_button.grid(row=5, column=0, sticky='ew')
 
     def on_change_patterning_status():
       if event_dispatcher.patterning_busy:
@@ -642,17 +692,15 @@ class LithographerGui:
     #if RUN_WITH_STAGE:
       #serial_port.close()
 
-  def autofocus(self):
-    self.hardware.stage.move_by({ 'z': -100.0 })
-
-
-import camera.amscope.amscope_camera as amscope_camera
-#import camera.flir.flir_camera as flir 
-
 
 def main():
-  with open('default.toml', 'rb') as f:
-    config = tomllib.load(f)
+  #with open('default.toml', 'rb') as f:
+  #  config = tomllib.load(f)
+  config = {
+    'stage': { 'enabled': False, 'port': 'COM3', 'baud-rate': 115200, 'scale-factor': 0.0128534 },
+    'camera': { 'enabled': False }
+  }
+	
 
   stage_config = config['stage']
   if stage_config['enabled']:
@@ -664,11 +712,11 @@ def main():
 
   camera_config = config['camera']
   if camera_config['enabled']:
-    # TODO: Why doesn't this import properly?
-    #lithographer = LithographerGui(stage, flir.FlirCamera())
-    pass
+    camera = flir.FlirCamera()
+  else:
+    camera = Webcam()
 
-  lithographer = LithographerGui(stage, Webcam())
+  lithographer = LithographerGui(stage, camera)
   lithographer.root.mainloop()
 
 main()
