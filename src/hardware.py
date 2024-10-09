@@ -12,6 +12,7 @@ class ImageProcessSettings:
   flatfield: Optional[int]
   color_channels: tuple[bool, bool, bool]
   image_adjust: tuple[float, float, float] # x, y, theta
+  border_size: float
   size: tuple[int, int] # width, height
 
 @dataclass
@@ -52,6 +53,8 @@ def process_img(image: Image.Image, settings: ImageProcessSettings) -> Image.Ima
   #debug.info("Toggling color channels...")
   new_image = toggle_channels(new_image, *settings.color_channels)
 
+  bordered_size = (round((1.0-settings.border_size/100.0)*settings.size[0]), round((1.0-settings.border_size/100.0)*settings.size[1]))
+
   original_size = new_image.size
 
   bg = Image.new('RGB', settings.size, 'black')
@@ -59,7 +62,7 @@ def process_img(image: Image.Image, settings: ImageProcessSettings) -> Image.Ima
   if abs(settings.image_adjust[2]) > 0.01: # 1/100th of a degree is effectively nothing
     new_image = new_image.rotate(settings.image_adjust[2], Image.Resampling.BILINEAR, expand=True)
   
-  new_cropped_size = fit_image(original_size, settings.size)
+  new_cropped_size = fit_image(original_size, bordered_size)
   # Could specialize fit_image to avoid loss of precision here
   new_uncropped_size = (round(new_image.size[0] * new_cropped_size[0] / original_size[0]), round(new_image.size[1] * new_cropped_size[1] / original_size[1]))
 
@@ -138,7 +141,7 @@ class Lithographer:
     def sliced_image(self, tile_row: int, tile_col: int):
         img = self.sliced_pattern_tile(tile_row, tile_col)
         # Processing steps happened before slicing, don't need to reapply them
-        # TODO: Flatfield would need to be reapplied here!
-        # TODO: Image adjust should be applied here!
-        img = process_img(img, ImageProcessSettings(None, None, (True, True, True), (0.0, 0.0, 0.0), self.projector.size()))
+        # TODO: When to apply flatfield/image adjust/border size?
+
+        #img = process_img(img, ImageProcessSettings(None, None, (True, True, True), (0.0, 0.0, 0.0), self.projector.size()))
         return img

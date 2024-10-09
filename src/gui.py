@@ -96,6 +96,7 @@ class EventDispatcher:
   use_solid_red: bool
 
   image_adjust_position: tuple[float, float, float]
+  border_size: float
 
   focus_score: float
 
@@ -131,6 +132,7 @@ class EventDispatcher:
     self.focus_score = 0.0
 
     self.image_adjust_position = (0.0, 0.0, 0.0)
+    self.border_size = 0.0
 
     self.exposure_history = []
 
@@ -158,11 +160,18 @@ class EventDispatcher:
     self.hardware.pattern.update(image=self.pattern_image, settings=ImageProcessSettings(
       posterization=self.posterize_strength,
       color_channels=(False, False, True),
-      # Image adjust, resizing, and flatfield correction are performed *AFTER SLICING*
-      size=self.pattern_image.size,
       flatfield=None,
-      image_adjust=(0.0, 0.0, 0.0),
+      size=self.hardware.projector.size(),
+      image_adjust=self.image_adjust_position,
+      border_size=self.border_size,
+      #size=self.pattern_image.size,
+      #flatfield=None,
+      #image_adjust=(0.0, 0.0, 0.0),
+      #border_size=0.0,
     ))
+
+    # TODO:
+    # Image adjust, resizing, and flatfield correction are performed *AFTER SLICING*
 
     self.on_event(Event.PatternImageChanged)
 
@@ -177,6 +186,7 @@ class EventDispatcher:
       color_channels=(True, False, False),
       size=self.hardware.projector.size(),
       image_adjust=self.image_adjust_position,
+      border_size=self.border_size,
     ))
 
     if self.shown_image == ShownImage.RedFocus:
@@ -189,6 +199,7 @@ class EventDispatcher:
       color_channels=(False, False, True),
       size=self.hardware.projector.size(),
       image_adjust=self.image_adjust_position,
+      border_size=0.0,
     ))
 
     if self.shown_image == ShownImage.UvFocus:
@@ -196,6 +207,12 @@ class EventDispatcher:
   
   def set_posterize_strength(self, strength):
     self.posterize_strength = strength
+    self._refresh_red_focus()
+    self._refresh_uv_focus()
+    self._refresh_pattern()
+  
+  def set_border_size(self, border_size):
+    self.border_size = border_size
     self._refresh_red_focus()
     self._refresh_uv_focus()
     self._refresh_pattern()
@@ -895,6 +912,10 @@ class GlobalSettingsFrame:
     self.border_label.grid(row=2, column=0)
     self.border_entry = IntEntry(self.frame, var=self.border_size_var, default=0, min_value=0, max_value=100)
     self.border_entry.widget.grid(row=2, column=1, sticky='nesw')
+
+    def on_border_size_change(*_):
+      event_dispatcher.set_border_size(self.border_size_var.get())
+    self.border_size_var.trace_add('write', on_border_size_change)
 
     self.placeholder_photo = image_to_tk_image(Image.new('RGB', THUMBNAIL_SIZE, 'black'))
     self.photo = None
