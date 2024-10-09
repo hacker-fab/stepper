@@ -11,6 +11,7 @@ class ImageProcessSettings:
   posterization: Optional[int]
   flatfield: Optional[int]
   color_channels: tuple[bool, bool, bool]
+  image_adjust: tuple[float, float, float] # x, y, theta
   size: tuple[int, int] # width, height
 
 @dataclass
@@ -50,11 +51,24 @@ def process_img(image: Image.Image, settings: ImageProcessSettings) -> Image.Ima
   # color channel toggling (must be after posterizing)
   #debug.info("Toggling color channels...")
   new_image = toggle_channels(new_image, *settings.color_channels)
+
+  original_size = new_image.size
+
+  bg = Image.new('RGB', settings.size, 'black')
+
+  if abs(settings.image_adjust[2]) > 0.01: # 1/100th of a degree is effectively nothing
+    new_image = new_image.rotate(settings.image_adjust[2], Image.Resampling.BILINEAR, expand=True)
   
-  # resizing
-  if new_image.size != fit_image(new_image, settings.size):
-    #debug.info("Resizing...")
-    new_image = new_image.resize(fit_image(new_image, settings.size), Image.Resampling.LANCZOS)
+  new_cropped_size = fit_image(original_size, settings.size)
+  # Could specialize fit_image to avoid loss of precision here
+  new_uncropped_size = (round(new_image.size[0] * new_cropped_size[0] / original_size[0]), round(new_image.size[1] * new_cropped_size[1] / original_size[1]))
+
+  new_image = new_image.resize(new_uncropped_size, Image.Resampling.LANCZOS)
+
+  paste_corner = (round(settings.image_adjust[0] + (bg.size[0] - new_image.size[0]) / 2), round(settings.image_adjust[1] + (bg.size[1] - new_image.size[1]) / 2))
+
+  bg.paste(new_image, paste_corner)
+  new_image = bg
   
   # flatfield and check to make sure it wasn't applied early
   if settings.flatfield is not None:
@@ -125,5 +139,6 @@ class Lithographer:
         img = self.sliced_pattern_tile(tile_row, tile_col)
         # Processing steps happened before slicing, don't need to reapply them
         # TODO: Flatfield would need to be reapplied here!
-        img = process_img(img, ImageProcessSettings(None, None, (True, True, True), self.projector.size()))
+        # TODO: Image adjust should be applied here!
+        img = process_img(img, ImageProcessSettings(None, None, (True, True, True), (0.0, 0.0, 0.0), self.projector.size()))
         return img

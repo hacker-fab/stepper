@@ -332,7 +332,7 @@ class Thumbnail():
       (self.on_import)(self)
   
   def _refresh(self):
-    new_size = fit_image(self.image, self.thumb_size)
+    new_size = fit_image(self.image.size, self.thumb_size)
     self.thumb_image = image_to_tk_image(self.image.resize(new_size))
     self.widget.configure(image = self.thumb_image) # type:ignore
     

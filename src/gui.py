@@ -50,6 +50,7 @@ class Event(Enum):
 
   ShownImageChanged = 'shownimagechanged'
   StagePositionChanged = 'stagepositionchanged'
+  ImageAdjustChanged = 'imageadjustchanged'
   PatternImageChanged = 'patternimagechanged'
   MovementLockChanged = 'movementlockchanged'
   ExposurePatternProgressChanged = 'exposurepatternprogresschanged'
@@ -94,6 +95,8 @@ class EventDispatcher:
   solid_red_image: Image.Image
   use_solid_red: bool
 
+  image_adjust_position: tuple[float, float, float]
+
   focus_score: float
 
   exposure_history: List[ExposureLog]
@@ -127,27 +130,38 @@ class EventDispatcher:
 
     self.focus_score = 0.0
 
+    self.image_adjust_position = (0.0, 0.0, 0.0)
+
     self.exposure_history = []
 
     self.add_event_listener(Event.ShownImageChanged, lambda: self._update_projector())
-
-  def _update_projector(self):
+  
+  def current_image(self):
     match self.shown_image:
       case ShownImage.Clear:
-        self.hardware.projector.clear()
+        return None
       case ShownImage.RedFocus:
-        self.hardware.projector.show(self.hardware.red_focus.processed())
+        return self.hardware.red_focus.processed()
       case ShownImage.UvFocus:
-        self.hardware.projector.show(self.hardware.uv_focus.processed())
+        return self.hardware.uv_focus.processed()
       case ShownImage.Pattern:
-        self.hardware.projector.show(self.hardware.pattern.processed())
+        return self.hardware.pattern.processed()
+
+  def _update_projector(self):
+    img = self.current_image()
+    if img is None:
+      self.hardware.projector.clear()
+    else:
+      self.hardware.projector.show(img)
 
   def _refresh_pattern(self):
     self.hardware.pattern.update(image=self.pattern_image, settings=ImageProcessSettings(
       posterization=self.posterize_strength,
-      flatfield=None,
       color_channels=(False, False, True),
-      size=self.hardware.projector.size()
+      # Image adjust, resizing, and flatfield correction are performed *AFTER SLICING*
+      size=self.pattern_image.size,
+      flatfield=None,
+      image_adjust=(0.0, 0.0, 0.0),
     ))
 
     self.on_event(Event.PatternImageChanged)
@@ -161,7 +175,8 @@ class EventDispatcher:
       posterization=self.posterize_strength,
       flatfield=None,
       color_channels=(True, False, False),
-      size=self.hardware.projector.size()
+      size=self.hardware.projector.size(),
+      image_adjust=self.image_adjust_position,
     ))
 
     if self.shown_image == ShownImage.RedFocus:
@@ -172,7 +187,8 @@ class EventDispatcher:
       posterization=self.posterize_strength,
       flatfield=None,
       color_channels=(False, False, True),
-      size=self.hardware.projector.size()
+      size=self.hardware.projector.size(),
+      image_adjust=self.image_adjust_position,
     ))
 
     if self.shown_image == ShownImage.UvFocus:
@@ -239,6 +255,16 @@ class EventDispatcher:
   def stage_position(self):
     pos = self.hardware.stage.stage_position
     return (pos['x'], pos['y'], pos['z'])
+  
+  def set_image_position(self, x, y, t):
+    self.image_adjust_position = (x, y, t)
+    self._refresh_red_focus()
+    self._refresh_uv_focus()
+    self._refresh_pattern()
+    self.on_event(Event.ImageAdjustChanged)
+  
+  def image_position(self):
+    return self.image_adjust_position
     
   def movement_lock(self):
     if self.patterning_busy or self.autofocus_busy:
@@ -475,7 +501,7 @@ class StagePositionFrame:
 
     # Absolute
 
-    self.absolute_frame = ttk.LabelFrame(self.frame, text='Position')
+    self.absolute_frame = ttk.LabelFrame(self.frame, text='Stage Position')
     self.absolute_frame.grid(row=0, column=0)
 
     for i, coord in ((0, 'x'), (1, 'y'), (2, 'z')):
@@ -562,6 +588,91 @@ class StagePositionFrame:
   
   def step_sizes(self) -> tuple[int, int, int]:
     return tuple(intput.get() for intput in self.step_size_intputs)
+
+class ImageAdjustFrame:
+  def __init__(self, parent, event_dispatcher: EventDispatcher):
+    self.frame = ttk.Frame(parent)
+
+    self.position_intputs = []
+    self.step_size_intputs = []
+
+    self.lockable_widgets = []
+
+    # Absolute
+
+    self.absolute_frame = ttk.LabelFrame(self.frame, text='Image Adjustment')
+    self.absolute_frame.grid(row=0, column=0)
+
+    for i, coord in ((0, 'x'), (1, 'y'), (2, 'ϴ')):
+      self.position_intputs.append(IntEntry(parent=self.absolute_frame, default=0))
+      self.position_intputs[-1].widget.grid(row=0,column=i)
+    
+    def callback_set():
+      x, y, t = self._position()
+      event_dispatcher.set_image_position(x, y, t)
+
+    self.set_position_button = ttk.Button(self.absolute_frame, text='Set Image Position', command=callback_set)
+    self.set_position_button.grid(row=1, column=0, columnspan=3, sticky='ew')
+
+    # Relative 
+
+    self.relative_frame = ttk.LabelFrame(self.frame, text='Adjustment')
+    self.relative_frame.grid(row=1, column=0)
+
+    for i, coord in ((0, 'x'), (1, 'y'), (2, 'z')):
+      self.step_size_intputs.append(IntEntry(parent=self.relative_frame, default=10, min_value=-1000, max_value=1000))
+      self.step_size_intputs[-1].widget.grid(row=3,column=i)
+
+      def callback_pos(index, c):
+        pos = list(event_dispatcher.image_position())
+        pos[index] += self.step_sizes()[index]
+        event_dispatcher.set_image_position(*pos)
+      def callback_neg(index, c):
+        pos = list(event_dispatcher.image_position())
+        pos[index] -= self.step_sizes()[index]
+        event_dispatcher.set_image_position(*pos)
+
+      coord_inc_button = ttk.Button(self.relative_frame, text=f'+{coord.upper()}', command=partial(callback_pos, i, coord))
+      coord_dec_button = ttk.Button(self.relative_frame, text=f'-{coord.upper()}', command=partial(callback_neg, i, coord))
+
+      coord_inc_button.grid(row=0, column=i)
+      coord_dec_button.grid(row=1, column=i)
+
+      self.lockable_widgets.append(coord_inc_button)
+      self.lockable_widgets.append(coord_dec_button)
+      self.lockable_widgets.append(self.position_intputs[i].widget)
+      self.lockable_widgets.append(self.step_size_intputs[i].widget)
+    self.lockable_widgets.append(self.set_position_button)
+    
+    ttk.Label(self.relative_frame, text='Step Size (pixels, pixels, degrees)', anchor='center').grid(row=2, column=0, columnspan=3, sticky='ew')
+
+    def on_position_change():
+      pos = event_dispatcher.image_adjust_position
+      for i in range(3):
+        self.position_intputs[i].set(pos[i])
+
+    event_dispatcher.add_event_listener(Event.ImageAdjustChanged, on_position_change)
+
+    def on_lock_change():
+      lock = event_dispatcher.movement_lock()
+      if event_dispatcher.movement_lock() == MovementLock.Unlocked:
+        for w in self.lockable_widgets:
+          w.configure(state='normal')
+      else:
+        for w in self.lockable_widgets:
+          w.configure(state='disabled')
+    event_dispatcher.add_event_listener(Event.MovementLockChanged, on_lock_change)
+  
+  def _position(self) -> tuple[int, int, int]:
+    return tuple(intput.get() for intput in self.position_intputs)
+  
+  def _set_position(self, pos: tuple[int, int, int]):
+    for i in range(3):
+      self.position_intputs[i].set(pos[i])
+  
+  def step_sizes(self) -> tuple[int, int, int]:
+    return tuple(intput.get() for intput in self.step_size_intputs)
+
 
 class ImageSelectFrame:
   def __init__(self, parent, button_text, import_command):
@@ -760,7 +871,7 @@ class ModeSelectFrame:
  
 class GlobalSettingsFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
-    self.frame = ttk.Frame(parent)
+    self.frame = ttk.LabelFrame(parent, text='Global Settings')
 
     def set_value(*_):
       event_dispatcher.autofocus_on_mode_switch = self.autofocus_on_mode_switch_var.get()
@@ -770,12 +881,26 @@ class GlobalSettingsFrame:
       text='Autofocus on Mode Change',
       variable=self.autofocus_on_mode_switch_var
     )
-    self.autofocus_on_mode_switch_check.grid(row=0, column=0)
+    self.autofocus_on_mode_switch_check.grid(row=0, column=0, columnspan=2)
 
     self.autofocus_on_mode_switch_var.trace_add('write', set_value)
 
     self.autofocus_button = ttk.Button(self.frame, text='Autofocus', command=lambda: event_dispatcher.autofocus())
-    self.autofocus_button.grid(row=1, column=0, sticky='ew')
+    self.autofocus_button.grid(row=1, column=0, columnspan=2, sticky='ew')
+
+    # Maybe this should have a scale?
+    # Or, even further, maybe this should just be the same as the interface for posterization strength?
+    self.border_size_var = IntVar()
+    self.border_label = ttk.Label(self.frame, text='Border Size (%)')
+    self.border_label.grid(row=2, column=0)
+    self.border_entry = IntEntry(self.frame, var=self.border_size_var, default=0, min_value=0, max_value=100)
+    self.border_entry.widget.grid(row=2, column=1, sticky='nesw')
+
+    self.placeholder_photo = image_to_tk_image(Image.new('RGB', THUMBNAIL_SIZE, 'black'))
+    self.photo = None
+
+    self.current_image = ttk.Label(self.frame, image=self.placeholder_photo) # type:ignore
+    self.current_image.grid(row=3, column=0, columnspan=2)
 
     # Disable the autofocus button if autofocus is already running
     def movement_lock_changed():
@@ -784,6 +909,18 @@ class GlobalSettingsFrame:
       else:
         self.autofocus_button.configure(state='normal')
     event_dispatcher.add_event_listener(Event.MovementLockChanged, movement_lock_changed)
+
+    def shown_image_changed():
+      img = event_dispatcher.current_image()
+      if img is None:
+        self.current_image.configure(image=self.placeholder_photo) # type:ignore
+      else:
+        photo = image_to_tk_image(img.resize(THUMBNAIL_SIZE, Image.Resampling.NEAREST))
+        self.current_image.configure(image=photo) # type:ignore
+        self.photo = photo
+
+    event_dispatcher.add_event_listener(Event.ShownImageChanged, shown_image_changed)
+  
 
 class ExposureHistoryFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -833,11 +970,14 @@ class LithographerGui:
     self.bottom_panel = ttk.Frame(self.root)
     self.bottom_panel.grid(row=3, column=0)
 
-    self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
-    self.global_settings_frame.frame.grid(row=0, column=1)
-
     self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
     self.exposure_history_frame.frame.grid(row=0, column=0)
+
+    self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
+    self.image_adjust_frame.frame.grid(row=0, column=1)
+
+    self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
+    self.global_settings_frame.frame.grid(row=0, column=2)
 
     self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
     self.stage_position_frame.frame.grid(row=0, column=1)

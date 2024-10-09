@@ -34,9 +34,7 @@ def toggle_channels(image: Image.Image, red: bool = True, green: bool = True, bl
   ))
 
 # return max image size that will fit in [win_size] without cropping
-def fit_image(image: Image.Image, win_size: tuple[int,int]) -> tuple[int,int]:
-  # for easier access
-  img_size: tuple[int,int] = (image.width, image.height)
+def fit_image(img_size: tuple[int,int], win_size: tuple[int,int]) -> tuple[int,int]:
   # determine orientation to fit to
   if (win_size[0] / win_size[1]) > (img_size[0] / img_size[1]):
     # window wider than image: fit to height
@@ -304,7 +302,7 @@ def better_transform(image: Image.Image,
   if(border < 0 or border >= 100):
     return final_image
   # next we need to scale image to the requested size
-  fit_size: tuple[int,int] = fit_image(image, (round(output_size[0]*((100-border)/100)), 
+  fit_size: tuple[int,int] = fit_image(image.size, (round(output_size[0]*((100-border)/100)), 
                                 round(output_size[1]*((100-border)/100))))
   img_cpy = img_cpy.resize(fit_size, resample=Image.Resampling.LANCZOS)
 
@@ -386,9 +384,9 @@ def __run_tests():
   img3 = Image.new("RGBA", dim3)
   
   # fit to height
-  print_assert(fit_image(img0, dim1), (25,100))
+  print_assert(fit_image(img0.size, dim1), (25,100))
   # fit to width
-  print_assert(fit_image(img1, dim0), (50,33))
+  print_assert(fit_image(img1.size, dim0), (50,33))
   # fill to width
   print_assert(fill_image(img0, dim1), (150,600))
   # fill to height
