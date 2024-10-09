@@ -23,7 +23,7 @@ from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar
 import tkinter
 
-if False:
+if True:
   import camera.amscope.amscope_camera as amscope_camera
   import camera.flir.flir_camera as flir 
 
@@ -362,7 +362,9 @@ class EventDispatcher:
       self.offset_stage_position({ 'z': -100.0 })
 
     self.set_shown_image(ShownImage.UvFocus)
+
     if self.autofocus_on_mode_switch:
+      self.non_blocking_delay(2.0)
       self.autofocus()
   
   def autofocus(self):
@@ -375,7 +377,7 @@ class EventDispatcher:
 
     self.set_autofocus_busy(True)
 
-    self.non_blocking_delay(1.0)
+    self.non_blocking_delay(2.0)
 
     last_focus = self.focus_score
     for i in range(30):
@@ -1031,8 +1033,8 @@ def main():
   #with open('default.toml', 'rb') as f:
   #  config = tomllib.load(f)
   config = {
-    'stage': { 'enabled': False, 'port': 'COM3', 'baud-rate': 115200, 'scale-factor': 0.0128534 },
-    'camera': { 'enabled': False }
+    'stage': { 'enabled': True, 'port': 'COM3', 'baud-rate': 115200, 'scale-factor': 0.0128534 },
+    'camera': { 'enabled': True }
   }
 	
 
