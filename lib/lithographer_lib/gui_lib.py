@@ -250,6 +250,7 @@ class Thumbnail():
   widget: Button
   # image stuff
   image: Image.Image
+  path: str
   thumb_image: ImageTk.PhotoImage
   thumb_size: tuple[int, int]
   # optional fields
@@ -273,6 +274,7 @@ class Thumbnail():
     self.thumb_size = thumb_size
     # create placeholder images
     self.image = Image.new('RGB', self.thumb_size)
+    self.path = ''
     self._refresh()
   
   # prompt user for a new image
@@ -322,6 +324,7 @@ class Thumbnail():
 
     # update
     self.image = img
+    self.path = path
     self._refresh()
 
     # call optional func if specified

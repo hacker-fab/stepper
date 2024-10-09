@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import time
 import queue
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
@@ -20,6 +21,7 @@ from lithographer_lib.gui_lib import IntEntry, Thumbnail
 from lithographer_lib.img_lib import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar
+import tkinter
 
 if False:
   import camera.amscope.amscope_camera as amscope_camera
@@ -62,6 +64,14 @@ class MovementLock(Enum):
   Locked = 'locked'
   '''No positions can move to avoid disrupting patterning'''
 
+@dataclass
+class ExposureLog:
+  time: datetime
+  name: str
+  coords: tuple[float, float, float]
+  duration: float # ms
+  aborted: bool
+
 class EventDispatcher:
   hardware: Lithographer
 
@@ -85,6 +95,8 @@ class EventDispatcher:
   use_solid_red: bool
 
   focus_score: float
+
+  exposure_history: List[ExposureLog]
 
   def __init__(self, stage, proj, root):
     self.listeners = dict()
@@ -114,6 +126,8 @@ class EventDispatcher:
     self.should_abort = False
 
     self.focus_score = 0.0
+
+    self.exposure_history = []
 
     self.add_event_listener(Event.ShownImageChanged, lambda: self._update_projector())
 
@@ -188,8 +202,9 @@ class EventDispatcher:
     self.set_shown_image(ShownImage.RedFocus)
     self._refresh_red_focus()
   
-  def set_pattern_image(self, img: Image.Image):
+  def set_pattern_image(self, img: Image.Image, name: str):
     self.pattern_image = img
+    self.pattern_image_name = name
     self._refresh_pattern()
   
   def set_red_focus_image(self, img: Image.Image):
@@ -272,6 +287,15 @@ class EventDispatcher:
     self.set_shown_image(ShownImage.Clear)
     self.root.update() # Force image to stop being displayed ASAP
     self.set_progress(1.0, 1.0)
+
+    self.exposure_history.append(ExposureLog(
+      datetime.now(),
+      self.pattern_image_name,
+      self.stage_position(),
+      duration,
+      self.should_abort,
+    ))
+
     self.set_patterning_busy(False)
 
     if self.should_abort:
@@ -553,9 +577,15 @@ class MultiImageSelectFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
     self.frame = ttk.Frame(parent)
 
+    def get_name(path):
+      if path == '':
+        return ''
+      else:
+        return Path(path).name
+
     self.pattern_frame   = ImageSelectFrame(
       self.frame, 'Pattern',
-      lambda t: event_dispatcher.set_pattern_image(self.pattern_image()),
+      lambda t: event_dispatcher.set_pattern_image(self.pattern_image(), get_name(self.pattern_frame.thumb.path)),
     )
     self.red_focus_frame = ImageSelectFrame(
       self.frame, 'Red Focus',
@@ -755,6 +785,30 @@ class GlobalSettingsFrame:
         self.autofocus_button.configure(state='normal')
     event_dispatcher.add_event_listener(Event.MovementLockChanged, movement_lock_changed)
 
+class ExposureHistoryFrame:
+  def __init__(self, parent, event_dispatcher: EventDispatcher):
+    self.frame = ttk.LabelFrame(parent, text='Exposure History')
+    self.text = tkinter.Text(self.frame, width=80, height=10, wrap='none', state='disabled')
+    self.text.grid(row=0, column=0)
+    
+    self.event_dispatcher = event_dispatcher
+
+    event_dispatcher.add_event_listener(Event.PatterningBusyChanged, lambda: self._refresh())
+  
+  def _refresh(self):
+    self.text['state'] = 'normal'
+    self.text.delete('1.0', 'end')
+    for exp_log in self.event_dispatcher.exposure_history[-10:]:
+      t = exp_log.time.strftime('%H:%M:%S')
+      line = f'{t} {exp_log.name} {int(exp_log.duration)}ms X:{exp_log.coords[0]} Y:{exp_log.coords[1]} Z:{exp_log.coords[2]}\n'
+
+      if self.text.index('end-1c') != 1.0:
+        self.text.insert('end', '\n')
+      self.text.insert('end', line)
+    self.text['state'] = 'disabled'
+
+    
+
 
 class LithographerGui:
   root: Tk
@@ -780,7 +834,10 @@ class LithographerGui:
     self.bottom_panel.grid(row=3, column=0)
 
     self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
-    self.global_settings_frame.frame.grid(row=0, column=0)
+    self.global_settings_frame.frame.grid(row=0, column=1)
+
+    self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
+    self.exposure_history_frame.frame.grid(row=0, column=0)
 
     self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
     self.stage_position_frame.frame.grid(row=0, column=1)
@@ -796,8 +853,6 @@ class LithographerGui:
 
     self.multi_image_select_frame = MultiImageSelectFrame(self.middle_panel, self.event_dispatcher)
     self.multi_image_select_frame.frame.grid(row=0, column=0)
-
-    self.patterning_status = PatterningStatus.Idle
 
     self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
     #self.debug.info("Debug info will appear here")
