@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import time
 import queue
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from hardware import Lithographer, ImageProcessSettings, StageWrapper
@@ -45,9 +46,6 @@ OnShownImageChange = Callable[[ShownImage], None]
 class Event(Enum):
   Snapshot = 'snapshot'
 
-  EnterRedMode = 'enterredmode'
-  EnterUvMode = 'enteruvmode'
-
   ShownImageChanged = 'shownimagechanged'
   StagePositionChanged = 'stagepositionchanged'
   PatternImageChanged = 'patternimagechanged'
@@ -73,6 +71,8 @@ class EventDispatcher:
   posterize_strength: Optional[int]
   patterning_progress: float # ranges from 0.0 to 1.0
 
+  autofocus_on_mode_switch: bool
+
   shown_image: ShownImage
   autofocus_busy: bool
   patterning_busy: bool
@@ -80,6 +80,9 @@ class EventDispatcher:
   pattern_image: Image.Image
   red_focus_image: Image.Image
   uv_focus_image: Image.Image
+
+  solid_red_image: Image.Image
+  use_solid_red: bool
 
   focus_score: float
 
@@ -90,18 +93,40 @@ class EventDispatcher:
 
     self.root = root
 
+    self.exposure_time = 8000
     self.posterize_strength = None
+
+    self.patterning_progress = 0.0
 
     self.shown_image = ShownImage.Clear
     self.autofocus_busy = False
+    self.patterning_busy = False
+
+    self.autofocus_on_mode_switch = True
+
+    self.pattern_image = Image.new('RGB', (1, 1), 'black')
+    self.red_focus_image = Image.new('RGB', (1, 1), 'black')
+    self.uv_focus_image = Image.new('RGB', (1, 1), 'black')
+
+    self.solid_red_image = Image.new('RGB', (1, 1), 'red')
+    self.use_solid_red = False
+
+    self.should_abort = False
+
+    self.focus_score = 0.0
+
+    self.add_event_listener(Event.ShownImageChanged, lambda: self._update_projector())
 
   def _update_projector(self):
     match self.shown_image:
       case ShownImage.Clear:
         self.hardware.projector.clear()
       case ShownImage.RedFocus:
-        # TODO:
-        pass
+        self.hardware.projector.show(self.hardware.red_focus.processed())
+      case ShownImage.UvFocus:
+        self.hardware.projector.show(self.hardware.uv_focus.processed())
+      case ShownImage.Pattern:
+        self.hardware.projector.show(self.hardware.pattern.processed())
 
   def _refresh_pattern(self):
     self.hardware.pattern.update(image=self.pattern_image, settings=ImageProcessSettings(
@@ -114,7 +139,11 @@ class EventDispatcher:
     self.on_event(Event.PatternImageChanged)
 
   def _refresh_red_focus(self):
-    self.hardware.red_focus.update(image=self.red_focus_image, settings=ImageProcessSettings(
+    if self.hardware.projector.size() != self.solid_red_image.size:
+      self.solid_red_image = Image.new('RGB', self.hardware.projector.size(), 'red')
+
+    img = self.solid_red_image if self.use_solid_red else self.red_focus_image
+    self.hardware.red_focus.update(image=img, settings=ImageProcessSettings(
       posterization=self.posterize_strength,
       flatfield=None,
       color_channels=(True, False, False),
@@ -125,7 +154,12 @@ class EventDispatcher:
       self.on_event(Event.ShownImageChanged)
   
   def _refresh_uv_focus(self):
-    # TODO:
+    self.hardware.uv_focus.update(image=self.uv_focus_image, settings=ImageProcessSettings(
+      posterization=self.posterize_strength,
+      flatfield=None,
+      color_channels=(False, False, True),
+      size=self.hardware.projector.size()
+    ))
 
     if self.shown_image == ShownImage.UvFocus:
       self.on_event(Event.ShownImageChanged)
@@ -137,13 +171,22 @@ class EventDispatcher:
     self._refresh_pattern()
   
   def set_shown_image(self, shown_image: ShownImage):
+    print(f'set_shown_image({shown_image})')
     self.shown_image = shown_image
     self.on_event(Event.ShownImageChanged)
   
   def set_stage_position(self, x: float, y: float, z: float):
-    print('TODO: Actually set stage position')
     self.hardware.stage.move_to({ 'x': x, 'y': y, 'z': z }, commit=True)
     self.on_event(Event.StagePositionChanged)
+  
+  def offset_stage_position(self, coords: dict[str, float]):
+    self.hardware.stage.move_by(coords, commit=True)
+    self.on_event(Event.StagePositionChanged)
+ 
+  def set_use_solid_red(self, use: bool):
+    self.use_solid_red = use
+    self.set_shown_image(ShownImage.RedFocus)
+    self._refresh_red_focus()
   
   def set_pattern_image(self, img: Image.Image):
     self.pattern_image = img
@@ -170,6 +213,10 @@ class EventDispatcher:
   def set_focus_score(self, focus_score: float):
     self.focus_score = focus_score
   
+  def set_autofocus_busy(self, busy):
+    self.autofocus_busy = busy
+    self.on_event(Event.MovementLockChanged)
+  
   def abort_patterning(self):
     self.should_abort = True
     print('Aborting patterning')
@@ -179,16 +226,17 @@ class EventDispatcher:
     return (pos['x'], pos['y'], pos['z'])
     
   def movement_lock(self):
-    if self.patterning_busy:
+    if self.patterning_busy or self.autofocus_busy:
       return MovementLock.Locked
-    elif self.autofocus_busy:
-      return MovementLock.XYLocked
     elif self.shown_image == ShownImage.UvFocus or self.shown_image == ShownImage.Pattern:
       return MovementLock.XYLocked
     else:
       return MovementLock.Unlocked
 
   def on_event(self, event: Event, *args, **kwargs):
+    if event not in self.listeners:
+      return
+
     for l in self.listeners[event]:
       l(*args, **kwargs)
   
@@ -205,18 +253,24 @@ class EventDispatcher:
 
     print('Patterning at ', self.hardware.stage.stage_position)
 
-    def update_func(exposure_progress):
-      self.set_progress(0.0, exposure_progress)
-      self.root.update()
-      return self.should_abort
-    
     duration = self.exposure_time
     
     print(f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration)/1000))}s")
 
+
+    img = self.hardware.sliced_image(0, 0)
+
     self.set_patterning_busy(True)
-    self.set_progress(0.0, 0.0)
-    self.hardware.do_pattern(0, 0, duration, update_func=update_func)
+    self.hardware.projector.show(img)
+    end_time = time.time() + duration / 1000.0
+    while time.time() < end_time:
+      progress = 1.0 - ((end_time - time.time()) * 1000 / duration)
+      self.set_progress(0.0, progress)
+      self.root.update()
+      if self.should_abort:
+        break
+    self.set_shown_image(ShownImage.Clear)
+    self.root.update() # Force image to stop being displayed ASAP
     self.set_progress(1.0, 1.0)
     self.set_patterning_busy(False)
 
@@ -224,40 +278,61 @@ class EventDispatcher:
       print('Patterning aborted')
       self.should_abort = False
   
-  def autofocus(self):
-    def non_blocking_delay(t):
-      start = time.time()
-      while time.time() - start < t:
-        self.root.update()
+  def non_blocking_delay(self, t: float):
+    start = time.time()
+    while time.time() - start < t:
+      self.root.update()
+  
+  def enter_red_mode(self):
+    print('enter_red_mode')
+    self.set_shown_image(ShownImage.RedFocus)
+    if self.autofocus_on_mode_switch:
+      self.autofocus()
 
+  def enter_uv_mode(self):
+    if not self.autofocus_busy and self.autofocus_on_mode_switch:
+      # UV mode is usually needs about -60 to be in focus compared to red mode
+      self.offset_stage_position({ 'z': -100.0 })
+
+    self.set_shown_image(ShownImage.UvFocus)
+    if self.autofocus_on_mode_switch:
+      self.autofocus()
+  
+  def autofocus(self):
+    if self.autofocus_busy:
+      print('Skipping nested autofocus!')
+      return
 
     print('Starting autofocus')
 
-    self.hardware.stage.move_by({ 'z': -100.0 })
 
-    non_blocking_delay(1.0)
+    self.set_autofocus_busy(True)
+
+    self.non_blocking_delay(1.0)
 
     last_focus = self.focus_score
     for i in range(30):
-      self.hardware.stage.move_by({ 'z': 10.0 })
-      non_blocking_delay(0.5)
+      self.offset_stage_position({ 'z': 10.0 })
+      self.non_blocking_delay(0.5)
       if last_focus > self.focus_score:
         print(f'Successful coarse autofocus {i}')
         break
       last_focus = self.focus_score
 
-    self.hardware.stage.move_by({ 'z': -20.0 })
-    non_blocking_delay(1.0)
+    self.offset_stage_position({ 'z': -20.0 })
+    self.non_blocking_delay(1.0)
     last_focus = self.focus_score
     for i in range(30):
-      self.hardware.stage.move_by({ 'z': 2.0 })
-      non_blocking_delay(0.5)
+      self.offset_stage_position({ 'z': 2.0 })
+      self.non_blocking_delay(0.5)
       if last_focus > self.focus_score:
         print(f'Successful fine autofocus {i}')
         break
       last_focus = self.focus_score
 
-    self.hardware.stage.move_by({ 'z': -2.0 })
+    self.offset_stage_position({ 'z': -2.0 })
+
+    self.set_autofocus_busy(False)
 
     print('Finished autofocus')
 
@@ -318,10 +393,10 @@ class CameraFrame:
     self.snapshot = SnapshotFrame(self.frame, event_dispatcher)
     self.snapshot.frame.grid(row=1, column=0)
 
-    self.image_focus = 0
+    self.event_dispatcher = event_dispatcher
 
     self.snapshots_pending = queue.Queue()
-    event_dispatcher.add_event_listener(Event.Snapshot, lambda filename: self.snapshots_pending.put(filename))
+    self.event_dispatcher.add_event_listener(Event.Snapshot, lambda filename: self.snapshots_pending.put(filename))
 
     self.gui_img = None
     self.camera = c
@@ -355,7 +430,7 @@ class CameraFrame:
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
-    self.image_focus = img_lapl.var() / mean
+    self.event_dispatcher.set_focus_score(img_lapl.var() / mean)
     end_time = time.time()
     #print(f'Took {(end_time - start_time)*1000}ms to process')
 
@@ -422,8 +497,8 @@ class StagePositionFrame:
       else:
         self.z_widgets.append(coord_inc_button)
         self.z_widgets.append(coord_dec_button)
-        self.xy_widgets.append(self.position_intputs[i].widget)
-        self.xy_widgets.append(self.step_size_intputs[i].widget)
+        self.z_widgets.append(self.position_intputs[i].widget)
+        self.z_widgets.append(self.step_size_intputs[i].widget)
 
     ttk.Label(self.relative_frame, text='Step Size (microns)', anchor='center').grid(row=2, column=0, columnspan=3, sticky='ew')
 
@@ -439,7 +514,7 @@ class StagePositionFrame:
           for w in self.xy_widgets:
             w.configure(state='disabled')
           for w in self.z_widgets:
-            w.configure(state='disabled')
+            w.configure(state='normal')
           self.set_position_button.configure(state='normal')
         case MovementLock.Locked:
           for w in self.all_widgets:
@@ -465,38 +540,30 @@ class StagePositionFrame:
     return tuple(intput.get() for intput in self.step_size_intputs)
 
 class ImageSelectFrame:
-  def __init__(self, parent, button_text, import_command, select_command):
+  def __init__(self, parent, button_text, import_command):
     self.frame = ttk.Frame(parent)
 
     self.thumb = Thumbnail(self.frame, THUMBNAIL_SIZE, on_import=import_command)
     self.thumb.widget.grid(row=0, column=0)
 
-    self.select_button = ttk.Button(self.frame, text=button_text, command=select_command)
-    self.select_button.grid(row=1, column=0)
+    self.label = ttk.Label(self.frame, text=button_text)
+    self.label.grid(row=1, column=0)
 
 class MultiImageSelectFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
     self.frame = ttk.Frame(parent)
 
-    def show_cb(img):
-      def cb():
-        event_dispatcher.set_shown_image(img)
-      return cb
-
     self.pattern_frame   = ImageSelectFrame(
-      self.frame, 'Show pattern',
+      self.frame, 'Pattern',
       lambda t: event_dispatcher.set_pattern_image(self.pattern_image()),
-      show_cb(ShownImage.Pattern)
     )
     self.red_focus_frame = ImageSelectFrame(
-      self.frame, 'Show Red Focus',
+      self.frame, 'Red Focus',
       lambda t: event_dispatcher.set_red_focus_image(self.red_focus_image()),
-      show_cb(ShownImage.RedFocus)
     )
     self.uv_focus_frame = ImageSelectFrame(
-      self.frame, 'Show UV Focus',
+      self.frame, 'UV Focus',
       lambda t: event_dispatcher.set_uv_focus_image(self.uv_focus_image()),
-      show_cb(ShownImage.UvFocus)
     )
 
     self.pattern_frame.frame.grid(row=0, column=0)
@@ -587,9 +654,6 @@ class PatterningFrame:
 
     self.set_image(Image.new('RGB', (1, 1)))
 
-    self.autofocus_button = ttk.Button(self.frame, text='Autofocus', command=lambda: event_dispatcher.autofocus())
-    self.autofocus_button.grid(row=5, column=0, sticky='ew')
-
     def on_change_patterning_status():
       if event_dispatcher.patterning_busy:
         self.begin_patterning_button['state'] = 'disabled'
@@ -599,6 +663,12 @@ class PatterningFrame:
         self.abort_patterning_button['state'] = 'disabled'
 
     event_dispatcher.add_event_listener(Event.PatterningBusyChanged, on_change_patterning_status)
+    event_dispatcher.add_event_listener(Event.PatternImageChanged, lambda: self.set_image(event_dispatcher.hardware.pattern.processed()))
+
+    def on_progress_changed():
+      self.exposure_progress['value'] = event_dispatcher.exposure_progress * 1000.0
+
+    event_dispatcher.add_event_listener(Event.ExposurePatternProgressChanged, on_progress_changed)
 
   def set_image(self, img: Image.Image):
     # TODO: What is the correct size?
@@ -609,40 +679,82 @@ class RedModeFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
     self.frame = ttk.Frame(parent, name='redmodeframe')
 
+    self.red_select_var = StringVar(value='focus')
+    self.red_focus_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Red Focus', value='focus')
+    self.solid_red_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Solid Red', value='solid')
+
+    self.red_focus_rb.grid(row=0, column=0)
+    self.solid_red_rb.grid(row=1, column=0)
+
+    def on_radiobutton(*_):
+      print(f'red select var {self.red_select_var.get()}')
+      event_dispatcher.set_use_solid_red(self.red_select_var.get() == 'solid')
+
+    self.red_select_var.trace_add('write', on_radiobutton)
+
 class UvModeFrame:
   def __init__(self, parent, event_dispatcher):
     self.frame = ttk.Frame(parent, name='uvmodeframe')
-    self.position_label = ttk.Label(self.frame, text='Stage Position Goes Here')
-    self.position_label.grid(row=0, column=0)
     self.exposure_frame = ExposureFrame(self.frame, event_dispatcher)
-    self.exposure_frame.frame.grid(row=0, column=1)
+    self.exposure_frame.frame.grid(row=0, column=0)
     self.patterning_frame = PatterningFrame(self.frame, event_dispatcher)
-    self.patterning_frame.frame.grid(row=0, column=2)
+    self.patterning_frame.frame.grid(row=0, column=1)
 
 class ModeSelectFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
     self.notebook = ttk.Notebook(parent)
 
     self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher)
-    self.notebook.add(self.red_mode_frame.frame, text='Red Mode', )
+    self.notebook.add(self.red_mode_frame.frame, text='Red Mode')
     self.uv_mode_frame = UvModeFrame(self.notebook, event_dispatcher)
     self.notebook.add(self.uv_mode_frame.frame, text='UV Mode')
 
     def on_tab_change():
-      event_dispatcher.on_event(self._current_tab())
+      if self._current_tab() == 'uv':
+        event_dispatcher.enter_uv_mode()
+      else:
+        event_dispatcher.enter_red_mode()
     self.notebook.bind('<<NotebookTabChanged>>', lambda _: on_tab_change())
    
-    def on_tab_event(evt):
-      self.notebook.select(1 if evt == Event.EnterUvMode else 0)
+    #def on_tab_event(evt):
+    #  self.notebook.select(1 if evt == Event.EnterUvMode else 0)
 
-    event_dispatcher.add_event_listener(Event.EnterRedMode, lambda: on_tab_event(Event.EnterRedMode))
-    event_dispatcher.add_event_listener(Event.EnterUvMode, lambda: on_tab_event(Event.EnterUvMode))
+    #event_dispatcher.add_event_listener(Event.EnterRedMode, lambda: on_tab_event(Event.EnterRedMode))
+    #event_dispatcher.add_event_listener(Event.EnterUvMode, lambda: on_tab_event(Event.EnterUvMode))
 
   def _current_tab(self):
     if 'redmode' in self.notebook.select():
-      return Event.EnterRedMode
+      return 'red'
     else:
-      return Event.EnterUvMode
+      return 'uv'
+ 
+class GlobalSettingsFrame:
+  def __init__(self, parent, event_dispatcher: EventDispatcher):
+    self.frame = ttk.Frame(parent)
+
+    def set_value(*_):
+      event_dispatcher.autofocus_on_mode_switch = self.autofocus_on_mode_switch_var.get()
+    self.autofocus_on_mode_switch_var = BooleanVar(value=True)
+    self.autofocus_on_mode_switch_check = ttk.Checkbutton(
+      self.frame,
+      text='Autofocus on Mode Change',
+      variable=self.autofocus_on_mode_switch_var
+    )
+    self.autofocus_on_mode_switch_check.grid(row=0, column=0)
+
+    self.autofocus_on_mode_switch_var.trace_add('write', set_value)
+
+    self.autofocus_button = ttk.Button(self.frame, text='Autofocus', command=lambda: event_dispatcher.autofocus())
+    self.autofocus_button.grid(row=1, column=0, sticky='ew')
+
+    # Disable the autofocus button if autofocus is already running
+    def movement_lock_changed():
+      if event_dispatcher.movement_lock() == MovementLock.Locked:
+        self.autofocus_button.configure(state='disabled')
+      else:
+        self.autofocus_button.configure(state='normal')
+    event_dispatcher.add_event_listener(Event.MovementLockChanged, movement_lock_changed)
+
 
 class LithographerGui:
   root: Tk
@@ -661,13 +773,19 @@ class LithographerGui:
     self.camera = CameraFrame(self.root, self.event_dispatcher, camera)
     self.camera.frame.grid(row=0, column=0)
 
-    self.bottom_panel = ttk.Frame(self.root)
-    self.bottom_panel.grid(row=2, column=0)
+    self.middle_panel = ttk.Frame(self.root)
+    self.middle_panel.grid(row=2, column=0)
 
-    self.stage_position_frame = StagePositionFrame(self.bottom_panel, self.event_dispatcher)
+    self.bottom_panel = ttk.Frame(self.root)
+    self.bottom_panel.grid(row=3, column=0)
+
+    self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
+    self.global_settings_frame.frame.grid(row=0, column=0)
+
+    self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
     self.stage_position_frame.frame.grid(row=0, column=1)
 
-    self.mode_select_frame = ModeSelectFrame(self.bottom_panel, self.event_dispatcher)
+    self.mode_select_frame = ModeSelectFrame(self.middle_panel, self.event_dispatcher)
     self.mode_select_frame.notebook.grid(row=0, column=2)
 
     self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
@@ -676,7 +794,7 @@ class LithographerGui:
     self.pattern_progress = Progressbar(self.root, orient='horizontal', mode='determinate')
     self.pattern_progress.grid(row = 1, column = 0, sticky='ew')
 
-    self.multi_image_select_frame = MultiImageSelectFrame(self.bottom_panel, self.event_dispatcher)
+    self.multi_image_select_frame = MultiImageSelectFrame(self.middle_panel, self.event_dispatcher)
     self.multi_image_select_frame.frame.grid(row=0, column=0)
 
     self.patterning_status = PatterningStatus.Idle
