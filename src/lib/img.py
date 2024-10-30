@@ -9,7 +9,7 @@ from math import ceil, cos, sin, radians
 from typing import overload
 from math import pi
 
-from .tuple_utils import *
+from .tuple import *
 
 def toggle_channels(image: Image.Image, red: bool = True, green: bool = True, blue: bool = True) -> Image.Image:
   img_cpy: Image.Image = image.copy()

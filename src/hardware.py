@@ -1,7 +1,7 @@
 from PIL import Image
 from dataclasses import dataclass
 from typing import Optional, Callable, List
-from lithographer_lib.img_lib import posterize, toggle_channels, fit_image, convert_to_alpha_channel, dec_to_alpha
+from lib.img import posterize, toggle_channels, fit_image, convert_to_alpha_channel, dec_to_alpha
 from stage_control.stage_controller import StageController
 from projector import ProjectorController
 import copy

@@ -17,8 +17,8 @@ from stage_control.stage_controller import StageController
 from stage_control.grbl_stage import GrblStage
 from projector import ProjectorController, TkProjector
 from enum import Enum
-from lithographer_lib.gui_lib import IntEntry, Thumbnail
-from lithographer_lib.img_lib import image_to_tk_image, fit_image
+from lib.gui import IntEntry, Thumbnail
+from lib.img import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar
 import tkinter

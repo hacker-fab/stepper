@@ -16,13 +16,5 @@ source venv/bin/activate  # depending on your shell, see venv docs
 pip install -r requirements.txt
 ```
 
-This repository uses a local package as a library.
-On first use and after adding/removing files to/from the `lib/lithographer_lib` directory,
-run the following commands to install it:
-
-```bash
-cd lib && pip install -e . --config-settings editable_mode=strict
-```
-
 > [!NOTE]
 > This software is in active development, and features are subject to change. Though each change to the main branch has been tested, there remains a chance that some bugs are undetected. To report a bug or to suggest additional features, please create an issue on this repository.

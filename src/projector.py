@@ -2,7 +2,7 @@ from PIL import Image, ImageTk
 from time import time
 from tkinter import Tk, Toplevel, Label
 from typing import Callable, Optional
-from lithographer_lib.img_lib import image_to_tk_image
+from lib.img import image_to_tk_image
 
 class ProjectorController:
     def show(self, image: Image.Image):

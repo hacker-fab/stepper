@@ -7,63 +7,9 @@ from __future__ import annotations
 from PIL import  Image
 from typing import Callable, Literal
 
-from .img_lib import slice_image
-from . import gui_lib
-from .tuple_utils import *
+from .img import slice_image
+from .tuple import *
 #endregion
-
-# a widget that stores an image and various other useful info
-# intentionally no way to change original image after creation
-# to avoid confusion
-class Smart_Image():
-  __original_image__: Image.Image
-  __permanent_attr__: dict
-  __attr__: dict
-  image: Image.Image
-  
-  def __init__(self, image: Image.Image, perm_attr: dict = {}):
-    self.__original_image__ = image.copy()
-    self.image = image.copy()
-    self.__permanent_attr__ = perm_attr
-    self.__attr__ = {}
-  
-  # permanent attributes are reapplied on reset
-  def add(self, key, value, permanent: bool = False):
-    self.__attr__[key] = value
-    if(permanent):
-      self.__permanent_attr__[key] = value
-      
-  def get(self, key, default = None):
-    return self.__attr__.get(key, default)
-
-  def pop(self, key, default = None):
-    return self.__attr__.pop(key, default)
-  
-  def copy(self):
-    new_img = Smart_Image(self.image.copy())
-    new_img.__original_image__ = self.__original_image__.copy()
-    new_img.__permanent_attr__ = self.__permanent_attr__.copy()
-    new_img.__attr__ = self.__attr__.copy()
-    new_img.image = self.image.copy()
-    return new_img
-    
-  # reset image to original
-  # resets all attributes except those specified in keep_attr
-  def reset(self, keep_attr: list = []):
-    self.image = self.__original_image__.copy()
-    new_attr = self.__permanent_attr__.copy()
-    for key in keep_attr:
-      if(self.__attr__.get(key, None) != None):
-        new_attr[key] = self.__attr__[key]
-    self.__attr__ = new_attr
-  
-  # return image size
-  def size(self) -> tuple[int,int]:
-    return self.image.size
-  
-  # return image mode
-  def mode(self) -> str:
-    return self.image.mode
   
 # TODO add calibration function
 # TODO add option to prevent leaving FoV
