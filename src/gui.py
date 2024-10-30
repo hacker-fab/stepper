@@ -42,7 +42,7 @@ def find_last_zero(a, thresh=0.1):
 def find_edges(img):
   ret, img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
 
-  img = cv2.resize(img, (0, 0), fx=0.05, fy=0.05)
+  img = cv2.resize(img, (250, 200))
 
   (height, width) = img.shape
 
@@ -156,6 +156,7 @@ class EventDispatcher:
   border_size: float
 
   focus_score: float
+  edges: tuple[Optional[float], Optional[float]]
 
   exposure_history: List[ExposureLog]
 
@@ -191,6 +192,7 @@ class EventDispatcher:
     self.should_abort = False
 
     self.focus_score = 0.0
+    self.edges = (None, None)
 
     self.image_adjust_position = (0.0, 0.0, 0.0)
     self.border_size = 0.0
@@ -446,10 +448,21 @@ class EventDispatcher:
       self.non_blocking_delay(2.0)
       self.autofocus()
   
+  def find_corner(self):
+    print('Finding corner')
+
+    for i in range(30):
+      self.offset_stage_position({ 'y': -300.0 })
+      self.non_blocking_delay(3.0)
+      if self.edges[0] is not None:
+        print('FOUND EDGE')
+        break
+
+  
   def autofocus(self):
     if self.autofocus_busy:
       print('Skipping nested autofocus!')
-      return
+      return  
 
     print('Starting autofocus')
 
@@ -572,21 +585,35 @@ class CameraFrame:
     self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
-    start_time = time.time()
-    resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
-    img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
-    print(f'EDGES: {find_edges(img)}')
-    img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
-    mean = np.sum(img) / (img.shape[0] * img.shape[1])
-    img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
-    self.event_dispatcher.set_focus_score(img_lapl.var() / mean)
-    end_time = time.time()
-    #print(f'Took {(end_time - start_time)*1000}ms to process')
+    try:
+      start_time = time.time()
+      resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
+      img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
+      self.event_dispatcher.edges = find_edges(img)
+      #ret, img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
+      #img = cv2.resize(img, (300, 200))
+      #print(img[-1, -1])
+      #img = cv2.resize(img, (0, 0), fx=0.05, fy=0.05)
 
-    resized_img = cv2.resize(resized_img, (0, 0), fx=0.5, fy=0.5)
-    gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
-    self.label.configure(image=gui_img) # type:ignore
-    self.gui_img = gui_img
+      #(height, width) = img.shape
+      # Crop to the area we have lighting at
+      #img = img[50:height-50, 50:width-50]
+
+      #resized_img = img
+
+      img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+      mean = np.sum(img) / (img.shape[0] * img.shape[1])
+      img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
+      self.event_dispatcher.set_focus_score(img_lapl.var() / mean)
+      end_time = time.time()
+      #print(f'Took {(end_time - start_time)*1000}ms to process')
+
+      resized_img = cv2.resize(resized_img, (0, 0), fx=0.5, fy=0.5)
+      gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
+      self.label.configure(image=gui_img) # type:ignore
+      self.gui_img = gui_img
+    except Exception as e:
+      print(e)
 
 class StagePositionFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -993,6 +1020,9 @@ class GlobalSettingsFrame:
 
     self.autofocus_button = ttk.Button(self.frame, text='Autofocus', command=lambda: event_dispatcher.autofocus())
     self.autofocus_button.grid(row=1, column=0, columnspan=2, sticky='ew')
+
+    self.find_corner_button = ttk.Button(self.frame, text='Find Corner', command=lambda: event_dispatcher.find_corner())
+    self.find_corner_button.grid(row=4, column=0, columnspan=2, sticky='ew')
 
     # Maybe this should have a scale?
     # Or, even further, maybe this should just be the same as the interface for posterization strength?
