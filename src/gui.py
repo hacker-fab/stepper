@@ -20,7 +20,7 @@ from enum import Enum
 from lib.gui import IntEntry, Thumbnail
 from lib.img import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
-from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar
+from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar, messagebox
 import toml # Need to use a package because we're stuck on Python 3.10
 import tkinter
 
@@ -1044,6 +1044,8 @@ class LithographerGui:
 
     self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
     #self.debug.info("Debug info will appear here")
+
+    messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Left Arrow until it no longer is visible!')
   
   def cleanup(self):
     print("Patterning GUI closed.")
