@@ -27,6 +27,58 @@ import tkinter
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int,int] = (160,90)
 
+def find_last_zero(a, thresh=0.1):
+  r = -1
+  for i in range(len(a)):
+    if a[i] < thresh:
+      r = i
+    if a[i] > thresh:
+      if r == -1:
+        return None
+      return r
+  return None
+
+# Returns (horizonal, vertical) edges
+def find_edges(img):
+  ret, img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
+
+  img = cv2.resize(img, (0, 0), fx=0.05, fy=0.05)
+
+  (height, width) = img.shape
+
+  # Crop to the area we have lighting at
+  img = img[50:height-50, 50:width-50]
+
+  (height, width) = img.shape
+
+  col_pixels = np.array([cv2.countNonZero(img[:, col]) for col in range(width)]) / height
+  row_pixels = np.array([cv2.countNonZero(img[row, :]) for row in range(height)]) / width
+
+  if (col_at := find_last_zero(col_pixels)) is not None:
+    vert = (col_at + 50.0) * 20.0
+    print('COLUMNS:')
+    print(col_pixels)
+    print()
+
+
+    #img = cv2.line(img, (col_at, 0), (col_at, height), (255, 255, 255), 1)
+  else:
+    vert = None
+    print('NO VERTICAL EDGE')
+
+  if (row_at := find_last_zero(row_pixels)) is not None:
+    horz = (row_at + 50.0) * 20.0
+    print('ROWS:')
+    print(row_pixels)
+    print()
+
+    img = cv2.line(img, (0, row_at), (width, row_at), (255, 255, 255), 1)
+  else:
+    horz = None
+    print('NO HORIZONTAL EDGE')
+  
+  return (horz, vert)
+
 class ShownImage(Enum):
   Clear = 'clear'
   Pattern = 'pattern'
@@ -523,6 +575,7 @@ class CameraFrame:
     start_time = time.time()
     resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
     img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
+    print(f'EDGES: {find_edges(img)}')
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
