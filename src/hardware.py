@@ -1,7 +1,7 @@
 from PIL import Image
 from dataclasses import dataclass
 from typing import Optional, Callable, List
-from lib.img import posterize, toggle_channels, fit_image, convert_to_alpha_channel, dec_to_alpha
+from lib.img import posterize, select_channels, fit_image, convert_to_alpha_channel, dec_to_alpha
 from stage_control.stage_controller import StageController
 from projector import ProjectorController
 import copy
@@ -51,7 +51,7 @@ def process_img(image: Image.Image, settings: ImageProcessSettings) -> Image.Ima
   
   # color channel toggling (must be after posterizing)
   #debug.info("Toggling color channels...")
-  new_image = toggle_channels(new_image, *settings.color_channels)
+  new_image = select_channels(new_image, *settings.color_channels)
 
   bordered_size = (round((1.0-settings.border_size/100.0)*settings.size[0]), round((1.0-settings.border_size/100.0)*settings.size[1]))
 

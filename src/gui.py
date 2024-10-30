@@ -61,6 +61,11 @@ class MovementLock(Enum):
   Locked = 'locked'
   '''No positions can move to avoid disrupting patterning'''
 
+class RedFocusSource(Enum):
+  Image = 'image'
+  Solid = 'solid'
+  Pattern = 'pattern'
+
 @dataclass
 class ExposureLog:
   time: datetime
@@ -89,7 +94,7 @@ class EventDispatcher:
   uv_focus_image: Image.Image
 
   solid_red_image: Image.Image
-  use_solid_red: bool
+  red_focus_source: RedFocusSource
 
   image_adjust_position: tuple[float, float, float]
   border_size: float
@@ -121,7 +126,7 @@ class EventDispatcher:
     self.uv_focus_image = Image.new('RGB', (1, 1), 'black')
 
     self.solid_red_image = Image.new('RGB', (1, 1), 'red')
-    self.use_solid_red = False
+    self.red_focus_source = RedFocusSource.Image
 
     self.should_abort = False
 
@@ -166,16 +171,33 @@ class EventDispatcher:
       #border_size=0.0,
     ))
 
+    if self.red_focus_source == RedFocusSource.Pattern:
+      self._refresh_red_focus()
+
     # TODO:
     # Image adjust, resizing, and flatfield correction are performed *AFTER SLICING*
 
     self.on_event(Event.PatternImageChanged)
+  
+  def set_red_focus_source(self, source):
+    self.red_focus_source = source
+    self._refresh_red_focus()
+  
+  def _red_focus_source(self):
+    match self.red_focus_source:
+      case RedFocusSource.Image:
+        return self.red_focus_image
+      case RedFocusSource.Solid:
+        return self.solid_red_image
+      case RedFocusSource.Pattern:
+        return self.pattern_image.getchannel('B').convert('RGBA')
 
   def _refresh_red_focus(self):
     if self.hardware.projector.size() != self.solid_red_image.size:
       self.solid_red_image = Image.new('RGB', self.hardware.projector.size(), 'red')
 
-    img = self.solid_red_image if self.use_solid_red else self.red_focus_image
+    img = self._red_focus_source()
+
     self.hardware.red_focus.update(image=img, settings=ImageProcessSettings(
       posterization=self.posterize_strength,
       flatfield=None,
@@ -836,15 +858,22 @@ class RedModeFrame:
     self.frame = ttk.Frame(parent, name='redmodeframe')
 
     self.red_select_var = StringVar(value='focus')
-    self.red_focus_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Red Focus', value='focus')
-    self.solid_red_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Solid Red', value='solid')
+    self.red_focus_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Red Focus', value=RedFocusSource.Image.value)
+    self.solid_red_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Solid Red', value=RedFocusSource.Solid.value)
+    self.pattern_rb   = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Same as Pattern', value=RedFocusSource.Pattern.value)
 
     self.red_focus_rb.grid(row=0, column=0)
     self.solid_red_rb.grid(row=1, column=0)
+    self.pattern_rb  .grid(row=2, column=0)
 
     def on_radiobutton(*_):
       print(f'red select var {self.red_select_var.get()}')
-      event_dispatcher.set_use_solid_red(self.red_select_var.get() == 'solid')
+      for s in RedFocusSource:
+        if s.value == self.red_select_var.get():
+          event_dispatcher.set_red_focus_source(s)
+          break
+      else:
+        raise Exception()
 
     self.red_select_var.trace_add('write', on_radiobutton)
 

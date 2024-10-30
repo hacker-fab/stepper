@@ -11,7 +11,7 @@ from math import pi
 
 from .tuple import *
 
-def toggle_channels(image: Image.Image, red: bool = True, green: bool = True, blue: bool = True) -> Image.Image:
+def select_channels(image: Image.Image, red: bool = True, green: bool = True, blue: bool = True) -> Image.Image:
   img_cpy: Image.Image = image.copy()
   # check image is RGB or RGBA
   if img_cpy.mode != "RGB" and img_cpy.mode != "RGBA":
@@ -448,7 +448,7 @@ def __run_tests():
   print_assert(mult(2,(3,2,1)), (6,4,2))
   print_assert(mult(2,2), 4)
   
-  # test toggle_channels
+  # test select_channels
   black: Image.Image = Image.new("RGB", (1,1), (0,0,0))
   red: Image.Image = Image.new("RGB", (1,1), (255,0,0))
   green: Image.Image = Image.new("RGB", (1,1), (0,255,0))
@@ -461,27 +461,27 @@ def __run_tests():
   
   #test disabling all channels
   for color in test_colors:
-    print_assert(toggle_channels(color, False, False, False), black)
+    print_assert(select_channels(color, False, False, False), black)
   #test disabling channels
-  print_assert(toggle_channels(white, False, False, False), black)
-  print_assert(toggle_channels(white, False, False, True), blue)
-  print_assert(toggle_channels(white, False, True,  False), green)
-  print_assert(toggle_channels(white, False, True,  True), cyan)
-  print_assert(toggle_channels(white, True,  False, False), red)
-  print_assert(toggle_channels(white, True,  False, True), purple)
-  print_assert(toggle_channels(white, True,  True,  False), yellow)
-  print_assert(toggle_channels(white, True,  True,  True), white)
+  print_assert(select_channels(white, False, False, False), black)
+  print_assert(select_channels(white, False, False, True), blue)
+  print_assert(select_channels(white, False, True,  False), green)
+  print_assert(select_channels(white, False, True,  True), cyan)
+  print_assert(select_channels(white, True,  False, False), red)
+  print_assert(select_channels(white, True,  False, True), purple)
+  print_assert(select_channels(white, True,  True,  False), yellow)
+  print_assert(select_channels(white, True,  True,  True), white)
   #test enabling empty channels
   for color in test_colors:
-    print_assert(toggle_channels(color, True, True, True), color)
+    print_assert(select_channels(color, True, True, True), color)
   #test bad image modes
   L_image: Image.Image = Image.new("L", (1,1), 255)
   LA_image: Image.Image = Image.new("LA", (1,1), (255,255))
   CMYK_image: Image.Image = Image.new("CMYK", (1,1), (0,0,0,0))
   test_modes: list[Image.Image] = [L_image, LA_image, CMYK_image]
   for mode in test_modes:
-    print_assert(toggle_channels(mode, True, True, True), white, mode.mode)
-    print_assert(toggle_channels(mode, False, False, False), black, mode.mode)
+    print_assert(select_channels(mode, True, True, True), white, mode.mode)
+    print_assert(select_channels(mode, False, False, False), black, mode.mode)
   
   #between tuple tests
   print_assert(BTW_tuple(1,2,3), True)
