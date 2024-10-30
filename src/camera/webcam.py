@@ -5,13 +5,14 @@ import cv2
 import time
 
 class Webcam(CameraModule):
-    def __init__(self):
+    def __init__(self, index):
         self.camera = None
+        self.index = index
         self.capture_thread = None
         self.should_stop = threading.Event()
     
     def open(self):
-        self.camera = cv2.VideoCapture(1)
+        self.camera = cv2.VideoCapture(self.index)
         return self.camera.isOpened()
     
     def close(self):

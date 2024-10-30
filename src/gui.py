@@ -21,12 +21,8 @@ from lib.gui import IntEntry, Thumbnail
 from lib.img import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar
+import toml # Need to use a package because we're stuck on Python 3.10
 import tkinter
-
-if True:
-  import camera.amscope.amscope_camera as amscope_camera
-  import camera.flir.flir_camera as flir 
-
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int,int] = (160,90)
@@ -1030,13 +1026,8 @@ class LithographerGui:
 
 
 def main():
-  #with open('default.toml', 'rb') as f:
-  #  config = tomllib.load(f)
-  config = {
-    'stage': { 'enabled': True, 'port': 'COM3', 'baud-rate': 115200, 'scale-factor': 0.0128534 },
-    'camera': { 'enabled': True }
-  }
-	
+  with open('config.toml', 'r') as f:
+    config = toml.load(f)
 
   stage_config = config['stage']
   if stage_config['enabled']:
@@ -1045,12 +1036,20 @@ def main():
     stage = GrblStage(serial_port, stage_config['scale-factor'], bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
   else:
     stage = StageController()
-
+  
   camera_config = config['camera']
-  if camera_config['enabled']:
+  if 'webcam' in camera_config and 'flir' in camera_config:
+    print('config.toml cannot enable both the FLIR camera and a webcam!')
+    return 1
+  elif 'webcam' in camera_config:
+    camera = Webcam(camera_config['webcam'])
+  elif 'flir' in camera_config:
+    import camera.flir.flir_camera as flir 
     camera = flir.FlirCamera()
   else:
-    camera = Webcam()
+    print('config.toml must specify either a webcam or a FLIR camera!')
+    return 1
+
 
   lithographer = LithographerGui(stage, camera)
   lithographer.root.mainloop()
