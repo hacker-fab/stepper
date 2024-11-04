@@ -38,8 +38,8 @@ void setup() {
 
 void loop() {
   // Move microsteps
-  stepperX.rotate(1.8); // This moves the motor 1.8 degree clockwise
+  stepperX.rotate(1800); // This moves the motor 1800 degree clockwise
   delay(2000);
-  stepperX.move(-1600); // This moves the motor 360 degree counter clockwise
+  stepperX.move(8000); // This moves the motor 1800 degree counter clockwise
   delay(2000);
 }
