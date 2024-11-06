@@ -79,6 +79,8 @@ def find_edges(img):
   
   return (horz, vert)
 
+
+
 class ShownImage(Enum):
   Clear = 'clear'
   Pattern = 'pattern'
@@ -452,12 +454,44 @@ class EventDispatcher:
     print('Finding corner')
 
     for i in range(30):
-      self.offset_stage_position({ 'y': -300.0 })
-      self.non_blocking_delay(3.0)
-      if self.edges[0] is not None:
-        print('FOUND EDGE')
+      if self.edges[0] is None:
+        self.offset_stage_position({ 'x': -300.0 })
+        self.non_blocking_delay(3.0)
+      if self.edges[1] is None:
+        self.offset_stage_position({ 'y': -300.0 })
+        self.non_blocking_delay(3.0)
+      if self.edges[0] is not None and self.edges[1] is not None:
+        print('FOUND Corner')
         break
+    # reset the current position as origin, z remain the same
+    coor = self.stage_position()
+    z = coor['z']
+    self.hardware.stage.stage_position = { 'x': 0.0, 'y': 0.0, 'z': z }
+    self.hardware.stage.target_position = { 'x': 0.0, 'y': 0.0, 'z': z }
 
+    # find chip width(x)
+    width = 0
+    for i in range(30):
+      self.offset_stage_position({ 'x': 300.0 })
+      self.non_blocking_delay(3.0)
+      width += 300.0
+      if self.edges[0] is not None and self.edges[1] is not None:
+        print('FOUND Corner')
+        break
+    # find chip height(y)
+    length = 0
+    for i in range(30):
+      self.offset_stage_position({ 'y': 300.0 })
+      self.non_blocking_delay(3.0)
+      length += 300.0
+      if self.edges[0] is not None and self.edges[1] is not None:
+        print('FOUND Corner')
+        break
+    # obtain chip dimension
+    chip_dim = {"width": width, "height":length}
+    # set stage back to origin
+    self.set_stage_position({ 'x': 0.0, 'y': 0.0, 'z': z })
+    return chip_dim
   
   def autofocus(self):
     if self.autofocus_busy:
