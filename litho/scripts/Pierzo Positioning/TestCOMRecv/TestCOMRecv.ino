@@ -12,6 +12,7 @@ void loop() {
   while (SUART.available() > 0) {
     char ch = SUART.read(); // Read each character
     if (ch == '\n') { // Check if the character is a newline
+      Serial.print("Received: ");
       Serial.println(inputLine); // Print the complete line
       inputLine = ""; // Clear the buffer for the next line
     } else {

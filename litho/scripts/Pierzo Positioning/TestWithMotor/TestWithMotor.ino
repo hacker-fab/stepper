@@ -22,11 +22,22 @@ SoftwareSerial SUART(0, 1); // SRX = 0, STX = 1
 
 String inputLine = "";
 
+// Default to moving away
 bool clockwise = true;
+bool reset = true;
+
+//44107040 -- 1.7cm
+//4.9cm 44270000
+//5.6cm 44080000
+// y = −271428.57x+45600000.00
+// 1cm = 271428 delta
+
+// delta 185275 is approxmately 1 cm
 
 BasicStepperDriver stepperX(MOTOR_STEPS, DIR_X, STEP_X);
 BasicStepperDriver stepperY(MOTOR_STEPS, DIR_Y, STEP_Y);
 
+// Default to moving away
 int directionFlag = 1;
 
 void setup() {
@@ -55,57 +66,60 @@ void setup() {
     }
   }
   long parsedNumber = inputLine.toInt();
-  clockwise = parsedNumber >= 44160000;
+  setDirectionFlag(true);
+}
+
+// If reset is true, always reset
+int setDirectionFlag(bool reset) {
+  // Convert the string to a long integer
+  long parsedNumber = inputLine.toInt();
+  // Check if the parsed number is within the 28-bit unsigned integer range (0 to 268435455)
+  if (parsedNumber < 0 || parsedNumber > 268435455) {
+    Serial.println("Error: Number out of 28-bit range. Please enter a number between 0 and 268435455.");
+  } else {
+    // Print the parsed number if it's valid
+    Serial.println(parsedNumber);
+    if (parsedNumber >= 44265275 && !clockwise || reset) {
+      clockwise = true;
+      Serial.println("Stopped: too close");
+      stepperX.stop();
+      Serial.println("=== Reset Motor ===");
+      directionFlag = 1;
+    } else if (parsedNumber <= 44080000 && clockwise || reset){
+      clockwise = false;
+      Serial.println("Stopped: too far");
+      stepperX.stop();
+      Serial.println("=== Reset Motor ===");
+      directionFlag = -1;
+      //stepperX.move(-100);
+      // Serial.print("Moving for another ");
+      // Serial.print(wait_time_micros);
+      // Serial.println("us ---- "
+    }
+  }
+
+  return parsedNumber;
 }
 
 void loop() {
   while (SUART.available() > 0) {
     char ch = SUART.read();
     if (ch == '\n') {
-      Serial.println(inputLine);
       if (inputLine.length() > 9) { // Check if the input exceeds 28 bits (8 digits max for 28 bits)
         Serial.print("Length: ");
         Serial.print(inputLine.length());
         Serial.println("Error: Input exceeds 28-bit limit. Please enter a valid 28-bit number. ");
       } else {
-        // Convert the string to a long integer
-        long parsedNumber = inputLine.toInt();
-
-        // Check if the parsed number is within the 28-bit unsigned integer range (0 to 268435455)
-        if (parsedNumber < 0 || parsedNumber > 268435455) {
-          Serial.println("Error: Number out of 28-bit range. Please enter a number between 0 and 268435455.");
-        } else {
-          // Print the parsed number if it's valid
-          Serial.println(parsedNumber);
-
-          if (parsedNumber >= 44160000 && !clockwise) {
-            clockwise = true;
-            Serial.println("Stopped: too close");
+          int parsedNumber = setDirectionFlag(false);
+          if (parsedNumber < 44000000 || parsedNumber > 45000000) {
             stepperX.stop();
-            Serial.println("=== Reset Motor ===");
-            directionFlag = 1;
-            // stepperX.move(100);
-            // Serial.print("Moving for another ");
-            // Serial.print(wait_time_micros);
-            // Serial.println("us ---- ");
-            
-          } else if (parsedNumber <= 44070000 && clockwise){
-            clockwise = false;
-            Serial.println("Stopped: too far");
-            stepperX.stop();
-
-            Serial.println("=== Reset Motor ===");
-            directionFlag = -1;
-            //stepperX.move(-100);
-            // Serial.print("Moving for another ");
-            // Serial.print(wait_time_micros);
-            // Serial.println("us ---- ");
-
-          } else {
-            stepperX.move(10000 * directionFlag);
+            delay(50);
+          }else {
+            stepperX.move(500 * directionFlag);
+            Serial.print("Direction Flag: ");
+            Serial.println(directionFlag);
             delay(50);
           }
-        }
       }
       inputLine = ""; 
     } else {

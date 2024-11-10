@@ -30,5 +30,5 @@ void loop()
   }
 
   // SUART.println("Hello UNO-2!");
-  delay(1000);
+  delay(200);
 }
