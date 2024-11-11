@@ -8,7 +8,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
-from hardware import Lithographer, ImageProcessSettings, StageWrapper
+from hardware import Lithographer, ImageProcessSettings, ProcessedImage, StageWrapper
 from typing import Callable, List, Optional
 from PIL import Image
 from camera.camera_module import CameraModule
@@ -75,6 +75,10 @@ class ExposureLog:
   aborted: bool
 
 class EventDispatcher:
+  red_focus: ProcessedImage
+  uv_focus: ProcessedImage
+  pattern: ProcessedImage
+
   hardware: Lithographer
 
   listeners: dict[Event, List[Callable]]
@@ -110,6 +114,10 @@ class EventDispatcher:
 
     self.root = root
 
+    self.red_focus = ProcessedImage()
+    self.uv_focus = ProcessedImage()
+    self.pattern = ProcessedImage()
+
     self.exposure_time = 8000
     self.posterize_strength = None
 
@@ -144,11 +152,11 @@ class EventDispatcher:
       case ShownImage.Clear:
         return None
       case ShownImage.RedFocus:
-        return self.hardware.red_focus.processed()
+        return self.red_focus.processed()
       case ShownImage.UvFocus:
-        return self.hardware.uv_focus.processed()
+        return self.uv_focus.processed()
       case ShownImage.Pattern:
-        return self.hardware.pattern.processed()
+        return self.pattern.processed()
 
   def _update_projector(self):
     img = self.current_image()
@@ -158,7 +166,7 @@ class EventDispatcher:
       self.hardware.projector.show(img)
 
   def _refresh_pattern(self):
-    self.hardware.pattern.update(image=self.pattern_image, settings=ImageProcessSettings(
+    self.pattern.update(image=self.pattern_image, settings=ImageProcessSettings(
       posterization=self.posterize_strength,
       color_channels=(False, False, True),
       flatfield=None,
@@ -198,7 +206,7 @@ class EventDispatcher:
 
     img = self._red_focus_source()
 
-    self.hardware.red_focus.update(image=img, settings=ImageProcessSettings(
+    self.red_focus.update(image=img, settings=ImageProcessSettings(
       posterization=self.posterize_strength,
       flatfield=None,
       color_channels=(True, False, False),
@@ -211,7 +219,7 @@ class EventDispatcher:
       self.on_event(Event.ShownImageChanged)
   
   def _refresh_uv_focus(self):
-    self.hardware.uv_focus.update(image=self.uv_focus_image, settings=ImageProcessSettings(
+    self.uv_focus.update(image=self.uv_focus_image, settings=ImageProcessSettings(
       posterization=self.posterize_strength,
       flatfield=None,
       color_channels=(False, False, True),
@@ -333,8 +341,9 @@ class EventDispatcher:
     
     print(f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration)/1000))}s")
 
-
-    img = self.hardware.sliced_image(0, 0)
+    # TODO: Image slicing.
+    # Note that flatfield correction and image adjustment should be applied *after* slicing
+    img = self.pattern.processed()
 
     self.set_patterning_busy(True)
     self.hardware.projector.show(img)
@@ -841,7 +850,7 @@ class PatterningFrame:
         self.abort_patterning_button['state'] = 'disabled'
 
     event_dispatcher.add_event_listener(Event.PatterningBusyChanged, on_change_patterning_status)
-    event_dispatcher.add_event_listener(Event.PatternImageChanged, lambda: self.set_image(event_dispatcher.hardware.pattern.processed()))
+    event_dispatcher.add_event_listener(Event.PatternImageChanged, lambda: self.set_image(event_dispatcher.pattern.processed()))
 
     def on_progress_changed():
       self.exposure_progress['value'] = event_dispatcher.exposure_progress * 1000.0
