@@ -118,30 +118,10 @@ class StageWrapper:
         self.stage_position = copy.copy(self.target_position)
 
 class Lithographer:
-    red_focus: ProcessedImage
-    uv_focus: ProcessedImage
-    pattern: ProcessedImage
-
     stage: StageWrapper
 
     projector: ProjectorController
 
     def __init__(self, stage: StageController, projector: ProjectorController):
-        self.red_focus = ProcessedImage()
-        self.uv_focus = ProcessedImage()
-        self.pattern = ProcessedImage()
-
         self.stage = StageWrapper(stage)
         self.projector = projector
-    
-    def sliced_pattern_tile(self, tile_row: int, tile_col: int) -> Image.Image:
-        assert(tile_row == 0 and tile_col == 0) # TODO:
-        return self.pattern.processed()
-    
-    def sliced_image(self, tile_row: int, tile_col: int):
-        img = self.sliced_pattern_tile(tile_row, tile_col)
-        # Processing steps happened before slicing, don't need to reapply them
-        # TODO: When to apply flatfield/image adjust/border size?
-
-        #img = process_img(img, ImageProcessSettings(None, None, (True, True, True), (0.0, 0.0, 0.0), self.projector.size()))
-        return img
