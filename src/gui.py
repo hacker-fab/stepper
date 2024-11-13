@@ -665,7 +665,7 @@ class ImageAdjustFrame:
     self.relative_frame = ttk.LabelFrame(self.frame, text='Adjustment')
     self.relative_frame.grid(row=1, column=0)
 
-    for i, coord in ((0, 'x'), (1, 'y'), (2, 'z')):
+    for i, coord in ((0, 'x'), (1, 'y'), (2, 'ϴ')):
       self.step_size_intputs.append(IntEntry(parent=self.relative_frame, default=10, min_value=-1000, max_value=1000))
       self.step_size_intputs[-1].widget.grid(row=3,column=i)
 
@@ -1054,7 +1054,7 @@ class LithographerGui:
     self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
     #self.debug.info("Debug info will appear here")
 
-    messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Left Arrow until it no longer is visible!')
+    messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
   
   def cleanup(self):
     print("Patterning GUI closed.")
