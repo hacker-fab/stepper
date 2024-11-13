@@ -16,3 +16,7 @@
 
 # lib file paths
 *.pyc
+
+# Python setup
+venv/
+**/__pycache__

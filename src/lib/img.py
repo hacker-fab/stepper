@@ -9,37 +9,32 @@ from math import ceil, cos, sin, radians
 from typing import overload
 from math import pi
 
-def toggle_channels(image: Image.Image, red: bool | int = True, green: bool | int = True, blue: bool | int = True) -> Image.Image:
+from .tuple import *
+
+def select_channels(image: Image.Image, red: bool = True, green: bool = True, blue: bool = True) -> Image.Image:
   img_cpy: Image.Image = image.copy()
   # check image is RGB or RGBA
-  if(img_cpy.mode != "RGB" and img_cpy.mode != "RGBA"):
+  if img_cpy.mode != "RGB" and img_cpy.mode != "RGBA":
     img_cpy = img_cpy.convert("RGB")
-  if(red and green and blue):
+
+  if red and green and blue:
     return img_cpy
+
   # at least one channel is off, create blank image for those channels
   blank: Image.Image = Image.new("L", img_cpy.size)
+
   # split image into channels
   channels: tuple[Image.Image,...] = img_cpy.split()
-  assert(len(channels)==3 or len(channels)==4)
-  output: list[Image.Image] = []
-  if(red):
-    output.append(channels[0])
-  else:
-    output.append(blank)
-  if(green):
-    output.append(channels[1])
-  else:
-    output.append(blank)
-  if(blue):
-    output.append(channels[2])
-  else:
-    output.append(blank)
-  return Image.merge("RGB", tuple(output))
+  assert(len(channels) in (3, 4))
+
+  return Image.merge('RGB', (
+    channels[0] if red   else blank,
+    channels[1] if green else blank,
+    channels[2] if blue  else blank,
+  ))
 
 # return max image size that will fit in [win_size] without cropping
-def fit_image(image: Image.Image, win_size: tuple[int,int]) -> tuple[int,int]:
-  # for easier access
-  img_size: tuple[int,int] = (image.width, image.height)
+def fit_image(img_size: tuple[int,int], win_size: tuple[int,int]) -> tuple[int,int]:
   # determine orientation to fit to
   if (win_size[0] / win_size[1]) > (img_size[0] / img_size[1]):
     # window wider than image: fit to height
@@ -137,7 +132,7 @@ def get_brightness_range(image: Image.Image,
   for col in range(img_copy.width):
     for row in range(img_copy.height):
       # get single-value brightness since it's grayscale
-      pixel = img_copy.getpixel((col, row))
+      pixel: int = img_copy.getpixel((col, row)) # type:ignore
       if pixel < brightness[0]:
         brightness[0] = pixel
       if pixel > brightness[1]:
@@ -157,7 +152,7 @@ def rescale(image: Image.Image, new_scale: tuple[int,int]) -> Image.Image:
   for col in range(mask.width):
     for row in range(mask.height):
       # get pixel and lookup
-      pixel: int = mask.getpixel((col,row))
+      pixel: int = mask.getpixel((col,row)) # type:ignore
       lookup: int = lut.get(pixel, -1)
       if (lookup == -1):
         lookup = rescale_value((brightness[0],brightness[1]), new_scale, pixel)
@@ -175,13 +170,14 @@ def convert_to_alpha_channel(input_image: Image.Image,
   # copy the image
   mask: Image.Image = input_image.copy()
   # convert it to grayscale to normalize all values
-  if(mask.mode != "L"):
+  if mask.mode != "L":
     mask = mask.convert("L")
+
   # Invert all colors since we want the mask, not the image itself
   mask = invert(mask)
-  if (new_scale!=None):
+  if new_scale is not None:
     # if no target, save current size
-    if (target_size == (0,0)):
+    if target_size == (0,0):
       target_size = mask.size
     # downsample
     while mask.width > downsample_target or mask.height > downsample_target:
@@ -240,8 +236,8 @@ def LA_to_L(image: Image.Image) -> Image.Image:
 # This function is just a wrapper for ImageTk.PhotoImage() because of a bug
 # for whatever reason, photoimage removes the alpha channel from LA images
 # so this converts inputted LA images to RGBA before passing to PhotoImage
-def rasterize(image: Image.Image) -> ImageTk.PhotoImage:
-  if(image.mode == "LA"):
+def image_to_tk_image(image: Image.Image) -> ImageTk.PhotoImage:
+  if image.mode == "LA":
     return ImageTk.PhotoImage(image.convert("RGBA"))
   else:
     return ImageTk.PhotoImage(image)
@@ -251,11 +247,11 @@ def rasterize(image: Image.Image) -> ImageTk.PhotoImage:
 # 50  = (0,   255)
 # 100 = (0,   0)
 def dec_to_alpha(dec: int) -> tuple[int,int]:
-  if(dec < 0):
+  if dec < 0:
     return (255,255)
-  if(dec <= 50):
+  if dec <= 50:
     return (255-ceil((255*dec)/50),255)
-  if(dec <= 100):
+  if dec <= 100:
     return (0,255-ceil((255*(dec-50))/50))
   return (0,0)
 def alpha_to_dec(alpha: tuple[int,int]) -> int:
@@ -306,7 +302,7 @@ def better_transform(image: Image.Image,
   if(border < 0 or border >= 100):
     return final_image
   # next we need to scale image to the requested size
-  fit_size: tuple[int,int] = fit_image(image, (round(output_size[0]*((100-border)/100)), 
+  fit_size: tuple[int,int] = fit_image(image.size, (round(output_size[0]*((100-border)/100)), 
                                 round(output_size[1]*((100-border)/100))))
   img_cpy = img_cpy.resize(fit_size, resample=Image.Resampling.LANCZOS)
 
@@ -318,14 +314,14 @@ def better_transform(image: Image.Image,
   return img_cpy
 
 # slices image into parts
-def slice(image: Image.Image,
+def slice_image(image: Image.Image,
           horizontal_tiles: int = 0,
           vertical_tiles: int = 0,
           output_resolution: tuple[int,int] = (0,0)
           ) -> tuple[tuple[int,int],tuple[Image.Image,...]]:
   
   # if no parameters specified, return original image
-  if(horizontal_tiles <= 0 and vertical_tiles <= 0 and output_resolution == (0,0)):
+  if horizontal_tiles <= 0 and vertical_tiles <= 0 and output_resolution == (0,0):
     return ((1,1),(image.copy(),))
 
   input_ratio: float = image.size[0] / image.size[1]
@@ -337,7 +333,7 @@ def slice(image: Image.Image,
     
   grid: tuple[int,int]
   slice_size: tuple[int,int]
-  if(horizontal_tiles > 0 and vertical_tiles > 0):
+  if horizontal_tiles > 0 and vertical_tiles > 0:
     # both specified, make this the new ratio
     output_ratio = horizontal_tiles / vertical_tiles
     grid = (horizontal_tiles, vertical_tiles)
@@ -368,115 +364,6 @@ def slice(image: Image.Image,
       output.append(cropped)
   return (grid, tuple(output))
 
-#region: tuple functions
-
-# add tuples, return new tuple
-def add(a:tuple[int|float,...]|int|float,
-        b:tuple[int|float,...]|int|float
-        ) -> tuple[int|float,...]|int|float:
-  if(type(a) == tuple and type(b) == tuple):
-    return tuple([x+y for x,y in zip(a,b)])
-  elif(type(a) == tuple):
-    return tuple([x+b for x in a])
-  elif(type(b) == tuple):
-    return tuple([x+a for x in b])
-  else:
-    return a+b
-
-# sub tuples, return new tuple
-def sub(a:tuple[int|float,...]|int|float,
-        b:tuple[int|float,...]|int|float
-        ) -> tuple[int|float,...]|int|float:
-  if(type(a) == tuple and type(b) == tuple):
-    return tuple([x-y for x,y in zip(a,b)])
-  elif(type(a) == tuple):
-    return tuple([x-b for x in a])
-  elif(type(b) == tuple):
-    return tuple([x-a for x in b])
-  else:
-    return a-b
-
-# multiply tuples element-wise, return new tuple
-def mult(a:tuple[int|float,...]|int|float, 
-         b:tuple[int|float,...]|int|float
-         ) -> tuple[int|float,...]|int|float:
-  if(type(a) == tuple and type(b) == tuple):
-    return tuple([x*y for x,y in zip(a,b)])
-  elif(type(a) == tuple):
-    return tuple([x*b for x in a])
-  elif(type(b) == tuple):
-    return tuple([x*a for x in b])
-  else:
-    return a*b
-
-# divide tuples element-wise, return new tuple
-def div(a:tuple[int|float,...]|int|float,
-        b:tuple[int|float,...]|int|float
-        ) -> tuple[int|float,...]|int|float:
-  if(type(a) == tuple and type(b) == tuple):
-    return tuple([x/y for x,y in zip(a,b)])
-  elif(type(a) == tuple):
-    return tuple([x/b for x in a])
-  elif(type(b) == tuple):
-    return tuple([x/a for x in b])
-  else:
-    return a/b
-
-# convert float | int tuple to int tuple
-def round_tuple(t: tuple[int|float,...]) -> tuple[int,...]:
-  return tuple([round(x) for x in t])
-
-# apply abs to all elements of tuple
-def abs_tuple(t: tuple[int|float,...]) -> tuple[int|float,...]:
-  return tuple([abs(x) for x in t])
-
-# negate all elements of tuple (*-1)
-def neg_tuple(t: tuple[int|float,...]) -> tuple[int|float,...]:
-  return tuple([-x for x in t])
-
-# return true if each element in a is less than b
-def LT_tuple(a: tuple[int|float,...], b: tuple[int|float,...]) -> bool:
-  return all([x<y for x,y in zip(a,b)])
-
-# return true if each element in a is greater than b
-def GT_tuple(a: tuple[int|float,...], b: tuple[int|float,...]) -> bool:
-  return all([x>y for x,y in zip(a,b)])
-
-# return true if each element in a is equal to b
-def EQ_tuple(a: tuple[int|float,...], b: tuple[int|float,...]) -> bool:
-  return all([x==y for x,y in zip(a,b)])
-
-# return true if each element in a <= b <= c
-def BTW_tuple(a: tuple[int|float,...]|int|float,
-               b: tuple[int|float,...]|int|float,
-               c: tuple[int|float,...]|int|float) -> bool:
-  # first check if all inputs are non-tuples and return early
-  if(type(a) != tuple and type(b) != tuple and type(c) != tuple):
-    return a<=b and b<=c
-  # next check if all inputs are same length tuples
-  if(type(a) == tuple and type(b) == tuple and type(c) == tuple):
-    if(len(a) == len(b) and len(b) == len(c)):
-      return all([x<=y and y<=z for x,y,z in zip(a,b,c)])
-  # if neither early-exit condition is met, begin the slow path
-  # put all inputs into a single tuple to make interating over them easier
-  input_list: list = [a,b,c]
-  # now check if there is more than one tuple, and ensure they are the same length
-  last_len: int = -1
-  for elem in input_list:
-    if(type(elem) == tuple):
-      if(last_len == -1):
-        last_len = len(elem)
-      else:
-        assert(len(elem) == last_len)
-  # now for all non-tuples, extend to target length tuple
-  for i in range(3):
-    if(type(input_list[i]) != tuple):
-      input_list[i] = tuple([input_list[i]]*last_len)
-    
-  # now compare
-  return all([x<=y and y<=z for x,y,z in zip(*input_list)])
-
-#endregion
 
 # automated test suite
 def __run_tests():
@@ -497,9 +384,9 @@ def __run_tests():
   img3 = Image.new("RGBA", dim3)
   
   # fit to height
-  print_assert(fit_image(img0, dim1), (25,100))
+  print_assert(fit_image(img0.size, dim1), (25,100))
   # fit to width
-  print_assert(fit_image(img1, dim0), (50,33))
+  print_assert(fit_image(img1.size, dim0), (50,33))
   # fill to width
   print_assert(fill_image(img0, dim1), (150,600))
   # fill to height
@@ -561,7 +448,7 @@ def __run_tests():
   print_assert(mult(2,(3,2,1)), (6,4,2))
   print_assert(mult(2,2), 4)
   
-  # test toggle_channels
+  # test select_channels
   black: Image.Image = Image.new("RGB", (1,1), (0,0,0))
   red: Image.Image = Image.new("RGB", (1,1), (255,0,0))
   green: Image.Image = Image.new("RGB", (1,1), (0,255,0))
@@ -574,27 +461,27 @@ def __run_tests():
   
   #test disabling all channels
   for color in test_colors:
-    print_assert(toggle_channels(color, False, False, False), black)
+    print_assert(select_channels(color, False, False, False), black)
   #test disabling channels
-  print_assert(toggle_channels(white, False, False, False), black)
-  print_assert(toggle_channels(white, False, False, True), blue)
-  print_assert(toggle_channels(white, False, True,  False), green)
-  print_assert(toggle_channels(white, False, True,  True), cyan)
-  print_assert(toggle_channels(white, True,  False, False), red)
-  print_assert(toggle_channels(white, True,  False, True), purple)
-  print_assert(toggle_channels(white, True,  True,  False), yellow)
-  print_assert(toggle_channels(white, True,  True,  True), white)
+  print_assert(select_channels(white, False, False, False), black)
+  print_assert(select_channels(white, False, False, True), blue)
+  print_assert(select_channels(white, False, True,  False), green)
+  print_assert(select_channels(white, False, True,  True), cyan)
+  print_assert(select_channels(white, True,  False, False), red)
+  print_assert(select_channels(white, True,  False, True), purple)
+  print_assert(select_channels(white, True,  True,  False), yellow)
+  print_assert(select_channels(white, True,  True,  True), white)
   #test enabling empty channels
   for color in test_colors:
-    print_assert(toggle_channels(color, True, True, True), color)
+    print_assert(select_channels(color, True, True, True), color)
   #test bad image modes
   L_image: Image.Image = Image.new("L", (1,1), 255)
   LA_image: Image.Image = Image.new("LA", (1,1), (255,255))
   CMYK_image: Image.Image = Image.new("CMYK", (1,1), (0,0,0,0))
   test_modes: list[Image.Image] = [L_image, LA_image, CMYK_image]
   for mode in test_modes:
-    print_assert(toggle_channels(mode, True, True, True), white, mode.mode)
-    print_assert(toggle_channels(mode, False, False, False), black, mode.mode)
+    print_assert(select_channels(mode, True, True, True), white, mode.mode)
+    print_assert(select_channels(mode, False, False, False), black, mode.mode)
   
   #between tuple tests
   print_assert(BTW_tuple(1,2,3), True)
