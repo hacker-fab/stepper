@@ -49,6 +49,8 @@ const float MAX_MOVE = 4.00;
 
 bool left = true;
 
+int selectedMicrosteps = 1;
+
 void setup() {
   Serial.begin(9600);
   SUART.begin(9600);
@@ -56,9 +58,29 @@ void setup() {
   pinMode(EN, OUTPUT);
   digitalWrite(EN, LOW);
   // Set up default microsteps
-  stepperX.begin(60, 1);
+  Serial.println("Select microstepping (options: 1, 2, 4, 8):");
+  while (Serial.available() == 0) {
+    delay(10); 
+  }
+  if (Serial.available() > 0) {
+    selectedMicrosteps = Serial.parseInt();
+    bool validMicrostep = false;
+    for (int i = 0; i < sizeof(microstepsOptions) / sizeof(microstepsOptions[0]); i++) {
+      if (selectedMicrosteps == microstepsOptions[i]) {
+        validMicrostep = true;
+        break;
+      }
+    }
+    if (!validMicrostep) {
+      Serial.println("Invalid microstepping option. Defaulting to 1.");
+      selectedMicrosteps = 1;
+    }
+  }
+
+  stepperX.begin(60, selectedMicrosteps);
+
   delay(500);
-  Serial.println("Setup complete.");  
+  Serial.println("Setup complete.");
 
   // while (SUART.available() > 0) {
   //   char ch = SUART.read();
