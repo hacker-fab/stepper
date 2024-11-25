@@ -7,7 +7,7 @@
 #include <SoftwareSerial.h>
 
 SoftwareSerial mySerial(A0, A1);  // RX, TX
-int L = 40;  // Adjust the number of rotations as needed
+int L = 40;  // Adjust the number of rotations as needed                     
 int state = 0;
 int EN = 8;  // Change the stepper enable pin to match CNC Shield
 
