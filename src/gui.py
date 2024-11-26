@@ -39,7 +39,7 @@ def find_last_zero(a, thresh=0.1):
   return None
 
 # Returns (horizonal, vertical) edges
-def find_edges(img):
+def find_edges_1(img):
   ret, img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
 
   img = cv2.resize(img, (250, 200))
@@ -56,28 +56,63 @@ def find_edges(img):
 
   if (col_at := find_last_zero(col_pixels)) is not None:
     vert = (col_at + 50.0) * 20.0
-    print('COLUMNS:')
-    print(col_pixels)
-    print()
+    # print('COLUMNS:')
+    # print(col_pixels)
+    # print()
 
 
     #img = cv2.line(img, (col_at, 0), (col_at, height), (255, 255, 255), 1)
   else:
     vert = None
-    print('NO VERTICAL EDGE')
+    # print('NO VERTICAL EDGE')
 
   if (row_at := find_last_zero(row_pixels)) is not None:
     horz = (row_at + 50.0) * 20.0
-    print('ROWS:')
-    print(row_pixels)
-    print()
+    # print('ROWS:')
+    # print(row_pixels)
+    # print()
 
     img = cv2.line(img, (0, row_at), (width, row_at), (255, 255, 255), 1)
   else:
     horz = None
-    print('NO HORIZONTAL EDGE')
+    # print('NO HORIZONTAL EDGE')
   
   return (horz, vert)
+
+def find_edges_2(img):
+  threshold = 50
+  ret, img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
+  #img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+  img = cv2.resize(img, (250, 200))
+
+  (height, width) = img.shape
+
+  # Crop to the area we have lighting at
+  img = img[50:height-50, 50:width-50]
+
+  (height, width) = img.shape
+  top_half = img[:height // 2, :]
+  bottom_half = img[height // 2:, :]
+
+  # Vertical half (left or right)
+  left_half = img[:, :width // 2]
+  right_half = img[:, width // 2:]
+
+  brightness_top = np.mean(top_half)
+  brightness_bottom = np.mean(bottom_half)
+  brightness_left = np.mean(left_half)
+  brightness_right = np.mean(right_half)
+  h_edge = None
+  v_edge = None
+  # print(f'Vertical Difference {abs(brightness_top-brightness_bottom)}')
+  # print(f'Horizontal Difference {abs(brightness_left-brightness_right)}')
+  if abs(brightness_top-brightness_bottom) > threshold:
+    h_edge = abs(brightness_top-brightness_bottom)
+  
+  if abs(brightness_left - brightness_right) > threshold:
+    v_edge = abs(brightness_left-brightness_right)
+  return (h_edge, v_edge)
+
 
 
 
@@ -451,41 +486,47 @@ class EventDispatcher:
       self.autofocus()
   
   def find_corner(self):
-    print('Finding corner')
-
+    print('=========Finding corner==========')
+    # the camera view is about 650
+    step_size = 500.0
     for i in range(30):
+      print(f'SWEEPING...{i}')
       if self.edges[0] is None:
-        self.offset_stage_position({ 'x': -300.0 })
+        self.offset_stage_position({ 'x': step_size })
         self.non_blocking_delay(3.0)
+      else:
+        print("Hitting X Edge")
       if self.edges[1] is None:
-        self.offset_stage_position({ 'y': -300.0 })
+        self.offset_stage_position({ 'y': step_size })
         self.non_blocking_delay(3.0)
+      else:
+        print("Hitting Y Edge")
+      print(self.edges) 
       if self.edges[0] is not None and self.edges[1] is not None:
         print('FOUND Corner')
         break
     # reset the current position as origin, z remain the same
     coor = self.stage_position()
-    z = coor['z']
+    z = coor[2]
     self.hardware.stage.stage_position = { 'x': 0.0, 'y': 0.0, 'z': z }
-    self.hardware.stage.target_position = { 'x': 0.0, 'y': 0.0, 'z': z }
 
     # find chip width(x)
     width = 0
     for i in range(30):
-      self.offset_stage_position({ 'x': 300.0 })
+      self.offset_stage_position({ 'x': -step_size })
       self.non_blocking_delay(3.0)
-      width += 300.0
-      if self.edges[0] is not None and self.edges[1] is not None:
-        print('FOUND Corner')
+      width += step_size
+      if self.edges[0] is not None:
+        print('FOUND Edge X')
         break
     # find chip height(y)
     length = 0
     for i in range(30):
-      self.offset_stage_position({ 'y': 300.0 })
+      self.offset_stage_position({ 'y': -step_size })
       self.non_blocking_delay(3.0)
-      length += 300.0
-      if self.edges[0] is not None and self.edges[1] is not None:
-        print('FOUND Corner')
+      length += step_size
+      if self.edges[1] is not None:
+        print('FOUND Edge Y')
         break
     # obtain chip dimension
     chip_dim = {"width": width, "height":length}
@@ -622,8 +663,10 @@ class CameraFrame:
     try:
       start_time = time.time()
       resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
+
       img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
-      self.event_dispatcher.edges = find_edges(img)
+      #self.event_dispatcher.edges = find_edges_1(img)
+      self.event_dispatcher.edges = find_edges_2(img)
       #ret, img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
       #img = cv2.resize(img, (300, 200))
       #print(img[-1, -1])
