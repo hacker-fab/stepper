@@ -536,6 +536,87 @@ class EventDispatcher:
     self.set_stage_position({ 'x': 0.0, 'y': 0.0, 'z': z })
     return chip_dim
   
+  def find_corner_2(self):
+    print('=========Finding corner==========')
+    # the camera view is about 650
+    step_size = 100.0
+    iteration = 150
+    threshold = 100.0
+    
+    # horizontal sweeping for width
+    # (h_edge, v_edge)
+    spawn = self.stage_position()
+    spawn_x = spawn[0]
+    spawn_y = spawn[1]
+    h_displacement = 0
+    width = 0
+    for i in range(iteration):
+      print(f'HORIZONTAL SWEEPING...{i}')
+      if self.edges[1] is None:
+        self.offset_stage_position({ 'x': step_size })
+        self.non_blocking_delay(3.0)
+        h_displacement += step_size
+        width += step_size
+      else:
+        print("Hitting X Edge")
+        break
+    
+    self.offset_stage_position({ 'x': -h_displacement })
+    
+    for i in range(iteration):
+      print(f'HORIZONTAL SWEEPING...{i}')
+      if self.edges[1] is None:
+        self.offset_stage_position({ 'x': -step_size })
+        self.non_blocking_delay(3.0)
+        width += step_size
+      else:
+        print("Hitting X Edge")
+        break
+    
+    # centering
+    cur_cor = self.stage_position()
+    self.offset_stage_position('x':spawn_x - cur_cor[0])
+    
+        
+    # vertical sweeping for length
+    v_displacement = 0
+    height = 0
+    for i in range(iteration):
+      print(f'VERTICAL SWEEPING...{i}')
+      if self.edges[0] is None:
+        self.offset_stage_position({ 'y': step_size })
+        self.non_blocking_delay(3.0)
+        v_displacement += step_size
+        height += step_size
+      else:
+        print("Hitting Y Edge")
+        break
+    
+    self.offset_stage_position({ 'x': -h_displacement })
+    
+    for i in range(iteration):
+      print(f'VERTICAL SWEEPING...{i}')
+      if self.edges[0] is None:
+        self.offset_stage_position({ 'y': -step_size })
+        self.non_blocking_delay(3.0)
+        height += step_size
+      else:
+        print("Hitting Y Edge")
+        break
+    
+    # set to therotical corner
+    self.offset_stage_position('x':h_displacement)
+    
+    coor = self.stage_position()
+    z = coor[2]
+    self.hardware.stage.stage_position = { 'x': 0.0, 'y': 0.0, 'z': z }
+    
+    # obtain chip dimension
+    chip_dim = {"width": width, "height":length}
+    # set stage back to origin
+    self.set_stage_position({ 'x': 0.0, 'y': 0.0, 'z': z })
+    return chip_dim
+  
   def autofocus(self):
     if self.autofocus_busy:
       print('Skipping nested autofocus!')
