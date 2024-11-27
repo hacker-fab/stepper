@@ -80,7 +80,7 @@ def find_edges_1(img):
   return (horz, vert)
 
 def find_edges_2(img):
-  threshold = 50
+  threshold = 100
   ret, img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
   #img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
   img = cv2.resize(img, (250, 200))
@@ -104,13 +104,13 @@ def find_edges_2(img):
   brightness_right = np.mean(right_half)
   h_edge = None
   v_edge = None
-  # print(f'Vertical Difference {abs(brightness_top-brightness_bottom)}')
-  # print(f'Horizontal Difference {abs(brightness_left-brightness_right)}')
+  print(f'Vertical Difference {abs(brightness_top-brightness_bottom)}')
+  print(f'Horizontal Difference {abs(brightness_left-brightness_right)}')
   if abs(brightness_top-brightness_bottom) > threshold:
-    h_edge = abs(brightness_top-brightness_bottom)
+    h_edge = abs(brightness_top-brightness_bottom) #Y
   
   if abs(brightness_left - brightness_right) > threshold:
-    v_edge = abs(brightness_left-brightness_right)
+    v_edge = abs(brightness_left-brightness_right) #X
   return (h_edge, v_edge)
 
 
@@ -488,19 +488,21 @@ class EventDispatcher:
   def find_corner(self):
     print('=========Finding corner==========')
     # the camera view is about 650
-    step_size = 500.0
-    for i in range(30):
+    step_size = 100.0
+    iteration = 150
+    threshold = 100.0
+    for i in range(iteration):
       print(f'SWEEPING...{i}')
       if self.edges[0] is None:
-        self.offset_stage_position({ 'x': step_size })
-        self.non_blocking_delay(3.0)
-      else:
-        print("Hitting X Edge")
-      if self.edges[1] is None:
         self.offset_stage_position({ 'y': step_size })
         self.non_blocking_delay(3.0)
       else:
         print("Hitting Y Edge")
+      if self.edges[1] is None:
+        self.offset_stage_position({ 'x': step_size })
+        self.non_blocking_delay(3.0)
+      else:
+        print("Hitting X Edge")
       print(self.edges) 
       if self.edges[0] is not None and self.edges[1] is not None:
         print('FOUND Corner')
@@ -512,20 +514,20 @@ class EventDispatcher:
 
     # find chip width(x)
     width = 0
-    for i in range(30):
+    for i in range(iteration):
       self.offset_stage_position({ 'x': -step_size })
       self.non_blocking_delay(3.0)
       width += step_size
-      if self.edges[0] is not None:
+      if self.edges[1] is not None:
         print('FOUND Edge X')
         break
     # find chip height(y)
     length = 0
-    for i in range(30):
+    for i in range(iteration):
       self.offset_stage_position({ 'y': -step_size })
       self.non_blocking_delay(3.0)
       length += step_size
-      if self.edges[1] is not None:
+      if self.edges[0] is not None:
         print('FOUND Edge Y')
         break
     # obtain chip dimension
