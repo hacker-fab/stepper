@@ -81,6 +81,9 @@ class EventDispatcher:
 
   hardware: Lithographer
 
+  has_camera: bool
+  has_stage: bool
+
   listeners: dict[Event, List[Callable]]
 
   exposure_time: int
@@ -107,10 +110,13 @@ class EventDispatcher:
 
   exposure_history: List[ExposureLog]
 
-  def __init__(self, stage, proj, root):
+  def __init__(self, stage, proj, root, has_camera: bool, has_stage: bool):
     self.listeners = dict()
 
     self.hardware = Lithographer(stage, proj) # TODO:
+
+    self.has_camera = has_camera
+    self.has_stage = has_stage
 
     self.root = root
 
@@ -380,23 +386,27 @@ class EventDispatcher:
   def enter_red_mode(self):
     print('enter_red_mode')
     self.set_shown_image(ShownImage.RedFocus)
-    if self.autofocus_on_mode_switch:
+    if self.autofocus_on_mode_switch and self.has_camera and self.has_stage:
       self.autofocus()
 
   def enter_uv_mode(self):
-    if not self.autofocus_busy and self.autofocus_on_mode_switch:
+    if not self.autofocus_busy and self.autofocus_on_mode_switch and self.has_camera and self.has_stage:
       # UV mode is usually needs about -60 to be in focus compared to red mode
       self.offset_stage_position({ 'z': -100.0 })
 
     self.set_shown_image(ShownImage.UvFocus)
 
-    if self.autofocus_on_mode_switch:
+    if self.autofocus_on_mode_switch and self.has_camera and self.has_stage:
       self.non_blocking_delay(2.0)
       self.autofocus()
   
   def autofocus(self):
     if self.autofocus_busy:
       print('Skipping nested autofocus!')
+      return
+    
+    if not self.has_camera or not self.has_stage:
+      print('Camera or stage disabled, skipping autofocus')
       return
 
     print('Starting autofocus')
@@ -481,13 +491,14 @@ class SnapshotFrame:
 
 
 class CameraFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule):
+  def __init__(self, parent, event_dispatcher: EventDispatcher, c: Optional[CameraModule]):
     self.frame = ttk.Frame(parent)
-    self.label = ttk.Label(self.frame, text='live hackerfab reaction')
+    self.label = ttk.Label(self.frame, text='No camera connected')
     self.label.grid(row=0, column=0, sticky='nesw')
     
-    self.snapshot = SnapshotFrame(self.frame, event_dispatcher)
-    self.snapshot.frame.grid(row=1, column=0)
+    if c is not None:
+      self.snapshot = SnapshotFrame(self.frame, event_dispatcher)
+      self.snapshot.frame.grid(row=1, column=0)
 
     self.event_dispatcher = event_dispatcher
 
@@ -508,16 +519,20 @@ class CameraFrame:
 
       self.gui_camera_preview(image, dimensions)
 
-    if not self.camera.open():
-      print('Camera failed to start')
+    if self.camera is not None:
+      if not self.camera.open():
+        print('Camera failed to start')
+      else:
+        self.camera.setSetting('image_format', "rgb888")
+        self.camera.setStreamCaptureCallback(cameraCallback)
+        if not self.camera.startStreamCapture():
+          print('Failed to start stream capture for camera')
     else:
-      self.camera.setSetting('image_format', "rgb888")
-      self.camera.setStreamCaptureCallback(cameraCallback)
-      if not self.camera.startStreamCapture():
-        print('Failed to start stream capture for camera')
+      print('No camera enabled in config.toml; disabling camera-related features')
 
   def cleanup(self):
-    self.camera.close()
+    if self.camera is not None:
+      self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
     start_time = time.time()
@@ -1001,9 +1016,6 @@ class ExposureHistoryFrame:
       self.text.insert('end', line)
     self.text['state'] = 'disabled'
 
-    
-
-
 class LithographerGui:
   root: Tk
 
@@ -1011,10 +1023,10 @@ class LithographerGui:
 
   event_dispatcher: EventDispatcher
 
-  def __init__(self, stage: StageController, camera, title='Lithographer'):
+  def __init__(self, stage: StageController, camera: Optional[CameraModule], title='Lithographer'):
     self.root = Tk()
 
-    self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root)
+    self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root, camera is not None, True)
 
     self.shown_image = ShownImage.Clear
 
@@ -1078,18 +1090,23 @@ def main():
     stage = StageController()
   
   camera_config = config['camera']
-  if 'webcam' in camera_config and 'flir' in camera_config:
+  flir_enabled = camera_config.get('flir', False)
+  webcam_enabled = 'webcam' in camera_config
+  if webcam_enabled and flir_enabled:
     print('config.toml cannot enable both the FLIR camera and a webcam!')
+    print('Disable the webcam by #commenting it out or set `flir = false`')
     return 1
-  elif 'webcam' in camera_config:
-    camera = Webcam(camera_config['webcam'])
-  elif 'flir' in camera_config:
+  elif webcam_enabled:
+    num = camera_config['webcam']
+    print(f'Using webcam {num}')
+    camera = Webcam(num)
+  elif flir_enabled:
     import camera.flir.flir_camera as flir 
+    print('Using FLIR camera')
     camera = flir.FlirCamera()
   else:
-    print('config.toml must specify either a webcam or a FLIR camera!')
-    return 1
-
+    print('No camera enabled')
+    camera = None
 
   lithographer = LithographerGui(stage, camera)
   lithographer.root.mainloop()
