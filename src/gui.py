@@ -10,7 +10,7 @@ from datetime import datetime
 from functools import partial
 from hardware import Lithographer, ImageProcessSettings, ProcessedImage, StageWrapper
 from typing import Callable, List, Optional
-from PIL import Image
+from PIL import Image, ImageOps
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
 from stage_control.stage_controller import StageController
@@ -65,6 +65,7 @@ class RedFocusSource(Enum):
   Image = 'image'
   Solid = 'solid'
   Pattern = 'pattern'
+  InvPattern = 'invpattern'
 
 @dataclass
 class ExposureLog:
@@ -185,7 +186,7 @@ class EventDispatcher:
       #border_size=0.0,
     ))
 
-    if self.red_focus_source == RedFocusSource.Pattern:
+    if self.red_focus_source in (RedFocusSource.Pattern, RedFocusSource.InvPattern):
       self._refresh_red_focus()
 
     # TODO:
@@ -205,6 +206,8 @@ class EventDispatcher:
         return self.solid_red_image
       case RedFocusSource.Pattern:
         return self.pattern_image.getchannel('B').convert('RGBA')
+      case RedFocusSource.InvPattern:
+        return ImageOps.invert(self.pattern_image.getchannel('B')).convert('RGBA')
 
   def _refresh_red_focus(self):
     if self.hardware.projector.size() != self.solid_red_image.size:
@@ -510,6 +513,7 @@ class CameraFrame:
     self.gui_img = None
     self.camera = c
 
+  def start(self):
     def cameraCallback(image, dimensions, format):
       try:
         filename = self.snapshots_pending.get_nowait()
@@ -716,7 +720,6 @@ class ImageAdjustFrame:
     event_dispatcher.add_event_listener(Event.ImageAdjustChanged, on_position_change)
 
     def on_lock_change():
-      lock = event_dispatcher.movement_lock()
       if event_dispatcher.movement_lock() == MovementLock.Unlocked:
         for w in self.lockable_widgets:
           w.configure(state='normal')
@@ -760,27 +763,19 @@ class MultiImageSelectFrame:
       self.frame, 'Pattern',
       lambda t: event_dispatcher.set_pattern_image(self.pattern_image(), get_name(self.pattern_frame.thumb.path)),
     )
-    self.red_focus_frame = ImageSelectFrame(
-      self.frame, 'Red Focus',
-      lambda t: event_dispatcher.set_red_focus_image(self.red_focus_image()),
-    )
     self.uv_focus_frame = ImageSelectFrame(
       self.frame, 'UV Focus',
       lambda t: event_dispatcher.set_uv_focus_image(self.uv_focus_image()),
     )
 
     self.pattern_frame.frame.grid(row=0, column=0)
-    self.red_focus_frame.frame.grid(row=1, column=0)
-    self.uv_focus_frame.frame.grid(row=1, column=1)
+    self.uv_focus_frame.frame.grid(row=1, column=0)
 
     event_dispatcher.add_event_listener(Event.ShownImageChanged, lambda: self.highlight_button(event_dispatcher.shown_image))
   
   def pattern_image(self):
     return self.pattern_frame.thumb.image
   
-  def red_focus_image(self):
-    return self.red_focus_frame.thumb.image
-
   def uv_focus_image(self):
     return self.uv_focus_frame.thumb.image
   
@@ -883,13 +878,21 @@ class RedModeFrame:
     self.frame = ttk.Frame(parent, name='redmodeframe')
 
     self.red_select_var = StringVar(value='focus')
-    self.red_focus_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Red Focus', value=RedFocusSource.Image.value)
-    self.solid_red_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Solid Red', value=RedFocusSource.Solid.value)
-    self.pattern_rb   = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Same as Pattern', value=RedFocusSource.Pattern.value)
+    self.red_focus_rb   = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Red Focus', value=RedFocusSource.Image.value)
+    self.solid_red_rb   = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Solid Red', value=RedFocusSource.Solid.value)
+    self.pattern_rb     = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Same as Pattern', value=RedFocusSource.Pattern.value)
+    self.inv_pattern_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Inverse of Pattern', value=RedFocusSource.InvPattern.value)
 
-    self.red_focus_rb.grid(row=0, column=0)
-    self.solid_red_rb.grid(row=1, column=0)
-    self.pattern_rb  .grid(row=2, column=0)
+    self.red_focus_rb  .grid(row=0, column=0)
+    self.solid_red_rb  .grid(row=1, column=0)
+    self.pattern_rb    .grid(row=2, column=0)
+    self.inv_pattern_rb.grid(row=3, column=0)
+
+    self.red_focus_frame = ImageSelectFrame(
+      self.frame, 'Red Focus',
+      lambda t: event_dispatcher.set_red_focus_image(self.red_focus_image()),
+    )
+    self.red_focus_frame.frame.grid(row=0, column=1, rowspan=4)
 
     def on_radiobutton(*_):
       print(f'red select var {self.red_select_var.get()}')
@@ -901,6 +904,9 @@ class RedModeFrame:
         raise Exception()
 
     self.red_select_var.trace_add('write', on_radiobutton)
+   
+  def red_focus_image(self):
+    return self.red_focus_frame.thumb.image
 
 class UvModeFrame:
   def __init__(self, parent, event_dispatcher):
@@ -1065,9 +1071,13 @@ class LithographerGui:
     self.multi_image_select_frame.frame.grid(row=0, column=0)
 
     self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
-    #self.debug.info("Debug info will appear here")
 
-    messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
+    # Things that have to after the main loop begins
+    def on_start():
+      self.camera.start()
+      messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
+
+    self.root.after(0, on_start)
   
   def cleanup(self):
     print("Patterning GUI closed.")
