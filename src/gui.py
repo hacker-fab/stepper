@@ -748,6 +748,9 @@ class ImageSelectFrame:
 
     self.label = ttk.Label(self.frame, text=button_text)
     self.label.grid(row=1, column=0)
+  
+  def set_image(self, path):
+    self.thumb.import_path(path)
 
 class MultiImageSelectFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -1075,6 +1078,7 @@ class LithographerGui:
     # Things that have to after the main loop begins
     def on_start():
       self.camera.start()
+      self.multi_image_select_frame.uv_focus_frame.set_image('focus_uv_corners.png')
       messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
 
     self.root.after(0, on_start)

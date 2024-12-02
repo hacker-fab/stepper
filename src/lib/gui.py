@@ -134,7 +134,7 @@ class Thumbnail():
 
     # get image
     path: str = filedialog.askopenfilename(title ='Open')
-
+  
     # TODO: Debug
     '''
     if self._gui.debug is not None:
@@ -148,6 +148,9 @@ class Thumbnail():
         self.__gui__.debug.info(self.text+(" " if self.text!="" else "")+"set to "+basename(path))
     '''
 
+    self.import_path(path)
+  
+  def import_path(self, path):
     img = Image.open(path).copy()
     # check type
     # ensure image is RGB or L
@@ -162,7 +165,7 @@ class Thumbnail():
           #if(self.__gui__.debug != None):
           #  self.__gui__.debug.warn("RGBA images are not permitted, auto converted to RGB")
       case "LA":
-        if(not self.accept_alpha):
+        if not self.accept_alpha:
           img = LA_to_L(img)
           #if(self.__gui__.debug != None):
           #  self.__gui__.debug.warn("LA images are not permitted, auto converted to L")
