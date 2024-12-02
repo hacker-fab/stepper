@@ -386,6 +386,7 @@ class EventDispatcher:
   def enter_red_mode(self):
     print('enter_red_mode')
     self.set_shown_image(ShownImage.RedFocus)
+    self.on_event(Event.MovementLockChanged)
     if self.autofocus_on_mode_switch and self.has_camera and self.has_stage:
       self.autofocus()
 
@@ -395,6 +396,7 @@ class EventDispatcher:
       self.offset_stage_position({ 'z': -100.0 })
 
     self.set_shown_image(ShownImage.UvFocus)
+    self.on_event(Event.MovementLockChanged)
 
     if self.autofocus_on_mode_switch and self.has_camera and self.has_stage:
       self.non_blocking_delay(2.0)
@@ -600,16 +602,15 @@ class StagePositionFrame:
       coord_inc_button.grid(row=0, column=i)
       coord_dec_button.grid(row=1, column=i)
 
+      # step size intputs aren't included in this list since they don't actually move the stage directly
       if i in (0, 1):
        self.xy_widgets.append(coord_inc_button)
        self.xy_widgets.append(coord_dec_button)
        self.xy_widgets.append(self.position_intputs[i].widget)
-       self.xy_widgets.append(self.step_size_intputs[i].widget)
       else:
         self.z_widgets.append(coord_inc_button)
         self.z_widgets.append(coord_dec_button)
         self.z_widgets.append(self.position_intputs[i].widget)
-        self.z_widgets.append(self.step_size_intputs[i].widget)
 
     ttk.Label(self.relative_frame, text='Step Size (microns)', anchor='center').grid(row=2, column=0, columnspan=3, sticky='ew')
 
