@@ -71,7 +71,7 @@ void setup() {
   Serial.println("Initializing Setup...");
 
   pinMode(EN, OUTPUT);
-  digitalWrite(EN, LOW);
+  digitalWrite(EN, HIGH);
   // Set up default microsteps
   selectedMicrosteps = 1;
 
@@ -230,7 +230,9 @@ void loop() {
       Serial.print("Direction: ");
       Serial.println(direction);
       Serial.println();
+      digitalWrite(EN, LOW);
       stepperX.move(steps * direction);
+      digitalWrite(EN, HIGH);
       delay(50);
     }
   }
