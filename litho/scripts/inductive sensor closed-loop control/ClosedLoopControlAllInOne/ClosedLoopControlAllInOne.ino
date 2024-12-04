@@ -62,7 +62,12 @@ int microstepsOptions[] = {1, 2, 4, 8};
 void setup() {
   Serial.begin(9600);
   SUART.begin(9600);
-
+  Serial.println();
+  Serial.println();
+  Serial.println();
+  Serial.println();
+  Serial.println();
+  Serial.println("====================");
   Serial.println("Initializing Setup...");
 
   pinMode(EN, OUTPUT);
@@ -100,9 +105,10 @@ void setup() {
 
   Serial.println("LDC 1612 sensor Set.");
 
-  delay(500);
+  
   Serial.println("Setup complete.");
-
+  Serial.println("====================");
+  delay(500);
   // while (SUART.available() > 0) {
   //   char ch = SUART.read();
   //   if (ch == '\n') { 
@@ -134,68 +140,71 @@ bool readCommands() {
   char ch;
   String line = "";
   while (Serial.available() == 0) {
-   
-    if (Serial.available() > 0) {
-      String command = Serial.readStringUntil('\n'); 
-      command.trim(); 
+    if (firstFlag) {
+      Serial.println();
+      Serial.println("Waiting for commands...");
+      firstFlag = false;
+    }
+  }
 
-      // Check if the command format is valid
-      if (command.length() >= 3 && (command[0] == 'L' || command[0] == 'R') && command[1] == ' ') {
-        char direction = command[0]; // Extract direction (L or R)
-        float amount = command.substring(2).toFloat(); // Extract the amount and convert to float
-
-        // Ensure the movement is within allowed range
-        if (amount < MIN_MOVE) {
-          amount = MIN_MOVE;
-        } else if (amount > MAX_MOVE) {
-          amount = MAX_MOVE;
-        }
-
-        if (direction == 'L') {
-          Serial.print("Prepare to move left for ");
-          left = true;
-        } else if (direction == 'R') {
-          Serial.print("Prepare to move right for ");
-          left = false;
-        }
-        Serial.print(amount);
-        Serial.println(" mm");
-
-        moveDelta = amount / 10 * 271428.57;
-
-        return false;
-      } else {
-        Serial.println("Invalid command format. Use 'L <amount>' or 'R <amount>'.");
-        return true;
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n'); 
+    command.trim(); 
+    // Check if the command format is valid
+    if (command.length() >= 3 && (command[0] == 'L' || command[0] == 'R') && command[1] == ' ') {
+      char direction = command[0]; // Extract direction (L or R)
+      float amount = command.substring(2).toFloat(); // Extract the amount and convert to float
+      // Ensure the movement is within allowed range
+      if (amount < MIN_MOVE) {
+        amount = MIN_MOVE;
+      } else if (amount > MAX_MOVE) {
+        amount = MAX_MOVE;
       }
+      if (direction == 'L') {
+        Serial.print("Prepare to move left for ");
+        left = true;
+      } else if (direction == 'R') {
+        Serial.print("Prepare to move right for ");
+        left = false;
+      }
+      Serial.print(amount);
+      Serial.println(" mm");
+      moveDelta = amount / 10 * 271428.57;
+      return false;
+    } else {
+      Serial.println("Invalid command format. Use 'L <amount>' or 'R <amount>'.");
+      return true;
     }
   }
 }
 
 void loop() {
-
   delay(10);
 
   long startNumber, targetNumber;
-  int direction = left ? 1 : -1;
+  int direction = left ? -1 : 1;
   bool set = false;
   bool interrupted = readCommands();
+
+  // Movement params
   parsedNumber = readSensorMeas();
   inputLine = "";
-  direction = left ? 1 : -1;
+  direction = left ? -1 : 1;
   startNumber = parsedNumber;
   targetNumber = parsedNumber + direction * moveDelta;
+  
   Serial.println("Initializing stepper movement: ");
   Serial.print("Start Number: ");
   Serial.println(startNumber);
   Serial.print("Target Number: ");
   Serial.println(targetNumber);
+
   while (abs(parsedNumber - targetNumber) > minimumApproximation && !interrupted) {
     
     parsedNumber = readSensorMeas();
 
     int steps = 100;
-    if (parsedNumber < 44000000 || parsedNumber > 45000000) {
+    if (parsedNumber < 41800000 || parsedNumber > 45000000) {
       Serial.println(parsedNumber);
       Serial.println("Maximum Movement Amount exceeded. Stopping Motor.");
       stepperX.stop();
@@ -217,14 +226,18 @@ void loop() {
       Serial.println(targetNumber);
       Serial.print(parsedNumber - targetNumber);
       Serial.println(" Amount Left");
-      direction = parsedNumber > targetNumber ? 1 : -1;
+      direction = parsedNumber > targetNumber ? -1 : 1;
+      Serial.print("Direction: ");
+      Serial.println(direction);
+      Serial.println();
       stepperX.move(steps * direction);
       delay(50);
     }
   }
 
   Serial.println();
-  Serial.println("Movement Complete. Results: ");
+  Serial.println("<======Movement Complete. =====>");
+  Serial.println("Results: ");
   Serial.print(startNumber);
   Serial.print(" -> ");
   Serial.print(parsedNumber);
