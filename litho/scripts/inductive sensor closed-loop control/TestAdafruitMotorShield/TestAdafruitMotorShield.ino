@@ -31,12 +31,12 @@ void setup() {
   }
   Serial.println("Motor Shield found.");
 
-  myMotor->setSpeed(150); 
+  myMotor->setSpeed(200); 
 }
 
 
 void loop() {
   Serial.println("Microstep steps");
-  // myMotor->step(1600, FORWARD, DOUBLE);
-  // myMotor->step(1600, BACKWARD, DOUBLE);
+  myMotor->step(320, FORWARD, MICROSTEP);
+  myMotor->step(320, BACKWARD, DOUBLE);
 }
