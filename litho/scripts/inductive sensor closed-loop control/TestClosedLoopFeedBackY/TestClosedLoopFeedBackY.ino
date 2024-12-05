@@ -23,9 +23,10 @@ int EN = 8;  // Change the stepper enable pin to match CNC Shield
 SoftwareSerial SUART(0, 1); // SRX = 0, STX = 1
 
 String inputLine = ""; 
-LDC1612 sensor;
-//LDC 1612 object
 
+//LDC 1612 object
+LDC1612 sensor;
+long channel0out, channel1out;
 
 // Default to moving away
 bool clockwise = true;
@@ -43,17 +44,17 @@ BasicStepperDriver stepperX(MOTOR_STEPS, DIR_X, STEP_X);
 BasicStepperDriver stepperY(MOTOR_STEPS, DIR_Y, STEP_Y);
 
 // Default to moving away
-int directionFlag = 1;
+int directionXFlag = 1;
 
-long parsedNumber;
+long parsedNumberX;
 long minimumApproximation = 500;
-long moveDelta = 0;
+long moveDeltaX = 0;
 
 // Minimum and maximum movement amount in mm
 const float MIN_MOVE = 0.02;
 const float MAX_MOVE = 4.00;
 
-bool left = true;
+bool leftX = true;
 
 int selectedMicrosteps = 1;
 
@@ -95,12 +96,10 @@ void setup() {
   }
 
   stepperX.begin(60, selectedMicrosteps);
-  stepperY.begin(60, selectedMicrosteps);
 
   sensor.init();
-  if(sensor.single_channel_config(CHANNEL_0))
-  {
-      Serial.println("Can't detect LDC 1612 sensor!");
+  if(sensor.LDC1612_mutiple_channel_config()) {
+      Serial.println("can't detect LDC 1612 sensor!");
       while(1);
   }
 
@@ -119,7 +118,7 @@ void setup() {
   //     inputLine += ch;
   //   }
   // }
-  // parsedNumber = inputLine.toInt();
+  // parsedNumberX = inputLine.toInt();
 }
 
 long readSensorMeas() {
@@ -127,13 +126,21 @@ long readSensorMeas() {
   u32 result_channel2=0;
 
   sensor.get_channel_result(CHANNEL_0,&result_channel1);
+  sensor.get_channel_result(CHANNEL_1,&result_channel2);
 
   if(0!=result_channel1)
   {
+      Serial.print("Channel 0 measurement: ");
       Serial.println(result_channel1);
   }
-
-  return result_channel1;
+  if(0!=result_channel2)
+  {
+      Serial.print("Channel 1 measurement: ");
+      Serial.println(result_channel2);
+  }
+  channel0out = result_channel1;
+  channel1out = result_channel2;
+  return result_channel2;
 }
 
 bool readCommands() {
@@ -153,7 +160,7 @@ bool readCommands() {
     command.trim(); 
     // Check if the command format is valid
     if (command.length() >= 3 && (command[0] == 'L' || command[0] == 'R') && command[1] == ' ') {
-      char direction = command[0]; // Extract direction (L or R)
+      char directionX = command[0]; // Extract directionX (L or R)
       float amount = command.substring(2).toFloat(); // Extract the amount and convert to float
       // Ensure the movement is within allowed range
       if (amount < MIN_MOVE) {
@@ -161,16 +168,16 @@ bool readCommands() {
       } else if (amount > MAX_MOVE) {
         amount = MAX_MOVE;
       }
-      if (direction == 'L') {
-        Serial.print("Prepare to move left for ");
-        left = true;
-      } else if (direction == 'R') {
+      if (directionX == 'L') {
+        Serial.print("Prepare to move leftX for ");
+        leftX = true;
+      } else if (directionX == 'R') {
         Serial.print("Prepare to move right for ");
-        left = false;
+        leftX = false;
       }
       Serial.print(amount);
       Serial.println(" mm");
-      moveDelta = amount / 10 * 271428.57;
+      moveDeltaX = amount / 10 * 271428.57;
       return false;
     } else {
       Serial.println("Invalid command format. Use 'L <amount>' or 'R <amount>'.");
@@ -183,16 +190,16 @@ void loop() {
   delay(10);
 
   long startNumber, targetNumber;
-  int direction = left ? -1 : 1;
+  int directionX = leftX ? 1 : -1;
   bool set = false;
   bool interrupted = readCommands();
 
   // Movement params
-  parsedNumber = readSensorMeas();
+  parsedNumberX = readSensorMeas();
   inputLine = "";
-  direction = left ? -1 : 1;
-  startNumber = parsedNumber;
-  targetNumber = parsedNumber + direction * moveDelta;
+  directionX = leftX ? 1 : -1;
+  startNumber = parsedNumberX;
+  targetNumber = parsedNumberX + directionX * moveDeltaX;
   
   Serial.println("Initializing stepper movement: ");
   Serial.print("Start Number: ");
@@ -200,47 +207,42 @@ void loop() {
   Serial.print("Target Number: ");
   Serial.println(targetNumber);
 
-  while (abs(parsedNumber - targetNumber) > minimumApproximation && !interrupted) {
+  while (abs(parsedNumberX - targetNumber) > minimumApproximation && !interrupted) {
     
-    parsedNumber = readSensorMeas();
+    parsedNumberX = readSensorMeas();
 
     int steps = 100;
-    if (parsedNumber < 41900000 || parsedNumber > 43000000) {
-      Serial.println(parsedNumber);
-      Serial.println("Maximum Movement Amount exceeded. Resetting Target Number...");
-      if (parsedNumber < 41900000) {
-        targetNumber = 41900000 + 1000;
-      } else {
-        targetNumber = 43000000 - 1000;
+    if (parsedNumberX < 41000000 || parsedNumberX > 41700000) {
+      Serial.println(parsedNumberX);
+      Serial.println("Maximum Movement Amount exceeded. Stopping Motor.");
+      stepperX.stop();
+      interrupted = true;
+      break;
+    } else {
+      if (abs(parsedNumberX - targetNumber) > 10000 && steps >= 100) {
+        steps = 100;
+      } else if (abs(parsedNumberX - targetNumber) > 5000 && steps > 50) {
+        steps = 30;
+      } else if (abs(parsedNumberX - targetNumber) > 1000) {
+        steps = 10;
+      } else if (abs(parsedNumberX - targetNumber) < 1000) {
+        steps = 5;
       }
-      Serial.print("Target Number Set to: ");
+      Serial.print("Now: ");
+      Serial.println(parsedNumberX);
+      Serial.print("Target: ");
       Serial.println(targetNumber);
-      delay(100);
+      Serial.print(parsedNumberX - targetNumber);
+      Serial.println(" Amount leftX");
+      directionX = parsedNumberX > targetNumber ? 1 : -1;
+      Serial.print("directionX: ");
+      Serial.println(directionX);
+      Serial.println();
+      digitalWrite(EN, LOW);
+      stepperX.move(steps * directionX);
+      digitalWrite(EN, HIGH);
+      delay(50);
     }
-
-    if (abs(parsedNumber - targetNumber) > 10000 && steps >= 100) {
-      steps = 100;
-    } else if (abs(parsedNumber - targetNumber) > 5000 && steps > 50) {
-      steps = 30;
-    } else if (abs(parsedNumber - targetNumber) > 1000) {
-      steps = 10;
-    } else if (abs(parsedNumber - targetNumber) < 1000) {
-      steps = 5;
-    }
-    Serial.print("Now: ");
-    Serial.println(parsedNumber);
-    Serial.print("Target: ");
-    Serial.println(targetNumber);
-    Serial.print(parsedNumber - targetNumber);
-    Serial.println(" Amount Left");
-    direction = parsedNumber > targetNumber ? -1 : 1;
-    Serial.print("Direction: ");
-    Serial.println(direction);
-    Serial.println();
-    digitalWrite(EN, LOW);
-    stepperY.move(steps * direction);
-    digitalWrite(EN, HIGH);
-    delay(50);
   }
 
   Serial.println();
@@ -248,7 +250,7 @@ void loop() {
   Serial.println("Results: ");
   Serial.print(startNumber);
   Serial.print(" -> ");
-  Serial.print(parsedNumber);
+  Serial.print(parsedNumberX);
   Serial.println();
   Serial.println();
   Serial.println();

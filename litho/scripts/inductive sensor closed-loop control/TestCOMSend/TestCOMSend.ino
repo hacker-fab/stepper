@@ -17,7 +17,7 @@ void setup()
   }
 }
 
-void loop() 
+void loop()
 {
   u32 result_channel1=0;
   u32 result_channel2=0;
