@@ -15,6 +15,7 @@ from camera.camera_module import CameraModule
 from camera.webcam import Webcam
 from stage_control.stage_controller import StageController
 from stage_control.grbl_stage import GrblStage
+from stage_control.sensor_stage import SensorStage
 from projector import ProjectorController, TkProjector
 from enum import Enum
 from lib.gui import IntEntry, Thumbnail
@@ -74,6 +75,81 @@ class ExposureLog:
   coords: tuple[float, float, float]
   duration: float # ms
   aborted: bool
+
+@dataclass
+class PatternedChip:
+  name: str
+  exposures: List[ExposureLog]
+
+class ChipFrame:
+  def __init__(self, parent, event_dispatcher):
+    self.frame = ttk.Frame(parent)
+
+    self.stackup = None
+
+    #def on_button():
+    #  dirname = filedialog.askdirectory()
+    #  try:
+    #    stackup = Stackup.from_folder(dirname)
+    #    self._load_stackup(stackup)
+    #  except Exception as e:
+    #    print(f'Could not load stackup: {e}')
+    
+    #self.load_button = ttk.Button(self.frame, text='Load Stackup', command=on_button)
+    #self.load_button.grid(row=0, column=0)
+
+    def on_goto():
+      if self.chip is None:
+        print('No chip loaded for goto')
+        return
+      try:
+        sel = int(self.treeview.selection()[0])
+      except IndexError:
+        print('No pattern selected to goto')
+        return
+
+      ex = self.chip.exposures[sel]
+      print(f'Goto pattern {ex.name} at {ex.coords[0]}, {ex.coords[1]}')
+      event_dispatcher.set_stage_position(ex.coords[0], ex.coords[1], 0.0)
+
+    self.goto_button = ttk.Button(self.frame, text='Go to Pattern', command=on_goto)
+    self.goto_button.grid(row=0, column=0)
+
+    s = ttk.Style()
+    s.configure('Treeview')
+
+    def on_select(e):
+      try:
+        sel = int(self.treeview.selection()[0])
+      except IndexError:
+        sel = None
+      
+      print(f'Selected pattern {sel} from stackup')
+
+    self.treeview = ttk.Treeview(self.frame, selectmode='browse', columns=('x', 'y'))
+    self.treeview.heading('x', text='X')
+    self.treeview.heading('y', text='Y')
+    self.treeview.grid(row=1, column=0)
+    self.treeview.bind('<<TreeviewSelect>>', on_select)
+
+    self.chip = None
+    self._load_chip(PatternedChip('foobar', [
+      ExposureLog(datetime.now(), 'abc', (10800.0, 3619.0, 0.0), 8000.0, False),
+      ExposureLog(datetime.now(), 'foo', (10742.0, 2127.0, 0.0), 8000.0, False),
+      ExposureLog(datetime.now(), 'eevee', (10683.0, 987.0, 0.0), 8000.0, False),
+      ExposureLog(datetime.now(), 'bar', (10956.0, 3617.0, 0.0), 8000.0, False),
+      ExposureLog(datetime.now(), 'baz', (11288.0, 4147.0, 0.0), 8000.0, False),
+    ]))
+  
+  def _load_chip(self, chip: PatternedChip):
+    if self.chip is not None:
+      for i in range(len(self.chip.exposures)):
+        self.treeview.delete(str(i))
+    
+    self.chip = chip 
+    for i, ex in enumerate(self.chip.exposures):
+        self.treeview.insert('', 'end', str(i), text=ex.name, values=(ex.coords[0], ex.coords[1])) #type:ignore
+
 
 class EventDispatcher:
   red_focus: ProcessedImage
@@ -305,8 +381,10 @@ class EventDispatcher:
     print('Aborting patterning')
   
   def stage_position(self):
-    pos = self.hardware.stage.stage_position
-    return (pos['x'], pos['y'], pos['z'])
+    # FIXME:
+    #pos = self.hardware.stage.stage_position
+    return (0.0, 0.0, 0.0)
+    #return (pos['x'], pos['y'], pos['z'])
   
   def set_image_position(self, x, y, t):
     self.image_adjust_position = (x, y, t)
@@ -406,6 +484,9 @@ class EventDispatcher:
       self.autofocus()
   
   def autofocus(self):
+    # TODO:
+    print('SKIPPING AUTOFOCUS')
+    return
     if self.autofocus_busy:
       print('Skipping nested autofocus!')
       return
@@ -592,13 +673,18 @@ class StagePositionFrame:
       self.step_size_intputs[-1].widget.grid(row=3,column=i)
 
       def callback_pos(index, c):
-        pos = list(event_dispatcher.stage_position())
-        pos[index] += self.step_sizes()[index]
-        event_dispatcher.set_stage_position(*pos)
+        # TODO: Update stage position in GUI
+        cd = 'xyz'[index]
+        event_dispatcher.offset_stage_position({ cd: self.step_sizes()[index] })
+        #pos = list(event_dispatcher.stage_position())
+        #pos[index] += self.step_sizes()[index]
+        #event_dispatcher.set_stage_position(*pos)
       def callback_neg(index, c):
-        pos = list(event_dispatcher.stage_position())
-        pos[index] -= self.step_sizes()[index]
-        event_dispatcher.set_stage_position(*pos)
+        cd = 'xyz'[index]
+        event_dispatcher.offset_stage_position({ cd: -self.step_sizes()[index] })
+        #pos = list(event_dispatcher.stage_position())
+        #pos[index] -= self.step_sizes()[index]
+        #event_dispatcher.set_stage_position(*pos)
 
       coord_inc_button = ttk.Button(self.relative_frame, text=f'+{coord.upper()}', command=partial(callback_pos, i, coord))
       coord_dec_button = ttk.Button(self.relative_frame, text=f'-{coord.upper()}', command=partial(callback_neg, i, coord))
@@ -1052,11 +1138,14 @@ class LithographerGui:
     self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
     self.exposure_history_frame.frame.grid(row=0, column=0)
 
+    self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
+    self.chip_frame.frame.grid(row=0, column=1)
+
     self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
-    self.image_adjust_frame.frame.grid(row=0, column=1)
+    self.image_adjust_frame.frame.grid(row=0, column=2)
 
     self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
-    self.global_settings_frame.frame.grid(row=0, column=2)
+    self.global_settings_frame.frame.grid(row=0, column=3)
 
     self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
     self.stage_position_frame.frame.grid(row=0, column=1)
@@ -1079,7 +1168,7 @@ class LithographerGui:
     def on_start():
       self.camera.start()
       self.multi_image_select_frame.uv_focus_frame.set_image('focus_uv_corners.png')
-      messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
+      #messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
 
     self.root.after(0, on_start)
   
@@ -1100,7 +1189,8 @@ def main():
   if stage_config['enabled']:
     serial_port = serial.Serial(stage_config['port'], stage_config['baud-rate'])
     print(f'Using serial port {serial_port.name}')
-    stage = GrblStage(serial_port, stage_config['scale-factor'], bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
+    #stage = GrblStage(serial_port, stage_config['scale-factor'], bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
+    stage = SensorStage(serial_port)
   else:
     stage = StageController()
   

@@ -9,3 +9,4 @@ class StageController:
 
     def move_to(self, amounts: dict[str, float]):
         print(f'ignoring move_to {amounts} in dummy_stage controller')
+        raise Exception()

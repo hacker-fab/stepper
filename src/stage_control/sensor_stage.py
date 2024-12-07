@@ -15,47 +15,63 @@ def clamp(value, lo, hi):
     else:
         return value
 
-class GrblStage(StageController):
+class SensorStage(StageController):
     # only x, y, and z axes are supported by this interface
     # may support alternative axes schemes in the future
     # controller_target must be an open file (may be serial port for example)
-    def __init__(self, 
-                 controller_target, 
-                 scale_factor: float, # units per micron
-                 bounds: tuple[tuple[float,float],tuple[float,float],tuple[float,float]] = ((-10,10),(-10,10),(-10,10)), 
-                 ):
+    def __init__(self, controller_target):
         self.controller_target = controller_target
-        self.scale_factor = scale_factor
+        
+        self.um_to_steps = 3.2
 
-        try:
-            # set origin based on initial position
-            self.controller_target.write(b'G92 0 0 0\n') 
-        except:
-            print(f'Error: Could not open motor control file "{controller_target}"')
-
-        self.bounds = bounds
         self.axes = ('x', 'y', 'z')
         self.position = [0.0, 0.0, 0.0]
-
-        for b in bounds:
-            assert b[0] <= b[1]
-
-    def __del__(self):
-        self.controller_target.write(b'G91\n') # set to relative mode for safety
+       
+    def _refresh_log(self):
+        if self.controller_target.in_waiting > 0:
+            b = self.controller_target.read(self.controller_target.in_waiting)
+            while (s := b.find(b'$')) != -1:
+                print(b[:s].decode('utf-8'), end='')
+                b = b[s:]
+                while b'\n' not in b:
+                    while self.controller_target.in_waiting == 0:
+                        pass
+                    self.controller_target.read(self.controller_target.in_waiting)
+                e = b.index(b'\n')
+                position = b[:e+1].decode('ascii')
+                x, y = position[1:].strip().split(',')
+                x = int(x)
+                y = int(y)
+                print(f'Position: {x}, {y}')
+                b = b[e+1:]
+            print(b.decode('utf-8'), end='')
+    
+    def query_position(self):
+        self.controller_target.write(b'q\n')
+        self._refresh_log()
 
     def _move_relative(self, microns: tuple[float, float, float]):
-        x, y, z = tuple(m * self.scale_factor for m in microns)
-        self.controller_target.write(b'G91\n') # set relative movement mode
-        self.controller_target.write(bytes(f'G0 x{x} y{y} z{z}\n', encoding='utf-8')) # move by this amount
+        self._refresh_log()
+        x, y, z = tuple(round(m * self.um_to_steps) for m in microns)
+        if x != 0 or y != 0:
+            self.controller_target.write(f's {x} {y}\n'.encode('ascii'))
+        if z != 0:
+            self.controller_target.write(f'z {z}\n'.encode('ascii'))
     
     def _move_absolute(self, microns: tuple[float, float, float]):
-        x, y, z = tuple(m * self.scale_factor for m in microns)
-        self.controller_target.write(b'G90\n') # set absolute movement mode
-        self.controller_target.write(bytes(f'G0 x{x} y{y} z{z}\n', encoding='utf-8')) # move by this amount
+        self._refresh_log()
+        # TODO: Z
+        z = microns[2] * self.um_to_steps
+
+        x, y = round(microns[0]), round(microns[1])
+
+        self.controller_target.write(f'a {x} {y}\n'.encode('ascii'))
 
     # pass in list of amounts to move by. Dictionary in "axis: amount" format
-    def move_by(self, amounts: dict[str, float]):
+    def move_by(self, amounts: dict[str, float], **kwargs):
         # first make sure axes are valid
+        self._move_relative((amounts.get('x', 0), amounts.get('y', 0), amounts.get('z', 0)))
+        '''
         if self.__axes_valid__(list(amounts.keys())):
             x, y, z = self.__adjust_coordinates__(amounts, True)
             self._move_relative((x, y, z))
@@ -66,8 +82,11 @@ class GrblStage(StageController):
             print(f"moved by {x} {y} {z}")
         else:
             print('Error: tried to move on invalid axis')
+        '''
 
-    def move_to(self, amounts: dict[str, float]):
+    def move_to(self, amounts: dict[str, float], **kwargs):
+        self._move_absolute((amounts['x'], amounts['y'], amounts['z']))
+        '''
         # first make sure axes are valid
         if self.__axes_valid__(list(amounts.keys())):
             x, y, z = self.__adjust_coordinates__(amounts, False)
@@ -76,6 +95,7 @@ class GrblStage(StageController):
             self.position[0] = x
             self.position[1] = y
             self.position[2] = z
+        '''
 
     def __axes_valid__(self, axes):
         for axis in axes:

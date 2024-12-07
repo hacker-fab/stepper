@@ -123,5 +123,6 @@ class Lithographer:
     projector: ProjectorController
 
     def __init__(self, stage: StageController, projector: ProjectorController):
-        self.stage = StageWrapper(stage)
+        #self.stage = StageWrapper(stage)
+        self.stage = stage # TODO:
         self.projector = projector
