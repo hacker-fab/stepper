@@ -23,6 +23,9 @@ from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar, messagebox
 import toml # Need to use a package because we're stuck on Python 3.10
 import tkinter
+from pattern_net.model import pattern_net
+import torch
+import os
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int,int] = (160,90)
@@ -196,6 +199,8 @@ class EventDispatcher:
   edges: tuple[Optional[float], Optional[float]]
 
   exposure_history: List[ExposureLog]
+  chip_config: dict[str, list[float]]
+  have_pattern:bool
 
   def __init__(self, stage, proj, root):
     self.listeners = dict()
@@ -235,9 +240,61 @@ class EventDispatcher:
     self.border_size = 0.0
 
     self.exposure_history = []
+    self.chip_config = {}
+    self.pattern_net = None
+    self.have_pattern = False
 
     self.add_event_listener(Event.ShownImageChanged, lambda: self._update_projector())
   
+  def load_pattern_net(self, model_path):
+      model_folder = "/home/louis/project/stepper/src/pattern_net/model"
+      model = pattern_net()
+      model.load_state_dict(torch.load(os.path.join(model_folder, 'pattern_net_model.pth')))
+      self.pattern_net = model
+    
+  def check_pattern(self, img):
+    if self.pattern_net is None:
+      return False
+    img = cv2.resize(img, (224, 224))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = img / 255.0
+    img = np.transpose(img, (2, 0, 1))
+    img = torch.tensor(img, dtype=torch.float32)
+    img = img.unsqueeze(0)
+    with torch.no_grad():
+      result = self.pattern_net(img)
+    return torch.argmax(result).item() == 0
+  
+  def add_pattern2_chip_config(self):
+    if self.have_pattern:
+      if 'pattern' in self.chip_config:
+        self.chip_config['pattern'].append(self.stage_position())
+      else:
+        self.chip_config['pattern'] = [self.stage_position()]
+  
+  def store_chip_config(self, path):
+    with open(path, 'w') as f:
+      toml.dump(self.chip_config, f)
+    
+  def pattern_sweeping(self):
+    # the camera view is about 650
+    coor = self.stage_position()
+    z = coor[2]
+    self.hardware.stage.stage_position = { 'x': 0.0, 'y': 0.0, 'z': z }
+    self.set_stage_position({ 'x': 0.0, 'y': 0.0, 'z': z })
+    width, height = self.chip_config['dimension']
+    step_size = 100.0
+    for i in range(width//step_size):
+      print(f'X PATTERN SWEEPING...{i}')
+      self.offset_stage_position({ 'x': step_size })
+      self.non_blocking_delay(3.0)
+      self.offset_stage_position({ 'y': -height })
+      for j in range(height//step_size):
+        print(f'Y PATTERN SWEEPING...{j}')
+        self.offset_stage_position({ 'y': step_size })
+        self.non_blocking_delay(3.0)
+        self.add_pattern2_chip_config()
+
   def current_image(self):
     match self.shown_image:
       case ShownImage.Clear:
@@ -612,7 +669,9 @@ class EventDispatcher:
     self.hardware.stage.stage_position = { 'x': 0.0, 'y': 0.0, 'z': z }
     
     # obtain chip dimension
-    chip_dim = {"width": width, "height":length}
+    chip_dim = {"width": width, "height":height}
+    if ['dimension'] not in self.chip_config:
+      self.chip_config['dimension'] = [width, height]
     # set stage back to origin
     self.set_stage_position({ 'x': 0.0, 'y': 0.0, 'z': z })
     return chip_dim
@@ -750,6 +809,7 @@ class CameraFrame:
       img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
       #self.event_dispatcher.edges = find_edges_1(img)
       self.event_dispatcher.edges = find_edges_2(img)
+      self.event_dispatcher.have_pattern = self.event_dispatcher.check_pattern(resized_img)
       #ret, img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
       #img = cv2.resize(img, (300, 200))
       #print(img[-1, -1])
