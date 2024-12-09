@@ -6,28 +6,19 @@
 
 #include "Seeed_LDC1612.h"
 
-SoftwareSerial mySerial(A0, A1);  // RX, TX
-int L = 40;  // Adjust the number of rotations as needed
-int state = 0;
-int EN = 8;  // Change the stepper enable pin to match CNC Shield
-
-
-#define DIR_X 5  // Change these pin numbers to match CNC Shield
-#define STEP_X 2
-#define DIR_Y 6
-#define STEP_Y 3
+#define PIN_EN 8
+#define PIN_DIR_X 5  // Change these pin numbers to match CNC Shield
+#define PIN_STEP_X 2
+#define PIN_DIR_Y 6
+#define PIN_STEP_Y 3
+#define PIN_DIR_Z 7
+#define PIN_STEP_Z 4
 #define MICROSTEPSX 1
 #define MICROSTEPSY 16
 // motor https://blog.protoneer.co.nz/arduino-cnc-shield/ is defined as 200 steps/rev
 // motor driver https://biqu.equipment/products/bigtreetech-tmc2209-stepper-motor-driver-for-3d-printer-board-vs-tmc2208?srsltid=AfmBOopezr9e2gOP7n7De8bN6u3wXzksJSTVsHnytXv9BuVOehQGE7xv
 // does 1/8 microstepping by default
 #define MOTOR_STEPS 200*8
-
-// #define MAX_STRINGS 10
-
-SoftwareSerial SUART(0, 1); // SRX = 0, STX = 1
-
-// String commandParts[MAX_STRINGS]; 
 
 //LDC 1612 object
 LDC1612 sensor;
@@ -49,8 +40,9 @@ long um_to_hz(long um) {
 
 // delta 185275 is approxmately 1 cm
 
-BasicStepperDriver stepperX(MOTOR_STEPS, DIR_X, STEP_X);
-BasicStepperDriver stepperY(MOTOR_STEPS, DIR_Y, STEP_Y);
+BasicStepperDriver stepperX(MOTOR_STEPS, PIN_DIR_X, PIN_STEP_X);
+BasicStepperDriver stepperY(MOTOR_STEPS, PIN_DIR_Y, PIN_STEP_Y);
+BasicStepperDriver stepperZ(MOTOR_STEPS, PIN_DIR_Z, PIN_STEP_Z);
 
 long minimumApproximation = 10;
 
@@ -63,9 +55,55 @@ int microstepsOptions[] = {1, 2, 4, 8};
 
 bool LOG_SENSOR = false;
 
+
+struct RawSensorMeas {
+  int32_t x_hz;
+  int32_t y_hz;
+};
+
+struct SensorMeas {
+  int32_t x_um;
+  int32_t y_um;
+};
+
+
+enum class CommandKind {
+  RelativeStepsZ, // "z" integer_um
+  RelativeSteps, // "s" integer_steps integer_steps
+  Relative, // "r" integer_um integer_um
+  Absolute, // "a" integer_um integer_um
+  QueryPosition, // "q" -> "$ " integer_um "," integer_um
+};
+
+
+struct Command {
+  CommandKind kind;
+
+  // these are step counts for RawStep, um for Relative, and Hz for AbsoluteHz
+  union {
+    struct {
+      long x;
+      long y;
+    } rel;
+
+    struct {
+      long x_um;
+      long y_um;
+    } abs;
+
+    struct {
+      long z;
+    } rel_z;
+  };
+};
+
+// works around bug in Arduino IDE, see https://forum.arduino.cc/t/x-does-not-name-a-type/687314/3
+RawSensorMeas readRawSensorMeas();
+SensorMeas readSensorMeas();
+bool readCommands(Command &cmd);
+
 void setup() {
-  Serial.begin(9600);
-  SUART.begin(9600);
+  Serial.begin(115200);
 
   if (!LOG_SENSOR) {
     Serial.println();
@@ -77,40 +115,22 @@ void setup() {
     Serial.println("Initializing Setup...");
   }
 
-  pinMode(EN, OUTPUT);
-  digitalWrite(EN, HIGH);
-  // Set up default microsteps
-  selectedMicrosteps = 1;
-
-  /*Serial.println("Select microstepping (options: 1, 2, 4, 8):");
-  while (Serial.available() == 0) { 
-    delay(10); 
-  }
-  if (Serial.available() > 0) {
-    selectedMicrosteps = Serial.parseInt();
-    bool validMicrostep = false;
-    for (int i = 0; i < sizeof(microstepsOptions) / sizeof(microstepsOptions[0]); i++) {
-      if (selectedMicrosteps == microstepsOptions[i]) {
-        validMicrostep = true;
-        break;
-      }
-    }
-    if (!validMicrostep) {
-      Serial.println("Invalid microstepping option. Defaulting to 1.");
-      selectedMicrosteps = 1;
-    }
-  }
-  */
-  selectedMicrosteps = 1;
-
-  stepperX.begin(60, selectedMicrosteps);
-  stepperY.begin(60, selectedMicrosteps);
+  pinMode(PIN_EN, OUTPUT);
+  digitalWrite(PIN_EN, HIGH);
+ 
+  stepperX.begin(60, 1);
+  stepperY.begin(60, 1);
+  stepperZ.begin(60, 1);
 
   sensor.init();
   if(sensor.LDC1612_mutiple_channel_config()) {
       Serial.println("can't detect LDC 1612 sensor!");
       while(1);
   }
+
+  // sets about ~10ms sampling time
+  sensor.set_conversion_time(CHANNEL_0, 0x5460);
+  sensor.set_conversion_time(CHANNEL_1, 0x5460);
 
   if (!LOG_SENSOR) {
     Serial.println("LDC 1612 sensor Set.");
@@ -119,6 +139,7 @@ void setup() {
     Serial.println("====================");
   }
   delay(500);
+  Serial.print("foobar "); Serial.println(readRawSensorMeas().x_hz);
   // while (SUART.available() > 0) {
   //   char ch = SUART.read();
   //   if (ch == '\n') { 
@@ -131,30 +152,6 @@ void setup() {
   // parsedNumberY = inputLine.toInt();
 }
 
-struct SensorMeas {
-  int32_t x_um;
-  int32_t y_um;
-};
-
-enum class CommandKind {
-  RawStep,
-  Relative,
-  AbsoluteHz
-};
-
-struct Command {
-  //CommandKind kind;
-
-  bool relative;
-  // these are step counts for RawStep, um for Relative, and Hz for AbsoluteHz
-  long x_um;
-  long y_um;
-};
-
-
-// works around bug in Arduino IDE, see https://forum.arduino.cc/t/x-does-not-name-a-type/687314/3
-SensorMeas readSensorMeas();
-bool readCommands(Command &cmd);
 
 #define MIN_X_HZ 41400000l
 #define MAX_X_HZ 41600000l
@@ -162,7 +159,7 @@ bool readCommands(Command &cmd);
 #define MIN_Y_HZ 41900000l
 #define MAX_Y_HZ 43000000l
 
-SensorMeas readSensorMeas() {
+RawSensorMeas readRawSensorMeas() {
   int32_t result_channel1=0;
   int32_t result_channel2=0;
 
@@ -175,13 +172,27 @@ SensorMeas readSensorMeas() {
   } }
   
   if (result_channel2 == 0) { while (1) {
-    
     Serial.println("Error while measuring channel1");
     delay(500);
-  } } /*else { Serial.println(result_channel2); }*/
+  } }
 
-  long x_um = (MAX_X_HZ - result_channel2) / 40.0;
-  long y_um = (MAX_Y_HZ - result_channel1) / 112.256;
+  return { result_channel2, result_channel1 };
+}
+
+SensorMeas readSensorMeas() {
+  RawSensorMeas raw = readRawSensorMeas();
+
+  long x_um = (MAX_X_HZ - raw.x_hz) / 40.0;
+
+  long b = 43012077 - raw.y_hz;
+
+  long y_steps;
+  if (b <= 985002) {
+    y_steps = 9.52 + 6.33e-3 * b + 1.2e-9 * b * b + 5.08e-15 * b * b * b;
+  } else {
+    y_steps = -220190.0 + 0.62 * b - 5.74e-7 * b * b + 1.84e-13 * b * b * b;
+  }
+  long y_um = y_steps / 3.2;
 
   return { x_um, y_um };
 }
@@ -227,39 +238,53 @@ bool readCommands(Command &cmd) {
     command.trim();
 
     do {
-      char cmd_kind[9];
-      char dir_x, dir_y;
-      long amount_x, amount_y;
-      if (sscanf(command.c_str(), "%c %ld %c %ld", &dir_x, &amount_x, &dir_y, &amount_y) != 4) {
+      if (command.length() == 0) {
         break;
       }
 
-      if (dir_x != 'L' && dir_x != 'R') {
-        Serial.print("Expected L or R for dir_x but found `"); Serial.print(dir_x); Serial.println("`");
-        break;
+      char kind = command[0];
+      if (kind == 'a') {
+        if (sscanf(command.c_str(), "%c %ld %ld", &kind, &cmd.abs.x_um, &cmd.abs.y_um) != 3) {
+          break;
+        }
+
+        cmd.kind = CommandKind::Absolute;
+      } else if (kind == 'z') {
+        if (sscanf(command.c_str(), "%c %ld", &kind, &cmd.rel_z.z) != 2) {
+          break;
+        }
+
+        cmd.kind = CommandKind::RelativeStepsZ;
+      } else if (kind == 'r' || kind == 's') {
+        cmd.kind = (kind == 'r' ? CommandKind::Relative : CommandKind::RelativeSteps);
+
+        if (sscanf(command.c_str(), "%c %ld %ld", &kind, &cmd.rel.x, &cmd.rel.y) != 3) {
+          break;
+        }
+      } else if (kind == 'q') {
+        cmd.kind = CommandKind::QueryPosition;
       }
 
-      if (dir_y != 'U' && dir_y != 'D') {
-        Serial.print("Expected U or D for dir_y but found `"); Serial.print(dir_y); Serial.println("`");
-        break;
-      }
-
-      // NOTE: THE LEFT/RIGHT AND UP/DOWN DIRECTIONS ARE INVERTED FOR THE DEMO 12/5/2024
-      cmd.relative = true;
-      cmd.relative = false;
-      cmd.x_um = ((dir_x == 'R') ? 1 : -1) * clamp(amount_x, 0, MAX_MOVE_UM);
-      cmd.y_um = ((dir_y == 'U') ? 1 : -1) * clamp(amount_y, 0, MAX_MOVE_UM);
-
-      if (!LOG_SENSOR) {
+      /*if (!LOG_SENSOR) {
         Serial.print("Moving "); Serial.print(cmd.x_um); Serial.print("um in X and "); Serial.print(cmd.y_um); Serial.println("um in Y");
-      }
+      }*/
       return true;
     } while (0);
 
-    //Serial.print("Invalid command format `"); Serial.print(command); Serial.println("`");
+    if (!LOG_SENSOR) {
+      Serial.print("Invalid command format `"); Serial.print(command); Serial.println("`");
+    }
   }
 
   return false;
+}
+
+void report_position() {
+  SensorMeas meas = readSensorMeas();
+  Serial.print('$');
+  Serial.print(meas.x_um);
+  Serial.print(',');
+  Serial.println(meas.y_um);
 }
 
 void loop() {
@@ -301,40 +326,108 @@ void loop() {
   long x_steps = 0;
   long y_steps = 0;
 
+  int state = 2;
+  x_active = true;
+  y_active = true;
+  target_x_um = 0;
+  target_y_um = 0;
+
   while (true) {
     SensorMeas measured = readSensorMeas();
 
+    if (state == 1) {
+      Serial.println("Step,Y Sensor Measurement");
+      // Take up backlash
+      stepperY.move(800);
+      stepperY.move(-800);
+
+      for (int i = 0; i < 2800; ++i) {
+        Serial.print(i * 10);
+        Serial.print(",");
+        //RawSensorMeas raw = readRawSensorMeas();
+        SensorMeas meas = readSensorMeas();
+        //Serial.print(raw.x_hz);
+        //Serial.print(",");
+        Serial.print(meas.y_um);
+        Serial.print(",");
+        Serial.println(meas.y_um - (long)(i * 10 / 3.2));
+        stepperY.move(-10);
+      }
+
+      state = 2;
+    }
+
+    /*if (state == 1) {
+      Serial.println("Step,X Sensor Measurement");
+      // Take up backlash
+      stepperY.move(800);
+      stepperY.move(-800);
+
+      for (int i = 0; i < 1920; ++i) {
+        Serial.print(i * 10);
+        Serial.print(",");
+        RawSensorMeas raw = readRawSensorMeas();
+        Serial.print(raw.x_hz);
+        stepperY.move(-10);
+      }
+
+      state = 2;
+    }*/
+
     if (readCommands(cmd)) {
-      if (cmd.relative) {
-        target_x_um = measured.x_um + cmd.x_um;
-        target_y_um = measured.y_um + cmd.y_um;
-
-        x_active = labs(cmd.x_um) > 0;
-        y_active = labs(cmd.y_um) > 0;
-
-        x_steps = 0;
-        y_steps = 0;
-
-        if (!LOG_SENSOR) {
-          Serial.println("Starting relative movement (Hz): ");
-          Serial.print("X: "); Serial.print(measured.x_um); if (cmd.x_um > 0) { Serial.print(" +"); } else { Serial.print(" -"); } Serial.print(labs(cmd.x_um)); Serial.print(" -> "); Serial.println(target_x_um); 
-          Serial.print("Y: "); Serial.print(measured.y_um); if (cmd.y_um > 0) { Serial.print(" +"); } else { Serial.print(" -"); } Serial.print(labs(cmd.y_um)); Serial.print(" -> "); Serial.println(target_y_um);
-        }
-      } else {
-        Serial.println("Absolute!");
-
-        target_x_um = labs(cmd.x_um);
-        target_y_um = labs(cmd.y_um);
+      switch (cmd.kind) {
+      case CommandKind::Absolute:
+        target_x_um = labs(cmd.abs.x_um);
+        target_y_um = labs(cmd.abs.y_um);
 
         x_active = true;
         y_active = true;
 
         x_steps = 0;
         y_steps = 0;
+        break;
+      case CommandKind::Relative:
+        target_x_um = measured.x_um + cmd.rel.x;
+        target_y_um = measured.y_um + cmd.rel.y;
+
+        x_active = labs(cmd.rel.x) > 0;
+        y_active = labs(cmd.rel.y) > 0;
+
+        x_steps = 0;
+        y_steps = 0;
+
+        if (!LOG_SENSOR) {
+          Serial.println("Starting relative movement (Hz): ");
+          Serial.print("X: "); Serial.print(measured.x_um); if (cmd.rel.x > 0) { Serial.print(" +"); } else { Serial.print(" -"); } Serial.print(labs(cmd.rel.x)); Serial.print(" -> "); Serial.println(target_x_um); 
+          Serial.print("Y: "); Serial.print(measured.y_um); if (cmd.rel.y > 0) { Serial.print(" +"); } else { Serial.print(" -"); } Serial.print(labs(cmd.rel.y)); Serial.print(" -> "); Serial.println(target_y_um);
+        }
+        break;
+      case CommandKind::RelativeSteps:
+        if (!LOG_SENSOR) {
+          Serial.println("Doing relative steps!");
+        }
+
+        digitalWrite(PIN_EN, LOW);
+        if (cmd.rel.x != 0) { stepperX.move(cmd.rel.x); }
+        if (cmd.rel.y != 0) { stepperY.move(cmd.rel.y); }
+        digitalWrite(PIN_EN, HIGH);
+        report_position();
+        break;
+      case CommandKind::RelativeStepsZ:
+        if (!LOG_SENSOR) {
+          Serial.println("Doing relative Z steps!");
+        }
+        digitalWrite(PIN_EN, LOW);
+        stepperZ.move(cmd.rel_z.z);
+        digitalWrite(PIN_EN, HIGH);
+        break;
+      case CommandKind::QueryPosition:
+        report_position();
+        break;
       }
     }
 
-    digitalWrite(EN, (x_active || y_active) ? LOW : HIGH);
+    digitalWrite(PIN_EN, (x_active || y_active) ? LOW : HIGH);
 
     if (x_active) {
       long error_um = target_x_um - measured.x_um;
@@ -378,6 +471,7 @@ void loop() {
           Serial.print("Traveled "); Serial.print(x_steps); Serial.print(" steps -> ");
           Serial.println(measured.x_um);
           Serial.println();
+          report_position();
         }
       }
     }
@@ -396,18 +490,7 @@ void loop() {
           delay(100);
         }*/
         
-        Serial.print(y_steps); Serial.print(","); Serial.println(measured.y_um);
-
-        /*int steps;
-        if (abs(error_hz) > 10000) {
-          steps = 100;
-        } else if (abs(error_hz) > 5000) {
-         steps = 30;
-        } else if (abs(error_hz) > 1000) {
-          steps = 10;
-        } else {
-          steps = 5;
-        }*/
+        //Serial.print(y_steps); Serial.print(","); Serial.println(measured.y_um);
         int steps;
         if (abs(error_um) > 100) {
           steps = 100;
@@ -428,6 +511,9 @@ void loop() {
         stepperY.move(steps);
       } else {
         y_active = false;
+        if (state == 0) {
+          state = 1;
+        }
         if (!LOG_SENSOR) {
           Serial.println();
           Serial.println("<====== Y Movement Complete. =====>");
@@ -436,6 +522,7 @@ void loop() {
           Serial.print(" -> ");
           Serial.println(measured.y_um);
           Serial.println();
+          report_position();
         }
       }
     }
