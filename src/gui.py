@@ -8,7 +8,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
-from hardware import Lithographer, ImageProcessSettings, ProcessedImage, StageWrapper
+from hardware import Lithographer, ImageProcessSettings, ProcessedImage
 from typing import Callable, List, Optional
 from PIL import Image
 from camera.camera_module import CameraModule
@@ -139,6 +139,8 @@ class EventDispatcher:
     self.solid_red_image = Image.new('RGB', (1, 1), 'red')
     self.red_focus_source = RedFocusSource.Image
 
+    self.first_autofocus = True
+
     self.should_abort = False
 
     self.focus_score = 0.0
@@ -258,11 +260,13 @@ class EventDispatcher:
     self.on_event(Event.ShownImageChanged)
   
   def set_stage_position(self, x: float, y: float, z: float):
-    self.hardware.stage.move_to({ 'x': x, 'y': y, 'z': z }, commit=True)
+    print(f'set {x} {y} {z}')
+    self.hardware.stage.move_to({ 'x': x, 'y': y, 'z': z })
     self.on_event(Event.StagePositionChanged)
   
   def offset_stage_position(self, coords: dict[str, float]):
-    self.hardware.stage.move_by(coords, commit=True)
+    print(f'offset {coords}')
+    self.hardware.stage.move_by(coords)
     self.on_event(Event.StagePositionChanged)
  
   def set_use_solid_red(self, use: bool):
@@ -305,8 +309,10 @@ class EventDispatcher:
     print('Aborting patterning')
   
   def stage_position(self):
-    pos = self.hardware.stage.stage_position
-    return (pos['x'], pos['y'], pos['z'])
+    self.hardware.stage._query_state()
+    pos = self.hardware.stage.position
+    # TODO: Yes the axis flip is intentional
+    return (pos[0] * 1000.0, pos[2] * 1000.0, pos[1] * 1000.0)
   
   def set_image_position(self, x, y, t):
     self.image_adjust_position = (x, y, t)
@@ -344,7 +350,7 @@ class EventDispatcher:
   def begin_patterning(self):
     # TODO: Update patterning preview
 
-    print('Patterning at ', self.hardware.stage.stage_position)
+    print('Patterning at ', self.hardware.stage.position)
 
     duration = self.exposure_time
     
@@ -409,6 +415,10 @@ class EventDispatcher:
       self.autofocus()
   
   def autofocus(self):
+    if self.first_autofocus:
+      self.first_autofocus = False
+      self.offset_stage_position({ 'x': 5000.0, 'y': 5000.0, 'z': 800.0 })
+
     if self.autofocus_busy:
       print('Skipping nested autofocus!')
       return
@@ -1134,7 +1144,7 @@ def main():
   if stage_config['enabled']:
     serial_port = serial.Serial(stage_config['port'], stage_config['baud-rate'])
     print(f'Using serial port {serial_port.name}')
-    stage = GrblStage(serial_port, stage_config['scale-factor'], bounds=((-12000,12000),(-12000,12000),(-12000,12000))) 
+    stage = GrblStage(serial_port) 
   else:
     stage = StageController()
   
