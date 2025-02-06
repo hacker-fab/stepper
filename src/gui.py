@@ -996,11 +996,9 @@ class GlobalSettingsFrame:
 
     event_dispatcher.add_event_listener(Event.ShownImageChanged, shown_image_changed)
   
-    # Add Auto Snapshot Settings section
     self.snapshot_frame = ttk.LabelFrame(self.frame, text='Snapshot Settings')
     self.snapshot_frame.grid(row=4, column=0, columnspan=2, sticky='ew', pady=5)
     
-    # Auto snapshot checkbox
     self.auto_snapshot_var = BooleanVar(value=event_dispatcher.auto_snapshot_on_uv)
     self.auto_snapshot_check = ttk.Checkbutton(
         self.snapshot_frame,
