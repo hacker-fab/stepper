@@ -393,6 +393,11 @@ class EventDispatcher:
       self.autofocus()
 
   def enter_uv_mode(self):
+    if self.auto_snapshot_on_uv:
+      timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+      filename = self.snapshot_directory / f'uv_mode_entry_{timestamp}.png'
+      self.on_event(Event.Snapshot, str(filename))
+
     if not self.autofocus_busy and self.autofocus_on_mode_switch:
       # UV mode is usually needs about -60 to be in focus compared to red mode
       self.offset_stage_position({ 'z': -100.0 })
@@ -402,11 +407,6 @@ class EventDispatcher:
     if self.autofocus_on_mode_switch:
       self.non_blocking_delay(2.0)
       self.autofocus()
-      # After autofocus completes, take a snapshot if enabled
-      if self.auto_snapshot_on_uv:
-        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        filename = self.snapshot_directory / f'uv_mode_entry_{timestamp}.png'
-        self.on_event(Event.Snapshot, str(filename))
   
   def autofocus(self):
     if self.autofocus_busy:
