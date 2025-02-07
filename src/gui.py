@@ -20,7 +20,7 @@ from enum import Enum
 from lib.gui import IntEntry, Thumbnail
 from lib.img import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
-from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar, messagebox
+from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar, messagebox, filedialog
 import toml # Need to use a package because we're stuck on Python 3.10
 import tkinter
 
@@ -107,6 +107,9 @@ class EventDispatcher:
 
   exposure_history: List[ExposureLog]
 
+  auto_snapshot_on_uv: bool
+  snapshot_directory: Path
+
   def __init__(self, stage, proj, root):
     self.listeners = dict()
 
@@ -144,6 +147,12 @@ class EventDispatcher:
     self.border_size = 0.0
 
     self.exposure_history = []
+
+    self.auto_snapshot_on_uv = True
+    self.snapshot_directory = Path("stepper_captures")
+    
+    # Create snapshot directory if it doesn't exist
+    self.snapshot_directory.mkdir(exist_ok=True)
 
     self.add_event_listener(Event.ShownImageChanged, lambda: self._update_projector())
   
@@ -393,6 +402,11 @@ class EventDispatcher:
     if self.autofocus_on_mode_switch:
       self.non_blocking_delay(2.0)
       self.autofocus()
+      # After autofocus completes, take a snapshot if enabled
+      if self.auto_snapshot_on_uv:
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        filename = self.snapshot_directory / f'uv_mode_entry_{timestamp}.png'
+        self.on_event(Event.Snapshot, str(filename))
   
   def autofocus(self):
     if self.autofocus_busy:
@@ -431,6 +445,10 @@ class EventDispatcher:
     self.set_autofocus_busy(False)
 
     print('Finished autofocus')
+
+  def set_snapshot_directory(self, directory: Path):
+    self.snapshot_directory = directory
+    self.snapshot_directory.mkdir(exist_ok=True)
 
 
 
@@ -978,6 +996,49 @@ class GlobalSettingsFrame:
 
     event_dispatcher.add_event_listener(Event.ShownImageChanged, shown_image_changed)
   
+    self.snapshot_frame = ttk.LabelFrame(self.frame, text='Snapshot Settings')
+    self.snapshot_frame.grid(row=4, column=0, columnspan=2, sticky='ew', pady=5)
+    
+    self.auto_snapshot_var = BooleanVar(value=event_dispatcher.auto_snapshot_on_uv)
+    self.auto_snapshot_check = ttk.Checkbutton(
+        self.snapshot_frame,
+        text='Auto-save snapshot on UV mode entry',
+        variable=self.auto_snapshot_var
+    )
+    self.auto_snapshot_check.grid(row=0, column=0, columnspan=2)
+    
+    def on_auto_snapshot_change(*_):
+        event_dispatcher.auto_snapshot_on_uv = self.auto_snapshot_var.get()
+    self.auto_snapshot_var.trace_add('write', on_auto_snapshot_change)
+    
+    # Directory selection
+    ttk.Label(self.snapshot_frame, text='Save Directory:').grid(row=1, column=0)
+    self.directory_var = StringVar(value=str(event_dispatcher.snapshot_directory))
+    self.directory_entry = ttk.Entry(
+        self.snapshot_frame, 
+        textvariable=self.directory_var,
+        state='readonly'
+    )
+    self.directory_entry.grid(row=1, column=1, sticky='ew')
+    
+    def choose_directory():
+        dir_path = filedialog.askdirectory(
+            initialdir=self.directory_var.get(),
+            title='Select Snapshot Save Directory'
+        )
+        if dir_path:  # User didn't cancel
+            event_dispatcher.set_snapshot_directory(Path(dir_path))
+            self.directory_var.set(dir_path)
+    
+    self.choose_dir_button = ttk.Button(
+        self.snapshot_frame,
+        text='Choose Directory',
+        command=choose_directory
+    )
+    self.choose_dir_button.grid(row=2, column=0, columnspan=2, sticky='ew')
+
+    # Configure grid weights for proper expansion
+    self.snapshot_frame.columnconfigure(1, weight=1)
 
 class ExposureHistoryFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):

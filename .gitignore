@@ -20,3 +20,5 @@
 # Python setup
 venv/
 **/__pycache__
+
+stepper_captures
