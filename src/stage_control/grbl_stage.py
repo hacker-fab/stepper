@@ -2,7 +2,7 @@
 # J. Kent Wirant
 # GRBL Stage Controller
 
-from stage_control.stage_controller import StageController
+from stage_control.stage_controller import StageController, UnsupportedCommand
 from typing import List
 import io
 import time
@@ -19,19 +19,17 @@ class GrblStage(StageController):
     # only x, y, and z axes are supported by this interface
     # may support alternative axes schemes in the future
     # controller_target must be an open file (may be serial port for example)
-    def __init__(self, controller_target):
+    def __init__(self, controller_target, enable_homing):
         self.controller_target = controller_target
+        self.enable_homing = enable_homing
 
         time.sleep(3.0)
         print(self.controller_target.read_all())
 
         self.axes = ('x', 'y', 'z')
-        self.position = [0.0, 0.0, 0.0]
 
         self.resp_buffer = b''
         
-        self.home()
-
         print(self._query_state())
 
     def _fill_resp_buffer(self):
@@ -56,16 +54,25 @@ class GrblStage(StageController):
         for part in resp.split('|'):
             if part.startswith('MPos:'):
                 x, y, z = part.removeprefix('MPos:').split(',')
-                self.position = [float(x), float(y), float(z)]
+                position = (float(x), float(y), float(z))
         
-        return self.position
+        # TODO: ACTUALLY DETERMINE THIS
+        idle = True
+
+        return idle, position
 
 
     def __del__(self):
         self._send_msg(b'G91\n')
     
+    def has_homing(self):
+        return self.enable_homing
+    
     def home(self):
-        self._send_msg(b'$H\n')
+        if self.enable_homing:
+            self._send_msg(b'$H\n')
+        else:
+            raise UnsupportedCommand()
      
     def _move(self, microns: dict[str, float], relative):
         if relative:

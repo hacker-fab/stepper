@@ -13,7 +13,7 @@ from typing import Callable, List, Optional
 from PIL import Image
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
-from stage_control.stage_controller import StageController
+from stage_control.stage_controller import StageController, UnsupportedCommand
 from stage_control.grbl_stage import GrblStage
 from projector import ProjectorController, TkProjector
 from enum import Enum
@@ -81,6 +81,8 @@ class EventDispatcher:
 
   hardware: Lithographer
 
+  stage_setpoint: tuple[float, float, float]
+
   listeners: dict[Event, List[Callable]]
 
   exposure_time: int
@@ -147,6 +149,8 @@ class EventDispatcher:
 
     self.image_adjust_position = (0.0, 0.0, 0.0)
     self.border_size = 0.0
+
+    self.stage_setpoint = (0.0, 0.0, 0.0)
 
     self.exposure_history = []
 
@@ -259,16 +263,22 @@ class EventDispatcher:
     self.shown_image = shown_image
     self.on_event(Event.ShownImageChanged)
   
-  def set_stage_position(self, x: float, y: float, z: float):
-    print(f'set {x} {y} {z}')
-    self.hardware.stage.move_to({ 'x': x, 'y': y, 'z': z })
+  def move_absolute(self, coords: dict[str, float]):
+    self.hardware.stage.move_to(coords)
+    x = coords.get('x', self.stage_setpoint[0])
+    y = coords.get('y', self.stage_setpoint[1])
+    z = coords.get('z', self.stage_setpoint[2])
+    self.stage_setpoint = (x, y, z)
     self.on_event(Event.StagePositionChanged)
   
-  def offset_stage_position(self, coords: dict[str, float]):
-    print(f'offset {coords}')
-    self.hardware.stage.move_by(coords)
+  def move_relative(self, coords: dict[str, float]):
+    x = coords.get('x', 0) + self.stage_setpoint[0]
+    y = coords.get('y', 0) + self.stage_setpoint[1]
+    z = coords.get('z', 0) + self.stage_setpoint[2]
+    self.stage_setpoint = (x, y, z)
+    self.hardware.stage.move_to({ k: self.stage_setpoint[i] for k, i in (('x', 0), ('y', 1), ('z', 2)) })
     self.on_event(Event.StagePositionChanged)
- 
+  
   def set_use_solid_red(self, use: bool):
     self.use_solid_red = use
     self.set_shown_image(ShownImage.RedFocus)
@@ -308,12 +318,20 @@ class EventDispatcher:
     self.should_abort = True
     print('Aborting patterning')
   
-  def stage_position(self):
-    self.hardware.stage._query_state()
-    pos = self.hardware.stage.position
+  def home_stage(self):
+    self.hardware.stage.home()
+    self.non_blocking_delay(1.0)
+    while True:
+      self.non_blocking_delay(1.0)
+      idle, pos = self.hardware.stage._query_state()
+      if idle:
+        break
+
     # TODO: Yes the axis flip is intentional
-    return (pos[0] * 1000.0, pos[2] * 1000.0, pos[1] * 1000.0)
-  
+    self.stage_setpoint = (pos[0] * 1000.0, pos[2] * 1000.0, pos[1] * 1000.0)
+    print(f'Homed stage to {self.stage_setpoint}')
+    self.on_event(Event.StagePositionChanged)
+
   def set_image_position(self, x, y, t):
     self.image_adjust_position = (x, y, t)
     self._refresh_red_focus()
@@ -350,7 +368,7 @@ class EventDispatcher:
   def begin_patterning(self):
     # TODO: Update patterning preview
 
-    print('Patterning at ', self.hardware.stage.position)
+    print('Patterning at ', self.stage_setpoint)
 
     duration = self.exposure_time
     
@@ -376,7 +394,7 @@ class EventDispatcher:
     self.exposure_history.append(ExposureLog(
       datetime.now(),
       self.pattern_image_name,
-      self.stage_position(),
+      self.stage_setpoint,
       duration,
       self.should_abort,
     ))
@@ -405,8 +423,8 @@ class EventDispatcher:
       self.on_event(Event.Snapshot, str(filename))
 
     if not self.autofocus_busy and self.autofocus_on_mode_switch:
-      # UV mode is usually needs about -60 to be in focus compared to red mode
-      self.offset_stage_position({ 'z': -100.0 })
+      # UV mode usually needs about -60 to be in focus compared to red mode
+      self.move_relative({ 'z': -100.0 })
 
     self.set_shown_image(ShownImage.UvFocus)
 
@@ -417,7 +435,10 @@ class EventDispatcher:
   def autofocus(self):
     if self.first_autofocus:
       self.first_autofocus = False
-      self.offset_stage_position({ 'x': 5000.0, 'y': 5000.0, 'z': 800.0 })
+      if self.hardware.stage.has_homing():
+        # TODO:
+        pass
+        #self.offset_stage_position({ 'x': 5000.0, 'y': 5000.0, 'z': 800.0 })
 
     if self.autofocus_busy:
       print('Skipping nested autofocus!')
@@ -432,25 +453,25 @@ class EventDispatcher:
 
     last_focus = self.focus_score
     for i in range(30):
-      self.offset_stage_position({ 'z': 10.0 })
+      self.move_relative({ 'z': 10.0 })
       self.non_blocking_delay(0.5)
       if last_focus > self.focus_score:
         print(f'Successful coarse autofocus {i}')
         break
       last_focus = self.focus_score
 
-    self.offset_stage_position({ 'z': -20.0 })
+    self.move_relative({ 'z': -20.0 })
     self.non_blocking_delay(1.0)
     last_focus = self.focus_score
     for i in range(30):
-      self.offset_stage_position({ 'z': 2.0 })
+      self.move_relative({ 'z': 2.0 })
       self.non_blocking_delay(0.5)
       if last_focus > self.focus_score:
         print(f'Successful fine autofocus {i}')
         break
       last_focus = self.focus_score
 
-    self.offset_stage_position({ 'z': -2.0 })
+    self.move_relative({ 'z': -2.0 })
 
     self.set_autofocus_busy(False)
 
@@ -525,6 +546,7 @@ class CameraFrame:
     self.gui_img = None
     self.camera = c
 
+  def start(self):
     def cameraCallback(image, dimensions, format):
       try:
         filename = self.snapshots_pending.get_nowait()
@@ -584,7 +606,7 @@ class StagePositionFrame:
     
     def callback_set():
       x, y, z = self._position()
-      event_dispatcher.set_stage_position(x, y, z)
+      event_dispatcher.move_absolute({ 'x': x, 'y': y, 'z': z })
 
     self.set_position_button = ttk.Button(self.absolute_frame, text='Set Stage Position', command=callback_set)
     self.set_position_button.grid(row=1, column=0, columnspan=3, sticky='ew')
@@ -599,13 +621,9 @@ class StagePositionFrame:
       self.step_size_intputs[-1].widget.grid(row=3,column=i)
 
       def callback_pos(index, c):
-        pos = list(event_dispatcher.stage_position())
-        pos[index] += self.step_sizes()[index]
-        event_dispatcher.set_stage_position(*pos)
+        event_dispatcher.move_relative({ c:  self.step_sizes()[index] })
       def callback_neg(index, c):
-        pos = list(event_dispatcher.stage_position())
-        pos[index] -= self.step_sizes()[index]
-        event_dispatcher.set_stage_position(*pos)
+        event_dispatcher.move_relative({ c: -self.step_sizes()[index] })
 
       coord_inc_button = ttk.Button(self.relative_frame, text=f'+{coord.upper()}', command=partial(callback_pos, i, coord))
       coord_dec_button = ttk.Button(self.relative_frame, text=f'-{coord.upper()}', command=partial(callback_neg, i, coord))
@@ -647,7 +665,7 @@ class StagePositionFrame:
     event_dispatcher.add_event_listener(Event.MovementLockChanged, on_lock_change)
 
     def on_position_change():
-      pos = event_dispatcher.stage_position()
+      pos = event_dispatcher.stage_setpoint
       for i in range(3):
         self.position_intputs[i].set(pos[i])
 
@@ -1125,7 +1143,16 @@ class LithographerGui:
     self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
     #self.debug.info("Debug info will appear here")
 
-    messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
+    # Things that have to after the main loop begins
+    def on_start():
+      self.camera.start()
+      messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
+      try:
+        self.event_dispatcher.home_stage()
+      except UnsupportedCommand:
+        print('Stage homing unsupported')
+
+    self.root.after(0, on_start)
   
   def cleanup(self):
     print("Patterning GUI closed.")
@@ -1144,7 +1171,7 @@ def main():
   if stage_config['enabled']:
     serial_port = serial.Serial(stage_config['port'], stage_config['baud-rate'])
     print(f'Using serial port {serial_port.name}')
-    stage = GrblStage(serial_port) 
+    stage = GrblStage(serial_port, config['homing']) 
   else:
     stage = StageController()
   
