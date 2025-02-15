@@ -10,7 +10,7 @@ from datetime import datetime
 from functools import partial
 from hardware import Lithographer, ImageProcessSettings, ProcessedImage
 from typing import Callable, List, Optional
-from PIL import Image
+from PIL import Image, ImageOps
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
 from camera.pylon import BaslerPylon
@@ -71,6 +71,7 @@ class RedFocusSource(StrAutoEnum):
   IMAGE = auto() # Uses the dedicated red focus image
   SOLID = auto() # Shows a solid red screen
   PATTERN = auto() # Uses the blue channel from the pattern image
+  INV_PATTERN = auto() # Uses the inverse of the blue channel from the pattern image
 
 @dataclass
 class ExposureLog:
@@ -182,6 +183,7 @@ class EventDispatcher:
       case ShownImage.PATTERN:
         return self.pattern.processed()
 
+
   def _update_projector(self):
     img = self.current_image
     if img is None:
@@ -203,7 +205,7 @@ class EventDispatcher:
       #border_size=0.0,
     ))
 
-    if self.red_focus_source == RedFocusSource.PATTERN:
+    if self.red_focus_source in (RedFocusSource.PATTERN, RedFocusSource.INV_PATTERN):
       self._refresh_red_focus()
 
     # TODO:
@@ -223,6 +225,8 @@ class EventDispatcher:
         return self.solid_red_image
       case RedFocusSource.PATTERN:
         return self.pattern_image.getchannel('B').convert('RGBA')
+      case RedFocusSource.InvPattern:
+        return ImageOps.invert(self.pattern_image.getchannel('B')).convert('RGBA')
 
   def _refresh_red_focus(self):
     if self.hardware.projector.size() != self.solid_red_image.size:
@@ -808,27 +812,19 @@ class MultiImageSelectFrame:
       self.frame, 'Pattern',
       lambda t: event_dispatcher.set_pattern_image(self.pattern_image(), get_name(self.pattern_frame.thumb.path)),
     )
-    self.red_focus_frame = ImageSelectFrame(
-      self.frame, 'Red Focus',
-      lambda t: event_dispatcher.set_red_focus_image(self.red_focus_image()),
-    )
     self.uv_focus_frame = ImageSelectFrame(
       self.frame, 'UV Focus',
       lambda t: event_dispatcher.set_uv_focus_image(self.uv_focus_image()),
     )
 
     self.pattern_frame.frame.grid(row=0, column=0)
-    self.red_focus_frame.frame.grid(row=1, column=0)
-    self.uv_focus_frame.frame.grid(row=1, column=1)
+    self.uv_focus_frame.frame.grid(row=1, column=0)
 
     event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self.highlight_button(event_dispatcher.shown_image))
   
   def pattern_image(self):
     return self.pattern_frame.thumb.image
   
-  def red_focus_image(self):
-    return self.red_focus_frame.thumb.image
-
   def uv_focus_image(self):
     return self.uv_focus_frame.thumb.image
   
@@ -934,10 +930,18 @@ class RedModeFrame:
     self.red_focus_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Red Focus', value=RedFocusSource.IMAGE.value)
     self.solid_red_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Solid Red', value=RedFocusSource.SOLID.value)
     self.pattern_rb   = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Same as Pattern', value=RedFocusSource.PATTERN.value)
+    self.inv_pattern_rb = ttk.Radiobutton(self.frame, variable=self.red_select_var, text='Inverse of Pattern', value=RedFocusSource.INV_PATTERN.value)
 
     self.red_focus_rb.grid(row=0, column=0)
     self.solid_red_rb.grid(row=1, column=0)
     self.pattern_rb  .grid(row=2, column=0)
+    self.inv_pattern_rb.grid(row=3, column=0)
+
+    self.red_focus_frame = ImageSelectFrame(
+      self.frame, 'Red Focus',
+      lambda t: event_dispatcher.set_red_focus_image(self.red_focus_image()),
+    )
+    self.red_focus_frame.frame.grid(row=0, column=1, rowspan=4)
 
     def on_radiobutton(*_):
       print(f'red select var {self.red_select_var.get()}')
@@ -949,6 +953,9 @@ class RedModeFrame:
         raise Exception()
 
     self.red_select_var.trace_add('write', on_radiobutton)
+
+  def red_focus_image(self):
+    return self.red_focus_frame.thumb.image
 
 class UvModeFrame:
   def __init__(self, parent, event_dispatcher):
