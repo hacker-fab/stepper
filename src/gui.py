@@ -4,13 +4,14 @@ import cv2
 import numpy as np
 import time
 import queue
+import json
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from hardware import Lithographer, ImageProcessSettings, ProcessedImage
 from typing import Callable, List, Optional
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageTk
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
 from stage_control.stage_controller import StageController, UnsupportedCommand
@@ -51,6 +52,8 @@ class Event(Enum):
   MovementLockChanged = 'movementlockchanged'
   ExposurePatternProgressChanged = 'exposurepatternprogresschanged'
   PatterningBusyChanged = 'patterningbusychanged'
+  PatterningFinished = 'patterningfinished'
+  ChipChanged = 'chipchanged'
 
 class MovementLock(Enum):
   '''Disables or enables moving the stage position manually'''
@@ -70,10 +73,56 @@ class RedFocusSource(Enum):
 @dataclass
 class ExposureLog:
   time: datetime
-  name: str
+  path: str
   coords: tuple[float, float, float]
   duration: float # ms
   aborted: bool
+
+  def to_disk(self):
+    return {
+      'time': str(self.time),
+      'path': self.path,
+      'coords': self.coords,
+      'duration': self.duration,
+      'aborted': self.aborted,
+    }
+  
+  @classmethod
+  def from_disk(cls, d):
+    return cls(
+      datetime.fromisoformat(d['time']),
+      d['path'],
+      d['coords'],
+      d['duration'],
+      d['aborted']
+    )
+
+@dataclass
+class ChipLayer:
+  exposures: List[ExposureLog]
+
+  def to_disk(self):
+    return {
+      'exposures': [ex.to_disk() for ex in self.exposures]
+    }
+
+  @classmethod
+  def from_disk(cls, d):
+    return cls([ExposureLog.from_disk(ex) for ex in d['exposures']])
+
+@dataclass
+class Chip:
+  layers: List[ChipLayer]
+
+  def to_disk(self):
+    return {
+      'layers': [l.to_disk() for l in self.layers]
+    }
+  
+  @classmethod
+  def from_disk(cls, d):
+    return cls([ChipLayer.from_disk(l) for l in d['layers']])
+
 
 class EventDispatcher:
   red_focus: ProcessedImage
@@ -112,6 +161,8 @@ class EventDispatcher:
 
   auto_snapshot_on_uv: bool
   snapshot_directory: Path
+
+  chip: Chip
 
   def __init__(self, stage, proj, root):
     self.listeners = dict()
@@ -161,7 +212,29 @@ class EventDispatcher:
     # Create snapshot directory if it doesn't exist
     self.snapshot_directory.mkdir(exist_ok=True)
 
+    self.chip = Chip([ChipLayer([])])
+
     self.add_event_listener(Event.ShownImageChanged, lambda: self._update_projector())
+  
+  def load_chip(self, path):
+    print(f'Loading chip at {path!r}')
+    with open(path, 'r') as f:
+      d = json.load(f)
+    self.chip = Chip.from_disk(d)
+    self.on_event(Event.ChipChanged)
+  
+  def new_chip(self):
+    # TODO: Prompt user to save old chip??
+    self.chip = Chip([ChipLayer([])])
+    self.on_event(Event.ChipChanged)
+  
+  def add_chip_layer(self):
+    self.chip.layers.append(ChipLayer([]))
+    self.on_event(Event.ChipChanged)
+  
+  def save_chip(self, path):
+    with open(path, 'w') as f:
+      json.dump(self.chip.to_disk(), f)
   
   def current_image(self):
     match self.shown_image:
@@ -288,9 +361,9 @@ class EventDispatcher:
     self.set_shown_image(ShownImage.RedFocus)
     self._refresh_red_focus()
   
-  def set_pattern_image(self, img: Image.Image, name: str):
+  def set_pattern_image(self, img: Image.Image, path: str):
     self.pattern_image = img
-    self.pattern_image_name = name
+    self.pattern_image_path = path
     self._refresh_pattern()
   
   def set_red_focus_image(self, img: Image.Image):
@@ -395,14 +468,17 @@ class EventDispatcher:
     self.root.update() # Force image to stop being displayed ASAP
     self.set_progress(1.0, 1.0)
 
-    self.exposure_history.append(ExposureLog(
+    log = ExposureLog(
       datetime.now(),
-      self.pattern_image_name,
+      self.pattern_image_path,
       self.stage_setpoint,
       duration,
       self.should_abort,
-    ))
+    )
+    self.exposure_history.append(log)
+    self.chip.layers[-1].exposures.append(log)
 
+    self.on_event(Event.ChipChanged)
     self.set_patterning_busy(False)
 
     if self.should_abort:
@@ -440,6 +516,7 @@ class EventDispatcher:
     if self.first_autofocus:
       # TODO: Fix this spuriously triggering
       self.first_autofocus = False
+      return
 
     if self.autofocus_busy:
       print('Skipping nested autofocus!')
@@ -789,7 +866,7 @@ class MultiImageSelectFrame:
 
     self.pattern_frame   = ImageSelectFrame(
       self.frame, 'Pattern',
-      lambda t: event_dispatcher.set_pattern_image(self.pattern_image(), get_name(self.pattern_frame.thumb.path)),
+      lambda t: event_dispatcher.set_pattern_image(self.pattern_image(), self.pattern_frame.thumb.path),
     )
     self.uv_focus_frame = ImageSelectFrame(
       self.frame, 'UV Focus',
@@ -810,6 +887,150 @@ class MultiImageSelectFrame:
   def highlight_button(self, which: ShownImage):
     # TODO:
     pass
+
+'''
+class StackupFrame:
+  def __init__(self, parent, event_dispatcher):
+    self.frame = ttk.Frame(parent)
+    self.stackup = None
+
+    def on_button():
+      dirname = filedialog.askdirectory()
+      try:
+        stackup = Stackup.from_folder(dirname)
+        self._load_stackup(stackup)
+      except Exception as e:
+        print(f'Could not load stackup: {e}')
+    
+    self.load_button = ttk.Button(self.frame, text='Load Stackup', command=on_button)
+    self.load_button.grid(row=0, column=0)
+
+    s = ttk.Style()
+    s.configure('Treeview', rowheight=50)
+'''
+
+ #def _load_stackup(self, stackup: Stackup):
+ #   if self.stackup is not None:
+ #     for layer in self.stackup.layers:
+ #       self.treeview.delete(layer.name)
+ #   
+ #   self.stackup = stackup
+ #   for layer in self.stackup.layers:
+ #       self.treeview.insert('', 'end', layer.name, text=layer.name, image=layer.pattern_icon) #type:ignore
+
+class ChipFrame:
+  def __init__(self, parent, event_dispatcher: EventDispatcher):
+    self.frame = ttk.Frame(parent)
+    self.model = event_dispatcher
+    self.path = StringVar()
+    
+    self.image_cache = dict()
+
+    self.chip_select_frame = ttk.Frame(self.frame)
+    self.chip_select_frame.grid(row=0, column=0)
+    ttk.Label(self.chip_select_frame, text='Current Chip: ').grid(row=0, column=0)
+    ttk.Label(self.chip_select_frame, textvariable=self.path).grid(row=0, column=1)
+
+    def on_open():
+      path = filedialog.askopenfilename(title = 'Open Chip')
+      self.model.load_chip(path)
+      self.path.set(path)
+    def on_new():
+      path = filedialog.asksaveasfilename(title = 'Create Chip As')
+      self.model.new_chip()
+      self.path.set(path)
+    def on_save():
+      self.model.save_chip(self.path.get())
+    def on_finish_layer():
+      print('Layer finished!')
+      self.model.add_chip_layer()
+      self.model.save_chip(self.path.get())
+      if self.model.hardware.stage.has_homing():
+        self.model.home_stage()
+
+    def on_double_click(cur):
+      try:
+        if cur:
+          sel = self.cur_layer_view.selection()[0]
+          self.prev_layer_view.selection_clear()
+        else:
+          sel = self.prev_layer_view.selection()[0]
+          self.cur_layer_view.selection_clear()
+      except IndexError:
+        return
+
+      layer_idx, ex_idx = sel.split('_')
+      x, y, z = self.model.chip.layers[int(layer_idx)].exposures[int(ex_idx)].coords
+      self.model.move_absolute({ 'x': x, 'y': y, 'z': z })
+
+    def on_chip_changed():
+      self.refresh_prev_layer()
+      self.refresh_cur_layer()
+    
+    self.model.add_event_listener(Event.ChipChanged, on_chip_changed)
+
+    self.open_chip_button = ttk.Button(self.chip_select_frame, text='Open', command=on_open)
+    self.open_chip_button.grid(row=0, column=2)
+    self.new_chip_button = ttk.Button(self.chip_select_frame, text='New', command=on_new)
+    self.new_chip_button.grid(row=0, column=3)
+    self.save_chip_button = ttk.Button(self.chip_select_frame, text='Save', command=on_save)
+    self.save_chip_button.grid(row=0, column=4)
+    self.finish_layer_button = ttk.Button(self.chip_select_frame, text='Finish Layer', command=on_finish_layer)
+    self.finish_layer_button.grid(row=0, column=5)
+
+    self.layer_frame = ttk.Frame(self.frame)
+    self.layer_frame.grid(row=1, column=0)
+
+    self.prev_layer_frame = ttk.Labelframe(self.layer_frame, text='Previous Layer')
+    self.prev_layer_frame.grid(row=0, column=0)
+    self.cur_layer_frame = ttk.Labelframe(self.layer_frame, text='Current Layer')
+    self.cur_layer_frame.grid(row=0, column=1)
+
+    self.tree_view_style = ttk.Style()
+    self.tree_view_style.configure('Treeview', rowheight=50)
+
+    self.prev_layer_view = ttk.Treeview(self.prev_layer_frame, selectmode='browse', columns=('XYZ',))
+    self.prev_layer_view.grid(row=0, column=0)
+    self.prev_layer_view.bind('<Double-1>', lambda e: on_double_click(cur=False))
+    self.cur_layer_view = ttk.Treeview(self.cur_layer_frame, selectmode='browse', columns=('XYZ',))
+    self.cur_layer_view.grid(row=0, column=0)
+    self.cur_layer_view.bind('<Double-1>', lambda e: on_double_click(cur=True))
+
+  def _get_thumbnail(self, path: str):
+    try:
+      return self.image_cache[path][1]
+    except KeyError:
+      img = Image.open(path).resize((80, 45))
+      photo = image_to_tk_image(img)
+      self.image_cache[path] = (img, photo)
+      return photo
+   
+
+  def refresh_prev_layer(self):
+    chip = self.model.chip
+
+    for item in self.prev_layer_view.get_children():
+      self.prev_layer_view.delete(item)
+    
+    if len(chip.layers) < 2:
+      return
+
+    for i, ex in enumerate(chip.layers[-2].exposures):
+      ex_id = f'{len(chip.layers)-2}_{i}'
+      pos = f'{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}'
+      self.prev_layer_view.insert('', 'end', ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
+
+  def refresh_cur_layer(self):
+    chip = self.model.chip
+
+    for item in self.cur_layer_view.get_children():
+      self.cur_layer_view.delete(item)
+
+    for i, ex in enumerate(chip.layers[-1].exposures):
+      ex_id = f'{len(chip.layers)-1}_{i}'
+      pos = f'{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}'
+      self.cur_layer_view.insert('', 'end', ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
+
 
 class ExposureFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -1087,7 +1308,7 @@ class ExposureHistoryFrame:
     self.text.delete('1.0', 'end')
     for exp_log in self.event_dispatcher.exposure_history[-10:]:
       t = exp_log.time.strftime('%H:%M:%S')
-      line = f'{t} {exp_log.name} {int(exp_log.duration)}ms X:{exp_log.coords[0]} Y:{exp_log.coords[1]} Z:{exp_log.coords[2]}\n'
+      line = f'{t} {exp_log.path} {int(exp_log.duration)}ms X:{exp_log.coords[0]} Y:{exp_log.coords[1]} Z:{exp_log.coords[2]}\n'
 
       if self.text.index('end-1c') != 1.0:
         self.text.insert('end', '\n')
@@ -1120,17 +1341,20 @@ class LithographerGui:
     self.bottom_panel = ttk.Frame(self.root)
     self.bottom_panel.grid(row=3, column=0)
 
-    self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
-    self.exposure_history_frame.frame.grid(row=0, column=0)
+    #self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
+    #self.exposure_history_frame.frame.grid(row=0, column=4)
 
-    self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
-    self.image_adjust_frame.frame.grid(row=0, column=1)
+    self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
+    self.chip_frame.frame.grid(row=0, column=0)
 
     self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
     self.global_settings_frame.frame.grid(row=0, column=2)
 
     self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
     self.stage_position_frame.frame.grid(row=0, column=1)
+
+    self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
+    self.image_adjust_frame.frame.grid(row=0, column=1)
 
     self.mode_select_frame = ModeSelectFrame(self.middle_panel, self.event_dispatcher)
     self.mode_select_frame.notebook.grid(row=0, column=2)
