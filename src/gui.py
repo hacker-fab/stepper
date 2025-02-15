@@ -892,7 +892,7 @@ class MultiImageSelectFrame:
 
     self.pattern_frame   = ImageSelectFrame(
       self.frame, 'Pattern',
-      lambda t: event_dispatcher.set_pattern_image(self.pattern_image(), self.pattern_frame.thumb.path),
+      lambda t: event_dispatcher.set_pattern_image(self.pattern_image(), get_name(self.pattern_frame.thumb.path)),
     )
     self.uv_focus_frame = ImageSelectFrame(
       self.frame, 'UV Focus',
