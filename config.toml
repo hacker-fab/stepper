@@ -7,6 +7,6 @@ webcam = 1
 
 [stage]
 enabled = false
-port = "COM6"
+port = "/dev/tty.usbmodem11401"
 baud-rate = 115200
 scale-factor = 0.0128534 # 50 units / 3890 microns
