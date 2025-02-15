@@ -51,13 +51,13 @@ class GrblStage(StageController):
         resp = resp.decode('ascii')
         print(repr(resp))
         print(len(self.resp_buffer), self.controller_target.in_waiting)
+        idle = False
         for part in resp.split('|'):
-            if part.startswith('MPos:'):
+            if 'Idle' in part:
+                idle = True
+            elif part.startswith('MPos:'):
                 x, y, z = part.removeprefix('MPos:').split(',')
                 position = (float(x), float(y), float(z))
-        
-        # TODO: ACTUALLY DETERMINE THIS
-        idle = True
 
         return idle, position
 

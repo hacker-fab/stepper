@@ -423,8 +423,8 @@ class EventDispatcher:
       self.on_event(Event.Snapshot, str(filename))
 
     if not self.autofocus_busy and self.autofocus_on_mode_switch:
-      # UV mode usually needs about -60 to be in focus compared to red mode
-      self.move_relative({ 'z': -100.0 })
+      # UV mode usually needs about -70 to be in focus compared to red mode
+      self.move_relative({ 'z': -85.0 })
 
     self.set_shown_image(ShownImage.UvFocus)
 
@@ -434,11 +434,8 @@ class EventDispatcher:
   
   def autofocus(self):
     if self.first_autofocus:
+      # TODO: Fix this spuriously triggering
       self.first_autofocus = False
-      if self.hardware.stage.has_homing():
-        # TODO:
-        pass
-        #self.offset_stage_position({ 'x': 5000.0, 'y': 5000.0, 'z': 800.0 })
 
     if self.autofocus_busy:
       print('Skipping nested autofocus!')
@@ -1146,11 +1143,10 @@ class LithographerGui:
     # Things that have to after the main loop begins
     def on_start():
       self.camera.start()
-      messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
-      try:
+      if self.event_dispatcher.hardware.stage.has_homing():
         self.event_dispatcher.home_stage()
-      except UnsupportedCommand:
-        print('Stage homing unsupported')
+        self.event_dispatcher.move_relative({ 'x': 5000.0, 'y': 3500.0, 'z': 1900.0 })
+      messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
 
     self.root.after(0, on_start)
   
@@ -1171,7 +1167,7 @@ def main():
   if stage_config['enabled']:
     serial_port = serial.Serial(stage_config['port'], stage_config['baud-rate'])
     print(f'Using serial port {serial_port.name}')
-    stage = GrblStage(serial_port, config['homing']) 
+    stage = GrblStage(serial_port, stage_config['homing']) 
   else:
     stage = StageController()
   
