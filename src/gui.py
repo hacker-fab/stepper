@@ -1014,6 +1014,10 @@ class ChipFrame:
       self.refresh_cur_layer()
       if self.path.get() != '':
         self.model.save_chip(self.path.get())
+      if len(self.model.chip.layers[-1].exposures) > 0:
+        self.finish_layer_button.configure(state='normal')
+      else:
+        self.finish_layer_button.configure(state='disabled')
     
     def prev_layer_index_changed(a, b, c):
       self.refresh_prev_layer()
@@ -1028,6 +1032,7 @@ class ChipFrame:
     self.save_chip_button.grid(row=0, column=4)
     self.finish_layer_button = ttk.Button(self.chip_select_frame, text='Finish Layer', command=on_finish_layer)
     self.finish_layer_button.grid(row=0, column=5)
+    self.finish_layer_button.configure(state='disabled')
     self.delete_exposure_button = ttk.Button(self.chip_select_frame, text='Delete Exposure', command=on_delete_exposure, state='disabled')
     self.delete_exposure_button.grid(row=0, column=6)
 
