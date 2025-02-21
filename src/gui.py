@@ -495,25 +495,25 @@ class EventDispatcher:
     while time.time() - start < t:
       self.root.update()
   
-  def enter_red_mode(self):
+  def enter_red_mode(self, mode_switch_autofocus=True):
     print('enter_red_mode')
     self.set_shown_image(ShownImage.RedFocus)
-    if self.autofocus_on_mode_switch:
+    if mode_switch_autofocus and self.autofocus_on_mode_switch:
       self.autofocus()
 
-  def enter_uv_mode(self):
+  def enter_uv_mode(self, mode_switch_autofocus=False):
     if self.auto_snapshot_on_uv:
       timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
       filename = self.snapshot_directory / f'uv_mode_entry_{timestamp}.png'
       self.on_event(Event.Snapshot, str(filename))
 
-    if not self.autofocus_busy and self.autofocus_on_mode_switch:
+    if mode_switch_autofocus and not self.autofocus_busy and self.autofocus_on_mode_switch:
       # UV mode usually needs about -70 to be in focus compared to red mode
       self.move_relative({ 'z': -85.0 })
 
     self.set_shown_image(ShownImage.UvFocus)
 
-    if self.autofocus_on_mode_switch:
+    if mode_switch_autofocus and self.autofocus_on_mode_switch:
       self.non_blocking_delay(2.0)
       self.autofocus()
   
@@ -1424,7 +1424,67 @@ class ExposureHistoryFrame:
       self.text.insert('end', line)
     self.text['state'] = 'disabled'
 
-    
+class OffsetAmountFrame:
+  def __init__(self, parent, label, default_offset):
+    self.frame = ttk.LabelFrame(parent, text=label)
+
+    offset_label = ttk.Label(self.frame, text='Offset (µm)')
+    offset_label.grid(row=0, column=0)
+    self.offset_var = StringVar(value=str(default_offset))
+    self.offset_entry = ttk.Entry(self.frame, textvariable=self.offset_var, width=5)
+    self.offset_entry.grid(row=0, column=1)
+    amount_label = ttk.Label(self.frame, text='Amount')
+    amount_label.grid(row=0, column=2)
+    self.amount_var = StringVar(value='1')
+    self.amount_spinbox = ttk.Spinbox(self.frame, from_=-20, to=20, textvariable=self.amount_var, width=3)
+    self.amount_spinbox.grid(row=0, column=3)
+
+
+class TilingFrame:
+  def __init__(self, parent, model: EventDispatcher):
+    self.frame = ttk.LabelFrame(parent, text='Tiling')
+    self.model = model
+
+    # TODO: Tune default offsets
+    self.x_settings = OffsetAmountFrame(self.frame, 'X', 1050)
+    self.x_settings.frame.grid(row=0, column=0)
+    self.y_settings = OffsetAmountFrame(self.frame, 'Y', 900)
+    self.y_settings.frame.grid(row=1, column=0)
+   
+    def on_begin():
+      x_amount = int(self.x_settings.amount_var.get())
+      x_offset = int(self.x_settings.offset_var.get())
+      x_dir = 1 if x_amount > 0 else -1
+      x_amount = abs(x_amount)
+
+      y_amount = int(self.y_settings.amount_var.get())
+      y_offset = int(self.y_settings.offset_var.get())
+      y_dir = 1 if y_amount > 0 else -1
+      y_amount = abs(y_amount)
+
+      x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
+
+      for x_idx in range(x_amount):
+        for y_idx in range(y_amount):
+          self.model.move_absolute({ 'x': x_start + x_dir * x_idx * x_offset, 'y': y_start + y_dir * y_idx * y_offset })
+          self.model.autofocus()
+
+          self.model.move_relative({ 'z': -85.0 })
+          self.model.non_blocking_delay(0.5)
+          self.model.enter_uv_mode(mode_switch_autofocus=False)
+          self.model.autofocus()
+
+          self.model.begin_patterning()
+          self.model.enter_red_mode(mode_switch_autofocus=False)
+
+    def on_abort():
+      pass
+
+    self.begin_tiling_button = ttk.Button(self.frame, text='Begin Tiling', command=on_begin, state='enabled')
+    self.begin_tiling_button.grid(row=2, column=0)
+
+    self.abort_tiling_button = ttk.Button(self.frame, text='Abort Tiling', command=on_abort, state='disabled')
+    self.abort_tiling_button.grid(row=3, column=0)
 
 
 class LithographerGui:
@@ -1467,6 +1527,9 @@ class LithographerGui:
 
     self.mode_select_frame = ModeSelectFrame(self.middle_panel, self.event_dispatcher)
     self.mode_select_frame.notebook.grid(row=0, column=2)
+
+    self.tiling_frame = TilingFrame(self.middle_panel, self.event_dispatcher)
+    self.tiling_frame.frame.grid(row=0, column=3)
 
     self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
     self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
