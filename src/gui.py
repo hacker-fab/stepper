@@ -244,6 +244,11 @@ class EventDispatcher:
     with open(path, 'w') as f:
       json.dump(self.chip.to_disk(), f)
   
+  def delete_chip_exposure(self, layer, ex):
+    self.chip.layers[layer].exposures.pop(ex)
+    print(f'Deleted exposure {layer} {ex}')
+    self.on_event(Event.CHIP_CHANGED)
+  
   @property
   def current_image(self):
     match self.shown_image:
@@ -966,22 +971,30 @@ class ChipFrame:
       print('Layer finished!')
       self.model.add_chip_layer()
       self.model.save_chip(self.path.get())
-      if self.model.hardware.stage.has_homing():
-        self.model.home_stage()
+    def on_delete_exposure():
+      pair = self._selected_exposure()
+      assert pair is not None
+      yes = messagebox.askyesno(
+        title='Delete Exposure',
+        message='Are you sure you want to delete the selected exposure?'
+      )
+      if yes:
+        self.model.delete_chip_exposure(pair[0], pair[1])
+
+    def on_select(e, cur):
+      if cur and len(self.cur_layer_view.selection()) > 0:
+        self.prev_layer_view.selection_set([])
+        self.delete_exposure_button['state'] = 'normal'
+      elif not cur and len(self.prev_layer_view.selection()) > 0:
+        self.cur_layer_view.selection_set([])
+        self.delete_exposure_button['state'] = 'normal'
+      else:
+        self.delete_exposure_button['state'] = 'disabled'
 
     def on_double_click(cur):
-      try:
-        if cur:
-          sel = self.cur_layer_view.selection()[0]
-          self.prev_layer_view.selection_clear()
-        else:
-          sel = self.prev_layer_view.selection()[0]
-          self.cur_layer_view.selection_clear()
-      except IndexError:
-        return
-
-      layer_idx, ex_idx = sel.split('_')
-      x, y, z = self.model.chip.layers[int(layer_idx)].exposures[int(ex_idx)].coords
+      pair = self._selected_exposure()
+      assert pair is not None
+      x, y, z = self.model.chip.layers[pair[0]].exposures[pair[1]].coords
       self.model.move_absolute({ 'x': x, 'y': y, 'z': z })
 
     def on_chip_changed():
@@ -998,6 +1011,8 @@ class ChipFrame:
     self.save_chip_button.grid(row=0, column=4)
     self.finish_layer_button = ttk.Button(self.chip_select_frame, text='Finish Layer', command=on_finish_layer)
     self.finish_layer_button.grid(row=0, column=5)
+    self.delete_exposure_button = ttk.Button(self.chip_select_frame, text='Delete Exposure', command=on_delete_exposure, state='disabled')
+    self.delete_exposure_button.grid(row=0, column=6)
 
     self.layer_frame = ttk.Frame(self.frame)
     self.layer_frame.grid(row=1, column=0)
@@ -1010,12 +1025,26 @@ class ChipFrame:
     self.tree_view_style = ttk.Style()
     self.tree_view_style.configure('Treeview', rowheight=50)
 
-    self.prev_layer_view = ttk.Treeview(self.prev_layer_frame, selectmode='browse', columns=('XYZ',))
+    self.prev_layer_view = ttk.Treeview(self.prev_layer_frame, selectmode='browse', columns=('XYZ',), height=5)
     self.prev_layer_view.grid(row=0, column=0)
+    self.prev_layer_view.bind('<<TreeviewSelect>>', lambda e: on_select(e, cur=False))
     self.prev_layer_view.bind('<Double-1>', lambda e: on_double_click(cur=False))
-    self.cur_layer_view = ttk.Treeview(self.cur_layer_frame, selectmode='browse', columns=('XYZ',))
+    self.cur_layer_view = ttk.Treeview(self.cur_layer_frame, selectmode='browse', columns=('XYZ',), height=5)
     self.cur_layer_view.grid(row=0, column=0)
+    self.cur_layer_view.bind('<<TreeviewSelect>>', lambda e: on_select(e, cur=True))
     self.cur_layer_view.bind('<Double-1>', lambda e: on_double_click(cur=True))
+  
+  def _selected_exposure(self):
+    cur_sel = self.cur_layer_view.selection()
+    if len(cur_sel) > 0:
+      layer_idx, ex_idx = cur_sel[0].split('_')
+      return int(layer_idx), int(ex_idx)
+    prev_sel = self.prev_layer_view.selection()
+    if len(prev_sel) > 0:
+      layer_idx, ex_idx = prev_sel[0].split('_')
+      return int(layer_idx), int(ex_idx)
+    return None
+
 
   def _get_thumbnail(self, path: str):
     try:
