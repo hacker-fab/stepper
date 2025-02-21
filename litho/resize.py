@@ -1,15 +1,17 @@
 import cv2
-import numpy as np
+import json
 from pathlib import Path
+import numpy as np
 
-def resize_with_padding(input_dir: str, output_dir: str, target_size: tuple[int,int] = (640,640)):
+def resize_with_metadata(input_dir: str, output_dir: str, target_size: tuple[int,int] = (640,640)):
     """
-    Resize images maintaining aspect ratio and pad to square.
+    Resize images and save metadata about original dimensions.
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     input_files = list(Path(input_dir).glob('*.png'))
     
-    print(f"Found {len(input_files)} PNG files to process")
+    # Dictionary to store original dimensions
+    dimensions_map = {}
     
     for i, input_path in enumerate(input_files, 1):
         # Read image
@@ -18,36 +20,74 @@ def resize_with_padding(input_dir: str, output_dir: str, target_size: tuple[int,
             print(f"Failed to read {input_path}")
             continue
         
-        # Calculate scaling factor to fit within target size
-        h, w = img.shape[:2]
-        scale = min(target_size[0]/w, target_size[1]/h)
+        # Store original dimensions
+        orig_h, orig_w = img.shape[:2]
+        dimensions_map[input_path.name] = {
+            "original_height": orig_h,
+            "original_width": orig_w
+        }
         
-        # Resize maintaining aspect ratio
-        new_size = (int(w*scale), int(h*scale))
-        resized = cv2.resize(img, new_size)
+        # Resize image
+        resized = cv2.resize(img, target_size)
         
-        # Create black square canvas
-        square = np.zeros((target_size[1], target_size[0], 3), dtype=np.uint8)
-        
-        # Calculate padding
-        y_offset = (target_size[1] - new_size[1]) // 2
-        x_offset = (target_size[0] - new_size[0]) // 2
-        
-        # Place resized image in center
-        square[
-            y_offset:y_offset+new_size[1],
-            x_offset:x_offset+new_size[0]
-        ] = resized
-        
-        # Save
+        # Save resized image
         output_path = Path(output_dir) / input_path.name
         encode_params = [cv2.IMWRITE_PNG_COMPRESSION, 9]
-        cv2.imwrite(str(output_path), square, encode_params)
+        cv2.imwrite(str(output_path), resized, encode_params)
         
         print(f"Processed {i}/{len(input_files)}: {input_path.name}")
+    
+    # Save dimensions metadata
+    metadata_path = Path(output_dir) / "image_dimensions.json"
+    with open(metadata_path, 'w') as f:
+        json.dump(dimensions_map, f, indent=2)
+
+def scale_detection_to_original(detection, original_width, original_height, model_width=640, model_height=640):
+    """
+    Scale YOLO detection coordinates from model size back to original image size.
+    
+    Args:
+        detection: YOLO detection (x, y, w, h) in normalized coordinates (0-1)
+        original_width: Width of original camera image
+        original_height: Height of original camera image
+        model_width: Width used for model input (default 640)
+        model_height: Height used for model input (default 640)
+    """
+    x, y, w, h = detection  # normalized coordinates
+    
+    # Scale back to original dimensions
+    orig_x = x * original_width
+    orig_y = y * original_height
+    orig_w = w * original_width
+    orig_h = h * original_height
+    
+    return orig_x, orig_y, orig_w, orig_h
+
+# Example usage during inference:
+def process_camera_frame(frame):
+    # Get original dimensions
+    orig_height, orig_width = frame.shape[:2]
+    
+    # Resize for model
+    model_input = cv2.resize(frame, (640, 640))
+    
+    # Get predictions from model (this is pseudocode - use actual YOLO inference)
+    predictions = model.predict(model_input)
+    
+    # Scale each detection back to original size
+    original_detections = []
+    for det in predictions:
+        orig_x, orig_y, orig_w, orig_h = scale_detection_to_original(
+            det, 
+            original_width=orig_width, 
+            original_height=orig_height
+        )
+        original_detections.append((orig_x, orig_y, orig_w, orig_h))
+    
+    return original_detections
 
 if __name__ == "__main__":
     INPUT_DIR = "original_images"
     OUTPUT_DIR = "resized_images"
     
-    resize_with_padding(INPUT_DIR, OUTPUT_DIR)
+    resize_with_metadata(INPUT_DIR, OUTPUT_DIR)
