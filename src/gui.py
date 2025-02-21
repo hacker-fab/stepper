@@ -966,7 +966,10 @@ class ChipFrame:
       self.model.new_chip()
       self.path.set(path)
     def on_save():
-      self.model.save_chip(self.path.get())
+      path = filedialog.asksaveasfilename(title = 'Save As')
+      if path != '':
+        self.model.save_chip(self.path.get())
+        self.path.set(path)
     def on_finish_layer():
       print('Layer finished!')
       self.model.add_chip_layer()
@@ -980,6 +983,8 @@ class ChipFrame:
       )
       if yes:
         self.model.delete_chip_exposure(pair[0], pair[1])
+        if self.path.get() != '':
+          self.model.save_chip(self.path.get())
 
     def on_select(e, cur):
       if cur and len(self.cur_layer_view.selection()) > 0:
@@ -998,8 +1003,20 @@ class ChipFrame:
       self.model.move_absolute({ 'x': x, 'y': y, 'z': z })
 
     def on_chip_changed():
+      if len(self.model.chip.layers) < 2:
+        self.prev_layer_select.configure(state='disabled')
+        self.prev_layer_select.configure(to=0)
+      else:
+        self.prev_layer_select.configure(state='readonly')
+        self.prev_layer_select.configure(to=len(self.model.chip.layers)-2)
+        self.prev_layer_select_var.set(str(len(self.model.chip.layers)-2))
       self.refresh_prev_layer()
       self.refresh_cur_layer()
+      if self.path.get() != '':
+        self.model.save_chip(self.path.get())
+    
+    def prev_layer_index_changed(a, b, c):
+      self.refresh_prev_layer()
     
     self.model.add_event_listener(Event.CHIP_CHANGED, on_chip_changed)
 
@@ -1007,7 +1024,7 @@ class ChipFrame:
     self.open_chip_button.grid(row=0, column=2)
     self.new_chip_button = ttk.Button(self.chip_select_frame, text='New', command=on_new)
     self.new_chip_button.grid(row=0, column=3)
-    self.save_chip_button = ttk.Button(self.chip_select_frame, text='Save', command=on_save)
+    self.save_chip_button = ttk.Button(self.chip_select_frame, text='Save As', command=on_save)
     self.save_chip_button.grid(row=0, column=4)
     self.finish_layer_button = ttk.Button(self.chip_select_frame, text='Finish Layer', command=on_finish_layer)
     self.finish_layer_button.grid(row=0, column=5)
@@ -1033,7 +1050,19 @@ class ChipFrame:
     self.cur_layer_view.grid(row=0, column=0)
     self.cur_layer_view.bind('<<TreeviewSelect>>', lambda e: on_select(e, cur=True))
     self.cur_layer_view.bind('<Double-1>', lambda e: on_double_click(cur=True))
-  
+
+    select_frame = ttk.Frame(self.prev_layer_frame)
+    select_frame.grid(row=1, column=0)
+
+    prev_layer_select_label = ttk.Label(select_frame, text='Select previous layer:')
+    prev_layer_select_label.grid(row=0, column=0)
+
+    self.prev_layer_select_var = StringVar()
+    self.prev_layer_select_var.trace_add('write', prev_layer_index_changed)
+    self.prev_layer_select = ttk.Spinbox(select_frame, from_=0, to=0, textvariable=self.prev_layer_select_var)
+    self.prev_layer_select.configure(state='disabled')
+    self.prev_layer_select.grid(row=0, column=1)
+
   def _selected_exposure(self):
     cur_sel = self.cur_layer_view.selection()
     if len(cur_sel) > 0:
@@ -1061,12 +1090,18 @@ class ChipFrame:
 
     for item in self.prev_layer_view.get_children():
       self.prev_layer_view.delete(item)
+
+    try:
+      idx = int(self.prev_layer_select_var.get())
+    except ValueError:
+      print(f'Leaving previous layer empty because select var is {self.prev_layer_select_var.get()!r}')
+      return
     
     if len(chip.layers) < 2:
       return
 
-    for i, ex in enumerate(chip.layers[-2].exposures):
-      ex_id = f'{len(chip.layers)-2}_{i}'
+    for i, ex in enumerate(chip.layers[idx].exposures):
+      ex_id = f'{idx}_{i}'
       pos = f'{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}'
       self.prev_layer_view.insert('', 'end', ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
 
