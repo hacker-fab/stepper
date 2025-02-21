@@ -529,32 +529,72 @@ class EventDispatcher:
 
     print('Starting autofocus')
 
-
     self.set_autofocus_busy(True)
 
     self.non_blocking_delay(2.0)
 
-    last_focus = self.focus_score
-    for i in range(30):
-      self.move_relative({ 'z': 10.0 })
-      self.non_blocking_delay(0.5)
-      if last_focus > self.focus_score:
-        print(f'Successful coarse autofocus {i}')
-        break
-      last_focus = self.focus_score
-
+    mid_score = self.focus_score
     self.move_relative({ 'z': -20.0 })
-    self.non_blocking_delay(1.0)
-    last_focus = self.focus_score
-    for i in range(30):
-      self.move_relative({ 'z': 2.0 })
-      self.non_blocking_delay(0.5)
-      if last_focus > self.focus_score:
-        print(f'Successful fine autofocus {i}')
-        break
-      last_focus = self.focus_score
+    self.non_blocking_delay(0.5)
+    neg_score = self.focus_score
+    self.move_relative({ 'z': 40.0 })
+    self.non_blocking_delay(0.5)
+    pos_score = self.focus_score
+    self.move_relative({ 'z': -20.0 })
+    self.non_blocking_delay(0.5)
 
-    self.move_relative({ 'z': -2.0 })
+    last_focus = mid_score
+
+    if neg_score < mid_score < pos_score:
+      # Improved focus is in the +Z direction
+      for i in range(30):
+        self.move_relative({ 'z': 10.0 })
+        self.non_blocking_delay(0.5)
+        if last_focus > self.focus_score:
+          print(f'Successful +Z coarse autofocus {i}')
+          last_focus = self.focus_score
+          break
+        last_focus = self.focus_score
+
+      for i in range(10):
+        self.move_relative({ 'z': -2.0 })
+        self.non_blocking_delay(0.5)
+        if last_focus > self.focus_score:
+          print(f'Successful -Z fine autofocus {i}')
+          break
+        last_focus = self.focus_score
+    elif neg_score > mid_score > pos_score:
+      # Improved focus is in the -Z direction
+      for i in range(30):
+        self.move_relative({ 'z': -10.0 })
+        self.non_blocking_delay(0.5)
+        if last_focus > self.focus_score:
+          print(f'Successful -Z coarse autofocus {i}')
+          break
+        last_focus = self.focus_score
+
+      for i in range(10):
+        self.move_relative({ 'z': 2.0 })
+        self.non_blocking_delay(0.5)
+        if last_focus > self.focus_score:
+          print(f'Successful +Z fine autofocus {i}')
+          break
+        last_focus = self.focus_score
+    elif neg_score < mid_score and pos_score < mid_score:
+      # We are very close to already being in focus
+      print('Almost in focus!')
+      self.move_relative({ 'z': -20.0 })
+      self.non_blocking_delay(0.5)
+
+      for i in range(30):
+        self.move_relative({ 'z': 2.0 })
+        self.non_blocking_delay(0.5)
+        if last_focus > self.focus_score:
+          print(f'Successful +Z fine autofocus {i}')
+          break
+        last_focus = self.focus_score
+    else:
+      print('Autofocus is confused!')
 
     self.set_autofocus_busy(False)
 
