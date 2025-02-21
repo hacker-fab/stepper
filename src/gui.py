@@ -959,17 +959,17 @@ class ChipFrame:
 
     def on_open():
       path = filedialog.askopenfilename(title = 'Open Chip')
-      self.model.load_chip(path)
       self.path.set(path)
+      self.model.load_chip(path)
     def on_new():
       path = filedialog.asksaveasfilename(title = 'Create Chip As')
-      self.model.new_chip()
       self.path.set(path)
+      self.model.new_chip()
     def on_save():
       path = filedialog.asksaveasfilename(title = 'Save As')
       if path != '':
-        self.model.save_chip(self.path.get())
         self.path.set(path)
+        self.model.save_chip(self.path.get())
     def on_finish_layer():
       print('Layer finished!')
       self.model.add_chip_layer()
@@ -1040,9 +1040,9 @@ class ChipFrame:
     self.layer_frame.grid(row=1, column=0)
 
     self.prev_layer_frame = ttk.Labelframe(self.layer_frame, text='Previous Layer')
-    self.prev_layer_frame.grid(row=0, column=0)
+    self.prev_layer_frame.grid(row=0, column=0, sticky='ns')
     self.cur_layer_frame = ttk.Labelframe(self.layer_frame, text='Current Layer')
-    self.cur_layer_frame.grid(row=0, column=1)
+    self.cur_layer_frame.grid(row=0, column=1, sticky='ns')
 
     self.tree_view_style = ttk.Style()
     self.tree_view_style.configure('Treeview', rowheight=50)
