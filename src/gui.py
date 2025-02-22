@@ -752,7 +752,7 @@ class CameraFrame:
           resized = cv2.resize(image_rgb, (640, 640))
           results = self.model(resized)
           display_image = image.copy()
-          boxes = results[0].boxes()
+          boxes = results[0].boxes
           for box in boxes:
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
             x1 = int(x1 * original_width / 640)
