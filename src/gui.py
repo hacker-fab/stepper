@@ -25,9 +25,12 @@ from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar, messagebox, filedialog
 # import toml # Need to use a package because we're stuck on Python 3.10
 import tkinter
+from ultralytics import YOLO
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int,int] = (160,90)
+ENABLE_DETECTION = True
+MODEL_PATH = "best.pt"
 
 class StrAutoEnum(str, Enum):
     """Base class for string-valued enums that use auto()"""
@@ -668,7 +671,7 @@ class SnapshotFrame:
 
 
 class CameraFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule, camera_scale: float):
+  def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule, camera_scale: float, enable_detection: bool = False, model_path: str = 'best.pt'):
     self.frame = ttk.Frame(parent)
     self.label = ttk.Label(self.frame, text='No Camera Connected')
     self.label.grid(row=0, column=0, sticky='nesw')
@@ -720,9 +723,48 @@ class CameraFrame:
 
     #self.event_dispatcher.root.bind('<<NewFrame>>', lambda x: self._on_new_frame(x))
 
+    self.model: Optional[YOLO] = None
+    self.enable_detection = ENABLE_DETECTION
+    if self.enable_detection:
+      try:
+        self.model = YOLO(MODEL_PATH)
+      except Exception as e:
+        print(f"Failed to load YOLO model: {e}")
+        self.enable_detection = False
+
     def cameraCallback(image, dimensions, format):
       self.pending_frame = (image, dimensions, format)
       #self.event_dispatcher.root.event_generate('<<NewFrame>>', when='tail')
+      try:
+        filename = self.snapshots_pending.get_nowait()
+        print(f'Saving image {filename}')
+        img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        cv2.imwrite(filename, img)
+      except queue.Empty:
+        pass
+
+      # Run detection if enabled
+      display_image = image
+      if self.enable_detection and self.model is not None:
+        try:
+          image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+          original_height, original_width = image_rgb.shape[:2]
+          resized = cv2.resize(image_rgb, (640, 640))
+          results = self.model(resized)
+          display_image = image.copy()
+          boxes = results[0].boxes()
+          for box in boxes:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            x1 = int(x1 * original_width / 640)
+            x2 = int(x2 * original_width / 640)
+            y1 = int(y1 * original_height / 640)
+            y2 = int(y2 * original_height / 640)
+            cv2.rectange(display_image, (x1, y1), (x2, y2), (255, 0, 0), 5)
+        except Exception as e:
+          print(f"Detection failed: {e}")
+          display_image = image
+
+      self.gui_camera_preview(display_image, dimensions)
 
     if not self.camera.open():
       print('Camera failed to start')
