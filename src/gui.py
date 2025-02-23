@@ -27,7 +27,12 @@ import tkinter
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int,int] = (160,90)
 
-class ShownImage(Enum):
+class StrAutoEnum(str, Enum):
+    """Base class for string-valued enums that use auto()"""
+    def _generate_next_value_(name, *_):
+        return name.lower()
+
+class ShownImage(StrAutoEnum):
   """The type of image currently being displayed by the projector"""
   CLEAR = auto()
   PATTERN = auto()
@@ -35,7 +40,7 @@ class ShownImage(Enum):
   RED_FOCUS = auto()
   UV_FOCUS = auto()
 
-class PatterningStatus(Enum):
+class PatterningStatus(StrAutoEnum):
   """The current state of the patterning process"""
   IDLE = auto()
   PATTERNING = auto()
@@ -43,7 +48,7 @@ class PatterningStatus(Enum):
 
 OnShownImageChange = Callable[[ShownImage], None]
 
-class Event(Enum):
+class Event(StrAutoEnum):
   """Events that can be dispatched to listeners"""
   SNAPSHOT = auto()
   SHOWN_IMAGE_CHANGED = auto()
@@ -54,13 +59,13 @@ class Event(Enum):
   EXPOSURE_PATTERN_PROGRESS_CHANGED = auto()
   PATTERNING_BUSY_CHANGED = auto()
 
-class MovementLock(Enum):
+class MovementLock(StrAutoEnum):
   """Controls whether stage position can be manually adjusted"""
   UNLOCKED = auto()  # X, Y, and Z are free to move
   XY_LOCKED = auto()  # Only Z (focus) is free to move to avoid smearing UV focus pattern
   LOCKED = auto()    # No positions can move to avoid disrupting patterning
 
-class RedFocusSource(Enum):
+class RedFocusSource(StrAutoEnum):
   """The source image to use for red focus mode"""
   IMAGE = auto() # Uses the dedicated red focus image
   SOLID = auto() # Shows a solid red screen
