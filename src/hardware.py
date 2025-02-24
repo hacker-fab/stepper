@@ -85,43 +85,11 @@ def process_img(image: Image.Image, settings: ImageProcessSettings) -> Image.Ima
   
   return new_image 
 
-class StageWrapper:
-    stage_position: dict[str, float] # position committed to the stage
-    target_position: dict[str, float] # position set by the GUI, possibly not yet committed
-
-    stage: StageController
-
-    def __init__(self, stage: StageController, origin: tuple[float, float, float] = (0.0, 0.0, 0.0)):
-        self.stage = stage
-        coords = { 'x': origin[0], 'y': origin[1], 'z': origin[2] }
-        self.stage_position = copy.copy(coords)
-        self.target_position = copy.copy(coords)
-
-    def move_by(self, offsets: dict[str, float], commit=True):
-        for axis, offset in offsets.items():
-            assert(axis in self.target_position)
-            self.target_position[axis] += offset
-        
-        if commit:
-           self.commit()
-    
-    def move_to(self, position: dict[str, float], commit=True):
-        for axis, pos in position.items():
-           assert(axis in self.target_position)
-           self.target_position[axis] = pos
-
-        if commit:
-           self.commit()
-
-    def commit(self):
-        self.stage.move_to(self.target_position)
-        self.stage_position = copy.copy(self.target_position)
-
 class Lithographer:
-    stage: StageWrapper
+    stage: StageController
 
     projector: ProjectorController
 
     def __init__(self, stage: StageController, projector: ProjectorController):
-        self.stage = StageWrapper(stage)
+        self.stage = stage
         self.projector = projector
