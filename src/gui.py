@@ -319,7 +319,6 @@ class EventDispatcher:
     self.should_abort = True
     print('Aborting patterning')
   
-  @property 
   def home_stage(self):
     self.hardware.stage.home()
     self.non_blocking_delay(1.0)
