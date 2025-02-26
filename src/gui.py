@@ -162,6 +162,7 @@ class EventDispatcher:
 
     self.add_event_listener(Event.ShownImageChanged, lambda: self._update_projector())
   
+  @property
   def current_image(self):
     match self.shown_image:
       case ShownImage.Clear:
@@ -174,7 +175,7 @@ class EventDispatcher:
         return self.pattern.processed()
 
   def _update_projector(self):
-    img = self.current_image()
+    img = self.current_image
     if img is None:
       self.hardware.projector.clear()
     else:
@@ -339,9 +340,11 @@ class EventDispatcher:
     self._refresh_pattern()
     self.on_event(Event.ImageAdjustChanged)
   
+  @property
   def image_position(self):
     return self.image_adjust_position
     
+  @property
   def movement_lock(self):
     if self.patterning_busy or self.autofocus_busy:
       return MovementLock.Locked
@@ -644,7 +647,7 @@ class StagePositionFrame:
     self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
 
     def on_lock_change():
-      lock = event_dispatcher.movement_lock()
+      lock = event_dispatcher.movement_lock
       match lock:
         case MovementLock.Unlocked:
           for w in self.all_widgets:
@@ -713,11 +716,11 @@ class ImageAdjustFrame:
       self.step_size_intputs[-1].widget.grid(row=3,column=i)
 
       def callback_pos(index, c):
-        pos = list(event_dispatcher.image_position())
+        pos = list(event_dispatcher.image_position)
         pos[index] += self.step_sizes()[index]
         event_dispatcher.set_image_position(*pos)
       def callback_neg(index, c):
-        pos = list(event_dispatcher.image_position())
+        pos = list(event_dispatcher.image_position)
         pos[index] -= self.step_sizes()[index]
         event_dispatcher.set_image_position(*pos)
 
@@ -743,8 +746,7 @@ class ImageAdjustFrame:
     event_dispatcher.add_event_listener(Event.ImageAdjustChanged, on_position_change)
 
     def on_lock_change():
-      lock = event_dispatcher.movement_lock()
-      if event_dispatcher.movement_lock() == MovementLock.Unlocked:
+      if event_dispatcher.movement_lock == MovementLock.Unlocked:
         for w in self.lockable_widgets:
           w.configure(state='normal')
       else:
@@ -1004,14 +1006,14 @@ class GlobalSettingsFrame:
 
     # Disable the autofocus button if autofocus is already running
     def movement_lock_changed():
-      if event_dispatcher.movement_lock() == MovementLock.Locked:
+      if event_dispatcher.movement_lock == MovementLock.Locked:
         self.autofocus_button.configure(state='disabled')
       else:
         self.autofocus_button.configure(state='normal')
     event_dispatcher.add_event_listener(Event.MovementLockChanged, movement_lock_changed)
 
     def shown_image_changed():
-      img = event_dispatcher.current_image()
+      img = event_dispatcher.current_image
       if img is None:
         self.current_image.configure(image=self.placeholder_photo) # type:ignore
       else:
