@@ -6,6 +6,7 @@ webcam = 1
 #flir = true
 
 [stage]
+homing = false
 enabled = false
 port = "/dev/tty.usbmodem11401"
 baud-rate = 115200
