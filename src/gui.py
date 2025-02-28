@@ -512,7 +512,7 @@ class EventDispatcher:
     if mode_switch_autofocus and self.autofocus_on_mode_switch:
       self.autofocus()
 
-  def enter_uv_mode(self, mode_switch_autofocus=False):
+  def enter_uv_mode(self, mode_switch_autofocus=True):
     if self.auto_snapshot_on_uv:
       timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
       filename = self.snapshot_directory / f'uv_mode_entry_{timestamp}.png'
