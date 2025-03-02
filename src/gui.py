@@ -13,12 +13,12 @@ from typing import Callable, Optional
 from PIL import Image
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
-from stage_control.stage_controller import StageController, UnsupportedCommand
+from stage_control.stage_controller import StageController
 from stage_control.grbl_stage import GrblStage
 from projector import ProjectorController, TkProjector
 from enum import Enum, auto
 from lib.gui import IntEntry, Thumbnail
-from lib.img import image_to_tk_image, fit_image
+from lib.img import image_to_tk_image
 from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar, messagebox, filedialog
 import toml # Need to use a package because we're stuck on Python 3.10
@@ -311,8 +311,8 @@ class EventDispatcher:
     if event not in self.listeners:
       return
 
-    for l in self.listeners[event]:
-      l(*args, **kwargs)
+    for listener in self.listeners[event]:
+      listener(*args, **kwargs)
   
   def on_event_cb(self, event: Event, *args, **kwargs) -> Callable:
     return lambda: self.on_event(event, *args, **kwargs) 
@@ -526,15 +526,12 @@ class CameraFrame:
     self.camera.close()
 
   def gui_camera_preview(self, camera_image: np.ndarray, dimensions: tuple) -> None:
-    start_time = time.time()
     resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
     img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
     self.event_dispatcher.set_focus_score(img_lapl.var() / mean)
-    end_time = time.time()
-    #print(f'Took {(end_time - start_time)*1000}ms to process')
 
     resized_img = cv2.resize(resized_img, (0, 0), fx=0.5, fy=0.5)
     gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
