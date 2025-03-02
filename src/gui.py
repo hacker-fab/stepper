@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from hardware import Lithographer, ImageProcessSettings, ProcessedImage
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 from PIL import Image
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
@@ -88,7 +88,7 @@ class EventDispatcher:
 
   stage_setpoint: tuple[float, float, float]
 
-  listeners: dict[Event, List[Callable]]
+  listeners: dict[Event, list[Callable]]
 
   exposure_time: int
   posterize_strength: Optional[int]
@@ -112,12 +112,12 @@ class EventDispatcher:
 
   focus_score: float
 
-  exposure_history: List[ExposureLog]
+  exposure_history: list[ExposureLog]
 
   auto_snapshot_on_uv: bool
   snapshot_directory: Path
 
-  def __init__(self, stage, proj, root):
+  def __init__(self, stage: StageController, proj: ProjectorController, root: Tk) -> None:
     self.listeners = dict()
 
     self.hardware = Lithographer(stage, proj) # TODO:
@@ -168,7 +168,7 @@ class EventDispatcher:
     self.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self._update_projector())
   
   @property
-  def current_image(self):
+  def current_image(self) -> Optional[Image.Image]:
     match self.shown_image:
       case ShownImage.CLEAR:
         return None
@@ -179,14 +179,14 @@ class EventDispatcher:
       case ShownImage.PATTERN:
         return self.pattern.processed()
 
-  def _update_projector(self):
+  def _update_projector(self) -> None:
     img = self.current_image
     if img is None:
       self.hardware.projector.clear()
     else:
       self.hardware.projector.show(img)
 
-  def _refresh_pattern(self):
+  def _refresh_pattern(self) -> None:
     self.pattern.update(image=self.pattern_image, settings=ImageProcessSettings(
       posterization=self.posterize_strength,
       color_channels=(False, False, True),
@@ -208,11 +208,11 @@ class EventDispatcher:
 
     self.on_event(Event.PATTERN_IMAGE_CHANGED)
   
-  def set_red_focus_source(self, source):
+  def set_red_focus_source(self, source: RedFocusSource) -> None:
     self.red_focus_source = source
     self._refresh_red_focus()
   
-  def _red_focus_source(self):
+  def _red_focus_source(self) -> Image.Image:
     match self.red_focus_source:
       case RedFocusSource.IMAGE:
         return self.red_focus_image
@@ -221,7 +221,7 @@ class EventDispatcher:
       case RedFocusSource.PATTERN:
         return self.pattern_image.getchannel('B').convert('RGBA')
 
-  def _refresh_red_focus(self):
+  def _refresh_red_focus(self) -> None:
     if self.hardware.projector.size() != self.solid_red_image.size:
       self.solid_red_image = Image.new('RGB', self.hardware.projector.size(), 'red')
 
@@ -239,7 +239,7 @@ class EventDispatcher:
     if self.shown_image == ShownImage.RED_FOCUS:
       self.on_event(Event.SHOWN_IMAGE_CHANGED)
   
-  def _refresh_uv_focus(self):
+  def _refresh_uv_focus(self) -> None:
     self.uv_focus.update(image=self.uv_focus_image, settings=ImageProcessSettings(
       posterization=self.posterize_strength,
       flatfield=None,
@@ -252,24 +252,24 @@ class EventDispatcher:
     if self.shown_image == ShownImage.UV_FOCUS:
       self.on_event(Event.SHOWN_IMAGE_CHANGED)
   
-  def set_posterize_strength(self, strength):
+  def set_posterize_strength(self, strength: Optional[int]) -> None:
     self.posterize_strength = strength
     self._refresh_red_focus()
     self._refresh_uv_focus()
     self._refresh_pattern()
   
-  def set_border_size(self, border_size):
+  def set_border_size(self, border_size: float) -> None:
     self.border_size = border_size
     self._refresh_red_focus()
     self._refresh_uv_focus()
     self._refresh_pattern()
   
-  def set_shown_image(self, shown_image: ShownImage):
+  def set_shown_image(self, shown_image: ShownImage) -> None:
     print(f'set_shown_image({shown_image})')
     self.shown_image = shown_image
     self.on_event(Event.SHOWN_IMAGE_CHANGED)
   
-  def move_absolute(self, coords: dict[str, float]):
+  def move_absolute(self, coords: dict[str, float]) -> None:
     self.hardware.stage.move_to(coords)
     x = coords.get('x', self.stage_setpoint[0])
     y = coords.get('y', self.stage_setpoint[1])
@@ -277,7 +277,7 @@ class EventDispatcher:
     self.stage_setpoint = (x, y, z)
     self.on_event(Event.STAGE_POSITION_CHANGED)
   
-  def move_relative(self, coords: dict[str, float]):
+  def move_relative(self, coords: dict[str, float]) -> None:
     x = coords.get('x', 0) + self.stage_setpoint[0]
     y = coords.get('y', 0) + self.stage_setpoint[1]
     z = coords.get('z', 0) + self.stage_setpoint[2]
@@ -285,46 +285,46 @@ class EventDispatcher:
     self.hardware.stage.move_to({ k: self.stage_setpoint[i] for k, i in (('x', 0), ('y', 1), ('z', 2)) })
     self.on_event(Event.STAGE_POSITION_CHANGED)
   
-  def set_use_solid_red(self, use: bool):
+  def set_use_solid_red(self, use: bool) -> None:
     self.use_solid_red = use
     self.set_shown_image(ShownImage.RED_FOCUS)
     self._refresh_red_focus()
   
-  def set_pattern_image(self, img: Image.Image, name: str):
+  def set_pattern_image(self, img: Image.Image, name: str) -> None:
     self.pattern_image = img
     self.pattern_image_name = name
     self._refresh_pattern()
   
-  def set_red_focus_image(self, img: Image.Image):
+  def set_red_focus_image(self, img: Image.Image) -> None:
     self.red_focus_image = img
     self._refresh_red_focus()
   
-  def set_uv_focus_image(self, img: Image.Image):
+  def set_uv_focus_image(self, img: Image.Image) -> None:
     self.uv_focus_image = img
     self._refresh_uv_focus()
   
-  def set_patterning_busy(self, busy: bool):
+  def set_patterning_busy(self, busy: bool) -> None:
     self.patterning_busy = busy
     self.on_event(Event.MOVEMENT_LOCK_CHANGED)
     self.on_event(Event.PATTERNING_BUSY_CHANGED)
 
-  def set_progress(self, pattern_progress: float, exposure_progress: float):
+  def set_progress(self, pattern_progress: float, exposure_progress: float) -> None:
     self.patterning_progress = pattern_progress
     self.exposure_progress = exposure_progress
     self.on_event(Event.EXPOSURE_PATTERN_PROGRESS_CHANGED)
   
-  def set_focus_score(self, focus_score: float):
+  def set_focus_score(self, focus_score: float) -> None:
     self.focus_score = focus_score
   
-  def set_autofocus_busy(self, busy):
+  def set_autofocus_busy(self, busy: bool) -> None:
     self.autofocus_busy = busy
     self.on_event(Event.MOVEMENT_LOCK_CHANGED)
   
-  def abort_patterning(self):
+  def abort_patterning(self) -> None:
     self.should_abort = True
     print('Aborting patterning')
   
-  def home_stage(self):
+  def home_stage(self) -> None:
     self.hardware.stage.home()
     self.non_blocking_delay(1.0)
     while True:
@@ -338,7 +338,7 @@ class EventDispatcher:
     print(f'Homed stage to {self.stage_setpoint}')
     self.on_event(Event.StagePositionChanged)
 
-  def set_image_position(self, x, y, t):
+  def set_image_position(self, x: float, y: float, t: float) -> None:
     self.image_adjust_position = (x, y, t)
     self._refresh_red_focus()
     self._refresh_uv_focus()
@@ -346,11 +346,11 @@ class EventDispatcher:
     self.on_event(Event.IMAGE_ADJUST_CHANGED)
   
   @property
-  def image_position(self):
+  def image_position(self) -> tuple[float, float, float]:
     return self.image_adjust_position
     
   @property
-  def movement_lock(self):
+  def movement_lock(self) -> MovementLock:
     if self.patterning_busy or self.autofocus_busy:
       return MovementLock.LOCKED
     elif self.shown_image == ShownImage.UV_FOCUS or self.shown_image == ShownImage.PATTERN:
@@ -358,22 +358,22 @@ class EventDispatcher:
     else:
       return MovementLock.UNLOCKED
 
-  def on_event(self, event: Event, *args, **kwargs):
+  def on_event(self, event: Event, *args, **kwargs) -> None:
     if event not in self.listeners:
       return
 
     for l in self.listeners[event]:
       l(*args, **kwargs)
   
-  def on_event_cb(self, event: Event, *args, **kwargs):
+  def on_event_cb(self, event: Event, *args, **kwargs) -> Callable:
     return lambda: self.on_event(event, *args, **kwargs) 
   
-  def add_event_listener(self, event: Event, listener: Callable):
+  def add_event_listener(self, event: Event, listener: Callable) -> None:
     if event not in self.listeners:
       self.listeners[event] = []
     self.listeners[event].append(listener)
   
-  def begin_patterning(self):
+  def begin_patterning(self) -> None:
     # TODO: Update patterning preview
 
     print('Patterning at ', self.stage_setpoint)
@@ -413,18 +413,18 @@ class EventDispatcher:
       print('Patterning aborted')
       self.should_abort = False
   
-  def non_blocking_delay(self, t: float):
+  def non_blocking_delay(self, t: float) -> None:
     start = time.time()
     while time.time() - start < t:
       self.root.update()
   
-  def enter_red_mode(self):
+  def enter_red_mode(self) -> None:
     print('enter_red_mode')
     self.set_shown_image(ShownImage.RED_FOCUS)
     if self.autofocus_on_mode_switch:
       self.autofocus()
 
-  def enter_uv_mode(self):
+  def enter_uv_mode(self) -> None:
     if self.auto_snapshot_on_uv:
       timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
       filename = self.snapshot_directory / f'uv_mode_entry_{timestamp}.png'
@@ -440,7 +440,7 @@ class EventDispatcher:
       self.non_blocking_delay(2.0)
       self.autofocus()
   
-  def autofocus(self):
+  def autofocus(self) -> None:
     if self.first_autofocus:
       # TODO: Fix this spuriously triggering
       self.first_autofocus = False
@@ -482,7 +482,7 @@ class EventDispatcher:
 
     print('Finished autofocus')
 
-  def set_snapshot_directory(self, directory: Path):
+  def set_snapshot_directory(self, directory: Path) -> None:
     self.snapshot_directory = directory
     self.snapshot_directory.mkdir(exist_ok=True)
 
@@ -495,7 +495,7 @@ class SnapshotFrame:
   Presents a frame with a filename entry and a button to save screenshots of the current camera view.
   '''
 
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.Frame(parent)
     self.frame.grid(row=1, column=0)
     
@@ -511,7 +511,7 @@ class SnapshotFrame:
     self.name_preview = ttk.Label(self.frame)
     self.name_preview.grid(row=0, column=1)
 
-    def on_snapshot_button():
+    def on_snapshot_button() -> None:
       event_dispatcher.on_event(Event.SNAPSHOT, self._next_filename())
       self.counter += 1
       self._refresh_name_preview()
@@ -521,7 +521,7 @@ class SnapshotFrame:
 
     self._refresh_name_preview()
   
-  def _next_filename(self):
+  def _next_filename(self) -> str:
     counter_str = str(self.counter)
     time_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
@@ -530,12 +530,12 @@ class SnapshotFrame:
     name = name.replace('%T', time_str).replace('%t', time_str)
     return name
 
-  def _refresh_name_preview(self):
+  def _refresh_name_preview(self) -> None:
     self.name_preview.configure(text=f'Output File: {self._next_filename()}')
 
 
 class CameraFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher, camera: CameraModule) -> None:
     self.frame = ttk.Frame(parent)
     self.label = ttk.Label(self.frame, text='live hackerfab reaction')
     self.label.grid(row=0, column=0, sticky='nesw')
@@ -544,15 +544,17 @@ class CameraFrame:
     self.snapshot.frame.grid(row=1, column=0)
 
     self.event_dispatcher = event_dispatcher
-
-    self.snapshots_pending = queue.Queue()
-    self.event_dispatcher.add_event_listener(Event.SNAPSHOT, lambda filename: self.snapshots_pending.put(filename))
+    self.snapshots_pending: queue.Queue = queue.Queue()
+    self.event_dispatcher.add_event_listener(
+      Event.SNAPSHOT,
+      lambda filename: self.snapshots_pending.put(filename)
+    )
 
     self.gui_img = None
-    self.camera = c
+    self.camera = camera
 
-  def start(self):
-    def cameraCallback(image, dimensions, format):
+  def start(self) -> None:
+    def camera_callback(image: np.ndarray, dimensions: tuple, format: str) -> None:
       try:
         filename = self.snapshots_pending.get_nowait()
         print(f'Saving image {filename}')
@@ -567,14 +569,14 @@ class CameraFrame:
       print('Camera failed to start')
     else:
       self.camera.setSetting('image_format', "rgb888")
-      self.camera.setStreamCaptureCallback(cameraCallback)
+      self.camera.setStreamCaptureCallback(camera_callback)
       if not self.camera.startStreamCapture():
         print('Failed to start stream capture for camera')
 
-  def cleanup(self):
+  def cleanup(self) -> None:
     self.camera.close()
 
-  def gui_camera_preview(self, camera_image, dimensions):
+  def gui_camera_preview(self, camera_image: np.ndarray, dimensions: tuple) -> None:
     start_time = time.time()
     resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
     img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
@@ -591,14 +593,14 @@ class CameraFrame:
     self.gui_img = gui_img
 
 class StagePositionFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.Frame(parent)
 
-    self.position_intputs = []
-    self.step_size_intputs = []
+    self.position_intputs: list[IntEntry] = []
+    self.step_size_intputs: list[IntEntry] = []
 
-    self.xy_widgets = []
-    self.z_widgets = []
+    self.xy_widgets: list[ttk.Widget] = []
+    self.z_widgets: list[ttk.Widget] = []
 
     # Absolute
 
@@ -609,7 +611,7 @@ class StagePositionFrame:
       self.position_intputs.append(IntEntry(parent=self.absolute_frame, default=0))
       self.position_intputs[-1].widget.grid(row=0,column=i)
     
-    def callback_set():
+    def callback_set() -> None:
       x, y, z = self._position()
       event_dispatcher.move_absolute({ 'x': x, 'y': y, 'z': z })
 
@@ -625,9 +627,9 @@ class StagePositionFrame:
       self.step_size_intputs.append(IntEntry(parent=self.relative_frame, default=10, min_value=-1000, max_value=1000))
       self.step_size_intputs[-1].widget.grid(row=3,column=i)
 
-      def callback_pos(index, c):
+      def callback_pos(index: int, c: str) -> None:
         event_dispatcher.move_relative({ c:  self.step_sizes()[index] })
-      def callback_neg(index, c):
+      def callback_neg(index: int, c: str) -> None:
         event_dispatcher.move_relative({ c: -self.step_sizes()[index] })
 
       coord_inc_button = ttk.Button(self.relative_frame, text=f'+{coord.upper()}', command=partial(callback_pos, i, coord))
@@ -651,7 +653,7 @@ class StagePositionFrame:
 
     self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
 
-    def on_lock_change():
+    def on_lock_change() -> None:
       lock = event_dispatcher.movement_lock
       match lock:
         case MovementLock.UNLOCKED:
@@ -669,7 +671,7 @@ class StagePositionFrame:
 
     event_dispatcher.add_event_listener(Event.MOVEMENT_LOCK_CHANGED, on_lock_change)
 
-    def on_position_change():
+    def on_position_change() -> None:
       pos = event_dispatcher.stage_setpoint
       for i in range(3):
         self.position_intputs[i].set(pos[i])
@@ -679,7 +681,7 @@ class StagePositionFrame:
   def _position(self) -> tuple[int, int, int]:
     return tuple(intput.get() for intput in self.position_intputs)
   
-  def _set_position(self, pos: tuple[int, int, int]):
+  def _set_position(self, pos: tuple[int, int, int]) -> None:
     for i in range(3):
       self.position_intputs[i].set(pos[i])
   
@@ -687,13 +689,13 @@ class StagePositionFrame:
     return tuple(intput.get() for intput in self.step_size_intputs)
 
 class ImageAdjustFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.Frame(parent)
 
-    self.position_intputs = []
-    self.step_size_intputs = []
+    self.position_intputs: list[IntEntry] = []
+    self.step_size_intputs: list[IntEntry] = []
 
-    self.lockable_widgets = []
+    self.lockable_widgets: list[ttk.Widget] = []
 
     # Absolute
 
@@ -704,7 +706,7 @@ class ImageAdjustFrame:
       self.position_intputs.append(IntEntry(parent=self.absolute_frame, default=0))
       self.position_intputs[-1].widget.grid(row=0,column=i)
     
-    def callback_set():
+    def callback_set() -> None:
       x, y, t = self._position()
       event_dispatcher.set_image_position(x, y, t)
 
@@ -720,11 +722,11 @@ class ImageAdjustFrame:
       self.step_size_intputs.append(IntEntry(parent=self.relative_frame, default=10, min_value=-1000, max_value=1000))
       self.step_size_intputs[-1].widget.grid(row=3,column=i)
 
-      def callback_pos(index, c):
+      def callback_pos(index: int, c: str) -> None:
         pos = list(event_dispatcher.image_position)
         pos[index] += self.step_sizes()[index]
         event_dispatcher.set_image_position(*pos)
-      def callback_neg(index, c):
+      def callback_neg(index: int, c: str) -> None:
         pos = list(event_dispatcher.image_position)
         pos[index] -= self.step_sizes()[index]
         event_dispatcher.set_image_position(*pos)
@@ -743,14 +745,14 @@ class ImageAdjustFrame:
     
     ttk.Label(self.relative_frame, text='Step Size (pixels, pixels, degrees)', anchor='center').grid(row=2, column=0, columnspan=3, sticky='ew')
 
-    def on_position_change():
+    def on_position_change() -> None:
       pos = event_dispatcher.image_adjust_position
       for i in range(3):
         self.position_intputs[i].set(pos[i])
 
     event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, on_position_change)
 
-    def on_lock_change():
+    def on_lock_change() -> None:
       if event_dispatcher.movement_lock == MovementLock.UNLOCKED:
         for w in self.lockable_widgets:
           w.configure(state='normal')
@@ -762,7 +764,7 @@ class ImageAdjustFrame:
   def _position(self) -> tuple[int, int, int]:
     return tuple(intput.get() for intput in self.position_intputs)
   
-  def _set_position(self, pos: tuple[int, int, int]):
+  def _set_position(self, pos: tuple[int, int, int]) -> None:
     for i in range(3):
       self.position_intputs[i].set(pos[i])
   
@@ -771,7 +773,7 @@ class ImageAdjustFrame:
 
 
 class ImageSelectFrame:
-  def __init__(self, parent, button_text, import_command):
+  def __init__(self, parent: ttk.Frame, button_text: str, import_command: Callable) -> None:
     self.frame = ttk.Frame(parent)
 
     self.thumb = Thumbnail(self.frame, THUMBNAIL_SIZE, on_import=import_command)
@@ -781,10 +783,10 @@ class ImageSelectFrame:
     self.label.grid(row=1, column=0)
 
 class MultiImageSelectFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.Frame(parent)
 
-    def get_name(path):
+    def get_name(path: str) -> str:
       if path == '':
         return ''
       else:
@@ -809,21 +811,21 @@ class MultiImageSelectFrame:
 
     event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self.highlight_button(event_dispatcher.shown_image))
   
-  def pattern_image(self):
+  def pattern_image(self) -> Image.Image:
     return self.pattern_frame.thumb.image
   
-  def red_focus_image(self):
+  def red_focus_image(self) -> Image.Image:
     return self.red_focus_frame.thumb.image
 
-  def uv_focus_image(self):
+  def uv_focus_image(self) -> Image.Image:
     return self.uv_focus_frame.thumb.image
   
-  def highlight_button(self, which: ShownImage):
+  def highlight_button(self, which: ShownImage) -> None:
     # TODO:
     pass
 
 class ExposureFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.Frame(parent)
 
     self.frame.columnconfigure(0, weight=1)
@@ -873,7 +875,7 @@ class ExposureFrame:
       return None
 
 class PatterningFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.Frame(parent)
 
     self.preview_tile = ttk.Label(self.frame, text='Next Pattern Tile', compound='top') # type:ignore
@@ -907,13 +909,13 @@ class PatterningFrame:
 
     event_dispatcher.add_event_listener(Event.EXPOSURE_PATTERN_PROGRESS_CHANGED, on_progress_changed)
 
-  def set_image(self, img: Image.Image):
+  def set_image(self, img: Image.Image) -> None:
     # TODO: What is the correct size?
     self.thumb_image = image_to_tk_image(img.resize(THUMBNAIL_SIZE))
     self.preview_tile.configure(image=self.thumb_image) # type:ignore
 
 class RedModeFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.Frame(parent, name='redmodeframe')
 
     self.red_select_var = StringVar(value='focus')
@@ -937,7 +939,7 @@ class RedModeFrame:
     self.red_select_var.trace_add('write', on_radiobutton)
 
 class UvModeFrame:
-  def __init__(self, parent, event_dispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.Frame(parent, name='uvmodeframe')
     self.exposure_frame = ExposureFrame(self.frame, event_dispatcher)
     self.exposure_frame.frame.grid(row=0, column=0)
@@ -945,7 +947,7 @@ class UvModeFrame:
     self.patterning_frame.frame.grid(row=0, column=1)
 
 class ModeSelectFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.notebook = ttk.Notebook(parent)
 
     self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher)
@@ -966,14 +968,14 @@ class ModeSelectFrame:
     #event_dispatcher.add_event_listener(Event.EnterRedMode, lambda: on_tab_event(Event.EnterRedMode))
     #event_dispatcher.add_event_listener(Event.EnterUvMode, lambda: on_tab_event(Event.EnterUvMode))
 
-  def _current_tab(self):
+  def _current_tab(self) -> str:
     if 'redmode' in self.notebook.select():
       return 'red'
     else:
       return 'uv'
  
 class GlobalSettingsFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.LabelFrame(parent, text='Global Settings')
 
     def set_value(*_):
@@ -1073,7 +1075,7 @@ class GlobalSettingsFrame:
     self.snapshot_frame.columnconfigure(1, weight=1)
 
 class ExposureHistoryFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent: ttk.Frame, event_dispatcher: EventDispatcher) -> None:
     self.frame = ttk.LabelFrame(parent, text='Exposure History')
     self.text = tkinter.Text(self.frame, width=80, height=10, wrap='none', state='disabled')
     self.text.grid(row=0, column=0)
@@ -1082,7 +1084,7 @@ class ExposureHistoryFrame:
 
     event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, lambda: self._refresh())
   
-  def _refresh(self):
+  def _refresh(self) -> None:
     self.text['state'] = 'normal'
     self.text.delete('1.0', 'end')
     for exp_log in self.event_dispatcher.exposure_history[-10:]:
@@ -1104,7 +1106,7 @@ class LithographerGui:
 
   event_dispatcher: EventDispatcher
 
-  def __init__(self, stage: StageController, camera, title='Lithographer'):
+  def __init__(self, stage: StageController, camera: CameraModule, title: str = 'Lithographer') -> None:
     self.root = Tk()
 
     self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root)
@@ -1157,7 +1159,7 @@ class LithographerGui:
 
     self.root.after(0, on_start)
   
-  def cleanup(self):
+  def cleanup(self) -> None:
     print("Patterning GUI closed.")
     print('TODO: Cleanup')
     self.camera.cleanup()
