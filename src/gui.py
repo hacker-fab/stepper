@@ -30,14 +30,12 @@ THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 
 class StrAutoEnum(str, Enum):
     """Base class for string-valued enums that use auto()"""
-
     def _generate_next_value_(name, *_):
         return name.lower()
 
 
 class ShownImage(StrAutoEnum):
     """The type of image currently being displayed by the projector"""
-
     CLEAR = auto()
     PATTERN = auto()
     FLATFIELD = auto()
@@ -47,7 +45,6 @@ class ShownImage(StrAutoEnum):
 
 class PatterningStatus(StrAutoEnum):
     """The current state of the patterning process"""
-
     IDLE = auto()
     PATTERNING = auto()
     ABORTING = auto()
@@ -55,7 +52,6 @@ class PatterningStatus(StrAutoEnum):
 
 class Event(StrAutoEnum):
     """Events that can be dispatched to listeners"""
-
     SNAPSHOT = auto()
     SHOWN_IMAGE_CHANGED = auto()
     STAGE_POSITION_CHANGED = auto()
@@ -68,7 +64,6 @@ class Event(StrAutoEnum):
 
 class MovementLock(StrAutoEnum):
     """Controls whether stage position can be manually adjusted"""
-
     UNLOCKED = auto()  # X, Y, and Z are free to move
     XY_LOCKED = auto() # Only Z (focus) is free to move to avoid smearing UV focus pattern
     LOCKED = auto()  # No positions can move to avoid disrupting patterning
@@ -76,7 +71,6 @@ class MovementLock(StrAutoEnum):
 
 class RedFocusSource(StrAutoEnum):
     """The source image to use for red focus mode"""
-
     IMAGE = auto()  # Uses the dedicated red focus image
     SOLID = auto()  # Shows a solid red screen
     PATTERN = auto()  # Uses the blue channel from the pattern image
@@ -131,9 +125,7 @@ class EventDispatcher:
 
         self.exposure_history: list[ExposureLog] = []
 
-        self.add_event_listener(
-            Event.SHOWN_IMAGE_CHANGED, lambda: self._update_projector()
-        )
+        self.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self._update_projector())
 
     @property
     def current_image(self) -> Optional[Image.Image]:
@@ -188,9 +180,7 @@ class EventDispatcher:
 
     def _refresh_red_focus(self) -> None:
         if self.hardware.projector.size() != self.solid_red_image.size:
-            self.solid_red_image = Image.new(
-                "RGB", self.hardware.projector.size(), "red"
-            )
+            self.solid_red_image = Image.new("RGB", self.hardware.projector.size(), "red")
 
         img = self._red_focus_source()
 
@@ -354,9 +344,7 @@ class EventDispatcher:
 
         duration = self.exposure_time
 
-        print(
-            f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration) / 1000))}s"
-        )
+        print(f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration) / 1000))}s")
 
         # TODO: Image slicing.
         # Note that flatfield correction and image adjustment should be applied *after* slicing
@@ -475,9 +463,7 @@ class SnapshotFrame:
 
         # TODO: Allow %X, %Y, %Z formats to save position on chip
         self.name_var = StringVar(value="output_%T.png")
-        self.name_var.trace_add(
-            "write", lambda _a, _b, _c: self._refresh_name_preview()
-        )
+        self.name_var.trace_add("write", lambda _a, _b, _c: self._refresh_name_preview())
 
         self.counter = 0
 
@@ -525,9 +511,7 @@ class CameraFrame:
 
         self.event_dispatcher = event_dispatcher
         self.snapshots_pending: queue.Queue = queue.Queue()
-        self.event_dispatcher.add_event_listener(
-            Event.SNAPSHOT, lambda filename: self.snapshots_pending.put(filename)
-        )
+        self.event_dispatcher.add_event_listener(Event.SNAPSHOT, lambda filename: self.snapshots_pending.put(filename))
 
         self.gui_img = None
         self.camera = camera
@@ -675,9 +659,7 @@ class StagePositionFrame:
             for i in range(3):
                 self.position_intputs[i].set(pos[i])
 
-        event_dispatcher.add_event_listener(
-            Event.STAGE_POSITION_CHANGED, on_position_change
-        )
+        event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, on_position_change)
 
     def _position(self) -> tuple[int, int, int]:
         return tuple(intput.get() for intput in self.position_intputs)
@@ -776,9 +758,7 @@ class ImageAdjustFrame:
             for i in range(3):
                 self.position_intputs[i].set(pos[i])
 
-        event_dispatcher.add_event_listener(
-            Event.IMAGE_ADJUST_CHANGED, on_position_change
-        )
+        event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, on_position_change)
 
         def on_lock_change() -> None:
             if event_dispatcher.movement_lock == MovementLock.UNLOCKED:
@@ -846,10 +826,7 @@ class MultiImageSelectFrame:
         self.red_focus_frame.frame.grid(row=1, column=0)
         self.uv_focus_frame.frame.grid(row=1, column=1)
 
-        event_dispatcher.add_event_listener(
-            Event.SHOWN_IMAGE_CHANGED,
-            lambda: self.highlight_button(event_dispatcher.shown_image),
-        )
+        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self.highlight_button(event_dispatcher.shown_image))
 
     def pattern_image(self) -> Image.Image:
         return self.pattern_frame.thumb.image
@@ -976,22 +953,15 @@ class PatterningFrame:
                 self.begin_patterning_button["state"] = "normal"
                 self.abort_patterning_button["state"] = "disabled"
 
-        event_dispatcher.add_event_listener(
-            Event.PATTERNING_BUSY_CHANGED, on_change_patterning_status
-        )
-        event_dispatcher.add_event_listener(
-            Event.PATTERN_IMAGE_CHANGED,
-            lambda: self.set_image(event_dispatcher.pattern.processed()),
-        )
+        event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, on_change_patterning_status)
+        event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, lambda: self.set_image(event_dispatcher.pattern.processed()))
 
         def on_progress_changed():
             self.exposure_progress["value"] = (
                 event_dispatcher.exposure_progress * 1000.0
             )
 
-        event_dispatcher.add_event_listener(
-            Event.EXPOSURE_PATTERN_PROGRESS_CHANGED, on_progress_changed
-        )
+        event_dispatcher.add_event_listener(Event.EXPOSURE_PATTERN_PROGRESS_CHANGED, on_progress_changed)
 
     def set_image(self, img: Image.Image) -> None:
         # TODO: What is the correct size?
@@ -1132,9 +1102,7 @@ class GlobalSettingsFrame:
             else:
                 self.autofocus_button.configure(state="normal")
 
-        event_dispatcher.add_event_listener(
-            Event.MOVEMENT_LOCK_CHANGED, movement_lock_changed
-        )
+        event_dispatcher.add_event_listener(Event.MOVEMENT_LOCK_CHANGED, movement_lock_changed)
 
         def shown_image_changed():
             img = event_dispatcher.current_image
@@ -1147,9 +1115,7 @@ class GlobalSettingsFrame:
                 self.current_image.configure(image=photo)  # type:ignore
                 self.photo = photo
 
-        event_dispatcher.add_event_listener(
-            Event.SHOWN_IMAGE_CHANGED, shown_image_changed
-        )
+        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, shown_image_changed)
 
         self.snapshot_frame = ttk.LabelFrame(self.frame, text="Snapshot Settings")
         self.snapshot_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=5)
@@ -1203,9 +1169,7 @@ class ExposureHistoryFrame:
 
         self.event_dispatcher = event_dispatcher
 
-        event_dispatcher.add_event_listener(
-            Event.PATTERNING_BUSY_CHANGED, lambda: self._refresh()
-        )
+        event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, lambda: self._refresh())
 
     def _refresh(self) -> None:
         self.text["state"] = "normal"
