@@ -80,90 +80,42 @@ class ExposureLog:
   aborted: bool
 
 class EventDispatcher:
-  red_focus: ProcessedImage
-  uv_focus: ProcessedImage
-  pattern: ProcessedImage
-
-  hardware: Lithographer
-
-  stage_setpoint: tuple[float, float, float]
-
-  listeners: dict[Event, list[Callable]]
-
-  exposure_time: int
-  posterize_strength: Optional[int]
-  patterning_progress: float # ranges from 0.0 to 1.0
-
-  autofocus_on_mode_switch: bool
-
-  shown_image: ShownImage
-  autofocus_busy: bool
-  patterning_busy: bool
-
-  pattern_image: Image.Image
-  red_focus_image: Image.Image
-  uv_focus_image: Image.Image
-
-  solid_red_image: Image.Image
-  red_focus_source: RedFocusSource
-
-  image_adjust_position: tuple[float, float, float]
-  border_size: float
-
-  focus_score: float
-
-  exposure_history: list[ExposureLog]
-
-  auto_snapshot_on_uv: bool
-  snapshot_directory: Path
-
   def __init__(self, stage: StageController, proj: ProjectorController, root: Tk) -> None:
-    self.listeners = dict()
-
-    self.hardware = Lithographer(stage, proj) # TODO:
-
+    self.hardware = Lithographer(stage, proj)
     self.root = root
+    self.listeners: dict[Event, list[Callable]] = dict()
 
     self.red_focus = ProcessedImage()
     self.uv_focus = ProcessedImage()
     self.pattern = ProcessedImage()
 
-    self.exposure_time = 8000
-    self.posterize_strength = None
-
-    self.patterning_progress = 0.0
-
-    self.shown_image = ShownImage.CLEAR
-    self.autofocus_busy = False
-    self.patterning_busy = False
-
-    self.autofocus_on_mode_switch = True
-
     self.pattern_image = Image.new('RGB', (1, 1), 'black')
     self.red_focus_image = Image.new('RGB', (1, 1), 'black')
     self.uv_focus_image = Image.new('RGB', (1, 1), 'black')
-
     self.solid_red_image = Image.new('RGB', (1, 1), 'red')
+
+    self.shown_image = ShownImage.CLEAR
     self.red_focus_source = RedFocusSource.IMAGE
-
-    self.first_autofocus = True
-
-    self.should_abort = False
-
+    self.exposure_time = 8000
+    self.posterize_strength = None
+    self.patterning_progress = 0.0
     self.focus_score = 0.0
-
-    self.image_adjust_position = (0.0, 0.0, 0.0)
     self.border_size = 0.0
 
     self.stage_setpoint = (0.0, 0.0, 0.0)
+    self.image_adjust_position = (0.0, 0.0, 0.0)
 
-    self.exposure_history = []
+    self.autofocus_busy = False
+    self.patterning_busy = False
+    self.autofocus_on_mode_switch = True
+    self.first_autofocus = True
+    self.should_abort = False
 
     self.auto_snapshot_on_uv = True
     self.snapshot_directory = Path("stepper_captures")
-    
-    # Create snapshot directory if it doesn't exist
     self.snapshot_directory.mkdir(exist_ok=True)
+
+    self.exposure_history: list[ExposureLog] = []
 
     self.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self._update_projector())
   
@@ -1108,57 +1060,69 @@ class LithographerGui:
 
   def __init__(self, stage: StageController, camera: CameraModule, title: str = 'Lithographer') -> None:
     self.root = Tk()
-
     self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root)
-
     self.shown_image = ShownImage.CLEAR
 
-    self.camera = CameraFrame(self.root, self.event_dispatcher, camera)
-    self.camera.frame.grid(row=0, column=0)
+    # Create main panels
+    self.camera = self._setup_camera_panel(camera)
+    self.middle_panel = self._setup_middle_panel()
+    self.bottom_panel = self._setup_bottom_panel()
+    
+    # Configure window behavior
+    self.root.protocol("WM_DELETE_WINDOW", self.cleanup)
+    self.root.after(0, self._on_start)
 
-    self.middle_panel = ttk.Frame(self.root)
-    self.middle_panel.grid(row=2, column=0)
+  def _setup_camera_panel(self, camera: CameraModule) -> CameraFrame:
+    camera_frame = CameraFrame(self.root, self.event_dispatcher, camera)
+    camera_frame.frame.grid(row=0, column=0)
+    return camera_frame
 
-    self.bottom_panel = ttk.Frame(self.root)
-    self.bottom_panel.grid(row=3, column=0)
+  def _setup_middle_panel(self) -> ttk.Frame:
+    panel = ttk.Frame(self.root)
+    panel.grid(row=2, column=0)
 
-    self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
-    self.exposure_history_frame.frame.grid(row=0, column=0)
-
-    self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
-    self.image_adjust_frame.frame.grid(row=0, column=1)
-
-    self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
-    self.global_settings_frame.frame.grid(row=0, column=2)
-
-    self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
+    self.stage_position_frame = StagePositionFrame(panel, self.event_dispatcher)
     self.stage_position_frame.frame.grid(row=0, column=1)
 
-    self.mode_select_frame = ModeSelectFrame(self.middle_panel, self.event_dispatcher)
+    self.mode_select_frame = ModeSelectFrame(panel, self.event_dispatcher)
     self.mode_select_frame.notebook.grid(row=0, column=2)
 
-    self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
-    self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
-
-    self.pattern_progress = Progressbar(self.root, orient='horizontal', mode='determinate')
-    self.pattern_progress.grid(row = 1, column = 0, sticky='ew')
-
-    self.multi_image_select_frame = MultiImageSelectFrame(self.middle_panel, self.event_dispatcher)
+    self.multi_image_select_frame = MultiImageSelectFrame(panel, self.event_dispatcher)
     self.multi_image_select_frame.frame.grid(row=0, column=0)
 
-    self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
-    #self.debug.info("Debug info will appear here")
+    return panel
 
-    # Things that have to after the main loop begins
-    def on_start():
-      self.camera.start()
-      if self.event_dispatcher.hardware.stage.has_homing():
-        self.event_dispatcher.home_stage()
-        self.event_dispatcher.move_relative({ 'x': 5000.0, 'y': 3500.0, 'z': 1900.0 })
-      messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
+  def _setup_bottom_panel(self) -> ttk.Frame:
+    panel = ttk.Frame(self.root)
+    panel.grid(row=3, column=0)
 
-    self.root.after(0, on_start)
-  
+    self.exposure_history_frame = ExposureHistoryFrame(panel, self.event_dispatcher)
+    self.exposure_history_frame.frame.grid(row=0, column=0)
+
+    self.image_adjust_frame = ImageAdjustFrame(panel, self.event_dispatcher)
+    self.image_adjust_frame.frame.grid(row=0, column=1)
+
+    self.global_settings_frame = GlobalSettingsFrame(panel, self.event_dispatcher)
+    self.global_settings_frame.frame.grid(row=0, column=2)
+
+    return panel
+
+  def _on_start(self) -> None:
+    self.camera.start()
+    if self.event_dispatcher.hardware.stage.has_homing():
+      self.event_dispatcher.home_stage()
+      self.event_dispatcher.move_relative({
+        'x': 5000.0,
+        'y': 3500.0,
+        'z': 1900.0
+      })
+    messagebox.showinfo(
+      message='BEFORE CONTINUING: Ensure that you move the projector window '
+             'to the correct display! Click on the fullscreen, completely '
+             'black window, then press Windows Key + Shift + Left Arrow '
+             'until it no longer is visible!'
+    )
+
   def cleanup(self) -> None:
     print("Patterning GUI closed.")
     print('TODO: Cleanup')
