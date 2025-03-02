@@ -46,8 +46,6 @@ class PatterningStatus(StrAutoEnum):
   PATTERNING = auto()
   ABORTING = auto()
 
-OnShownImageChange = Callable[[ShownImage], None]
-
 class Event(StrAutoEnum):
   """Events that can be dispatched to listeners"""
   SNAPSHOT = auto()
