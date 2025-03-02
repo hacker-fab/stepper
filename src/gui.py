@@ -137,18 +137,15 @@ class EventDispatcher:
       self.hardware.projector.show(img)
 
   def _refresh_pattern(self) -> None:
-    self.pattern.update(image=self.pattern_image, settings=ImageProcessSettings(
+    process_settings = ImageProcessSettings(
       posterization=self.posterize_strength,
-      color_channels=(False, False, True),
       flatfield=None,
-      size=self.hardware.projector.size(),
+      color_channels=(False, False, True),
       image_adjust=self.image_adjust_position,
       border_size=self.border_size,
-      #size=self.pattern_image.size,
-      #flatfield=None,
-      #image_adjust=(0.0, 0.0, 0.0),
-      #border_size=0.0,
-    ))
+      size=self.hardware.projector.size(),
+    )
+    self.pattern.update(image=self.pattern_image, settings=process_settings)
 
     if self.red_focus_source == RedFocusSource.PATTERN:
       self._refresh_red_focus()
@@ -177,27 +174,29 @@ class EventDispatcher:
 
     img = self._red_focus_source()
 
-    self.red_focus.update(image=img, settings=ImageProcessSettings(
+    process_settings = ImageProcessSettings(
       posterization=self.posterize_strength,
       flatfield=None,
       color_channels=(True, False, False),
-      size=self.hardware.projector.size(),
       image_adjust=self.image_adjust_position,
       border_size=self.border_size,
-    ))
+      size=self.hardware.projector.size(),
+    )
+    self.red_focus.update(image=img, settings=process_settings)
 
     if self.shown_image == ShownImage.RED_FOCUS:
       self.on_event(Event.SHOWN_IMAGE_CHANGED)
   
   def _refresh_uv_focus(self) -> None:
-    self.uv_focus.update(image=self.uv_focus_image, settings=ImageProcessSettings(
+    process_settings = ImageProcessSettings(
       posterization=self.posterize_strength,
       flatfield=None,
       color_channels=(False, False, True),
-      size=self.hardware.projector.size(),
       image_adjust=self.image_adjust_position,
       border_size=0.0,
-    ))
+      size=self.hardware.projector.size(),
+    )
+    self.uv_focus.update(image=self.uv_focus_image, settings=process_settings)
 
     if self.shown_image == ShownImage.UV_FOCUS:
       self.on_event(Event.SHOWN_IMAGE_CHANGED)
