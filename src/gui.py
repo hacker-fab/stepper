@@ -655,6 +655,7 @@ class SnapshotFrame:
 class CameraFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule):
     self.frame = ttk.Frame(parent)
+
     self.label = ttk.Label(self.frame, text='live hackerfab reaction')
     self.label.grid(row=0, column=0, sticky='nesw')
     
@@ -665,6 +666,8 @@ class CameraFrame:
 
     self.snapshots_pending = queue.Queue()
     self.event_dispatcher.add_event_listener(Event.Snapshot, lambda filename: self.snapshots_pending.put(filename))
+
+    self.zoom = 1.0
 
     self.gui_img = None
     self.camera = c
@@ -693,20 +696,17 @@ class CameraFrame:
     self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
-    start_time = time.time()
-    resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
+    resized_img = cv2.resize(camera_image, (0, 0), fx=0.1 * self.zoom, fy=0.1 * self.zoom)
     img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
-    img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
     self.event_dispatcher.set_focus_score(img_lapl.var() / mean)
-    end_time = time.time()
-    #print(f'Took {(end_time - start_time)*1000}ms to process')
 
-    resized_img = cv2.resize(resized_img, (0, 0), fx=0.5, fy=0.5)
     gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
-    self.label.configure(image=gui_img) # type:ignore
+    self.label.configure(image=gui_img)
     self.gui_img = gui_img
+    
 
 class StagePositionFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -1548,7 +1548,7 @@ class LithographerGui:
       self.camera.start()
       if self.event_dispatcher.hardware.stage.has_homing():
         self.event_dispatcher.home_stage()
-        self.event_dispatcher.move_relative({ 'x': 5000.0, 'y': 3500.0, 'z': 1900.0 })
+        self.event_dispatcher.move_relative({ 'x': 1000.0, 'y': 1000.0, 'z': 1000.0 })
       messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
 
     self.root.after(0, on_start)

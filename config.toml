@@ -1,12 +1,12 @@
 [camera]
 # To use a normal camera input (e.g. a built-in webcam or USB camera),
 # uncomment the following line (the number selects which camera to use):
-webcam = 1
+# webcam = 1
 # To use a FLIR camera, uncomment the following line:
-#flir = true
+flir = true
 
 [stage]
-homing = false
-enabled = false
-port = "/dev/tty.usbmodem11401"
+homing = true
+enabled = true
+port = "COM4"
 baud-rate = 115200
