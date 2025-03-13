@@ -653,59 +653,92 @@ class SnapshotFrame:
 
 
 class CameraFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule):
-    self.frame = ttk.Frame(parent)
+    def __init__(self, parent, event_dispatcher, c):
+        self.frame = ttk.Frame(parent)
 
-    self.label = ttk.Label(self.frame, text='live hackerfab reaction')
-    self.label.grid(row=0, column=0, sticky='nesw')
-    
-    self.snapshot = SnapshotFrame(self.frame, event_dispatcher)
-    self.snapshot.frame.grid(row=1, column=0)
+        self.label = ttk.Label(self.frame, text='live hackerfab reaction')
 
-    self.event_dispatcher = event_dispatcher
+        # Scrollable Canvas for Image
+        self.canvas = tkinter.Canvas(self.frame, width=400, height=300)  # Adjust size as needed
+        self.image_container = self.canvas.create_image(0, 0, anchor="nw")
 
-    self.snapshots_pending = queue.Queue()
-    self.event_dispatcher.add_event_listener(Event.Snapshot, lambda filename: self.snapshots_pending.put(filename))
+        self.h_scroll = ttk.Scrollbar(self.frame, orient="horizontal", command=self.canvas.xview)
+        self.v_scroll = ttk.Scrollbar(self.frame, orient="vertical", command=self.canvas.yview)
 
-    self.zoom = 1.0
+        self.canvas.configure(xscrollcommand=self.h_scroll.set, yscrollcommand=self.v_scroll.set)
 
-    self.gui_img = None
-    self.camera = c
+        self.label.grid(row=0, column=0, columnspan=2, sticky='nesw')
+        self.canvas.grid(row=1, column=0, columnspan=2, sticky='nesw')
+        self.h_scroll.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.v_scroll.grid(row=1, column=2, sticky="ns")
 
-  def start(self):
-    def cameraCallback(image, dimensions, format):
-      try:
-        filename = self.snapshots_pending.get_nowait()
-        print(f'Saving image {filename}')
-        img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        cv2.imwrite(filename, img)
-      except queue.Empty:
-        pass
+        # Zoom slider
+        self.zoom = 0.82 # Default to full image view
+        self.zoom_slider = ttk.Scale(self.frame, from_=self.zoom, to=3.0, orient="horizontal", command=self.update_zoom)
+        self.zoom_slider.set(0.82)
+        self.zoom_slider.grid(row=3, column=0, columnspan=2, sticky='ew')
 
-      self.gui_camera_preview(image, dimensions)
+        self.snapshot = SnapshotFrame(self.frame, event_dispatcher)
+        self.snapshot.frame.grid(row=4, column=0, columnspan=2)
 
-    if not self.camera.open():
-      print('Camera failed to start')
-    else:
-      self.camera.setSetting('image_format', "rgb888")
-      self.camera.setStreamCaptureCallback(cameraCallback)
-      if not self.camera.startStreamCapture():
-        print('Failed to start stream capture for camera')
+        self.event_dispatcher = event_dispatcher
+        self.snapshots_pending = queue.Queue()
+        self.event_dispatcher.add_event_listener(Event.Snapshot, lambda filename: self.snapshots_pending.put(filename))
 
-  def cleanup(self):
-    self.camera.close()
+        self.gui_img = None
+        self.camera = c
 
-  def gui_camera_preview(self, camera_image, dimensions):
-    resized_img = cv2.resize(camera_image, (0, 0), fx=0.1 * self.zoom, fy=0.1 * self.zoom)
-    img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
+        # Bind mouse wheel to zoom
+        self.canvas.bind("<MouseWheel>", self.scroll_zoom)
 
-    mean = np.sum(img) / (img.shape[0] * img.shape[1])
-    img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
-    self.event_dispatcher.set_focus_score(img_lapl.var() / mean)
+    def start(self):
+        def cameraCallback(image, dimensions, format):
+            try:
+                filename = self.snapshots_pending.get_nowait()
+                print(f'Saving image {filename}')
+                img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                cv2.imwrite(filename, img)
+            except queue.Empty:
+                pass
 
-    gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
-    self.label.configure(image=gui_img)
-    self.gui_img = gui_img
+            self.gui_camera_preview(image, dimensions)
+
+        if not self.camera.open():
+            print('Camera failed to start')
+        else:
+            self.camera.setSetting('image_format', "rgb888")
+            self.camera.setStreamCaptureCallback(cameraCallback)
+            if not self.camera.startStreamCapture():
+                print('Failed to start stream capture for camera')
+
+    def cleanup(self):
+        self.camera.close()
+
+    def update_zoom(self, value):
+        self.zoom = float(value)
+        self.gui_camera_preview(self.current_image, self.current_dimensions)
+
+    def scroll_zoom(self, event):
+        self.zoom_slider.set(self.zoom + event.delta / 5000)
+
+    def gui_camera_preview(self, camera_image, dimensions):
+        self.current_image = camera_image
+        self.current_dimensions = dimensions
+
+        # AUTOFOCUS SCORE 
+        gray = cv2.cvtColor(camera_image, cv2.COLOR_BGR2GRAY)
+        scaled = cv2.resize(gray, (0, 0), fx=0.125, fy=0.125)
+        mean = np.sum(scaled) / (scaled.shape[0] * scaled.shape[1])
+        lapl = cv2.Sobel(scaled, cv2.CV_64F, 1, 0, ksize=1) / mean
+        self.event_dispatcher.set_focus_score(lapl.var() / mean)
+
+        # GUI DISPLAY
+        resized = cv2.resize(camera_image, (0, 0), fx=self.zoom * 0.1, fy=self.zoom * 0.1)
+        gui_img = ImageTk.PhotoImage(Image.fromarray(resized, mode='RGB'))
+        self.canvas.itemconfig(self.image_container, image=gui_img)
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))  # Update scroll region
+
+        self.gui_img = gui_img
     
 
 class StagePositionFrame:
