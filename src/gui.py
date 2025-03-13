@@ -13,6 +13,7 @@ from typing import Callable, List, Optional
 from PIL import Image
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
+from camera.pylon import BaslerPylon
 from stage_control.stage_controller import StageController, UnsupportedCommand
 from stage_control.grbl_stage import GrblStage
 from projector import ProjectorController, TkProjector
@@ -1187,6 +1188,8 @@ def main():
   elif 'flir' in camera_config:
     import camera.flir.flir_camera as flir 
     camera = flir.FlirCamera()
+  elif 'pylon' in camera_config:
+    camera = BaslerPylon()
   else:
     print('config.toml must specify either a webcam or a FLIR camera!')
     return 1
