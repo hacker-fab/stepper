@@ -751,8 +751,9 @@ class CameraFrame:
     def gui_camera_preview(self, camera_image, dimensions):
         resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
 
-        camera_image[:, :, 1] = 0  # disable green since it shouldn't be used for focus
-        img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
+        img2 = camera_image.copy()
+        img2[:, :, 1] = 0  # disable green since it shouldn't be used for focus
+        img = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY)
         img = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
         mean = np.sum(img) / (img.shape[0] * img.shape[1])
         img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
