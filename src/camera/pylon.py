@@ -22,6 +22,13 @@ class BaslerPylon(CameraModule):
         # Print the model name of the camera.
         print("Using device ", self.camera.GetDeviceInfo().GetModelName())
 
+        #self.camera.ExposureMode = pylon.ExposureMode_Timed
+        self.camera.ExposureTime.Value = 8333.0
+
+        #self.camera.AcquisitionFrameRateEnable = True
+        self.camera.AcquisitionFrameRate.Value = 30.0
+
+
 
         # demonstrate some feature access
         new_width = self.camera.Width.Value - self.camera.Width.Inc
@@ -38,11 +45,14 @@ class BaslerPylon(CameraModule):
     def close(self):
         self.should_stop.set()
         if self.camera.IsOpen():
+            print('Stopping camera')
             self.camera.StopGrabbing()
+            print('Stopped grabbing')
             self.camera.Close()
+            print('Closed camera')
         if self.capture_thread is not None:
             self.capture_thread.join()
-            self.capture_thread = None
+            print('Joined capture thread')
 
         return True
     
@@ -52,6 +62,7 @@ class BaslerPylon(CameraModule):
         def capture_thread():
             while self.camera.IsGrabbing() and not self.should_stop.is_set():
                 # Wait for an image and then retrieve it. A timeout of 5000 ms is used.
+
                 grabResult = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
 
                 # Image grabbed successfully?

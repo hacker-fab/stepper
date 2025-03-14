@@ -545,18 +545,16 @@ class EventDispatcher:
     print('Starting autofocus')
 
     self.set_autofocus_busy(True)
-
-    self.non_blocking_delay(2.0)
-
+    self.non_blocking_delay(1.0)
     mid_score = self.focus_score
     self.move_relative({ 'z': -20.0 })
-    self.non_blocking_delay(0.5)
+    self.non_blocking_delay(1.0)
     neg_score = self.focus_score
     self.move_relative({ 'z': 40.0 })
-    self.non_blocking_delay(0.5)
+    self.non_blocking_delay(1.0)
     pos_score = self.focus_score
     self.move_relative({ 'z': -20.0 })
-    self.non_blocking_delay(0.5)
+    self.non_blocking_delay(1.0)
 
     last_focus = mid_score
 
@@ -670,10 +668,12 @@ class SnapshotFrame:
 
 
 class CameraFrame:
-  def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule):
+  def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule, camera_scale: float):
     self.frame = ttk.Frame(parent)
     self.label = ttk.Label(self.frame, text='No Camera Connected')
     self.label.grid(row=0, column=0, sticky='nesw')
+    self.gui_camera_scale = camera_scale
+
     
     self.snapshot = SnapshotFrame(self.frame, c is not None, event_dispatcher)
     self.snapshot.frame.grid(row=1, column=0)
@@ -685,22 +685,44 @@ class CameraFrame:
 
     self.gui_img = None
     self.camera = c
+    self.pending_frame = None
+
+  def _on_new_frame(self):
+    # FIXME: is this really the only way tkinter exposes to do this??
+    # We want to send frames from the callback over to the main thread,
+    # but in way where it just grabs the most recently-made-available frame.
+    # If you send an event, events will just pile up in the queue if we ever fall behind.
+    # This might have the same problem!
+    # I have no idea how to fix this
+    self.event_dispatcher.root.after(33, lambda: self._on_new_frame())
+    if self.pending_frame is None:
+      return
+    image, dimensions, format = self.pending_frame
+
+
+    try:
+      filename = self.snapshots_pending.get_nowait()
+      print(f'Saving image {filename}')
+      img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+      cv2.imwrite(filename, img)
+    except queue.Empty:
+      pass
+
+
+    self.gui_camera_preview(image, dimensions)
+
+
 
   def start(self):
     if not self.camera:
       print('No camera available')
       return
 
-    def cameraCallback(image, dimensions, format):
-      try:
-        filename = self.snapshots_pending.get_nowait()
-        print(f'Saving image {filename}')
-        img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        cv2.imwrite(filename, img)
-      except queue.Empty:
-        pass
+    #self.event_dispatcher.root.bind('<<NewFrame>>', lambda x: self._on_new_frame(x))
 
-      self.gui_camera_preview(image, dimensions)
+    def cameraCallback(image, dimensions, format):
+      self.pending_frame = (image, dimensions, format)
+      #self.event_dispatcher.root.event_generate('<<NewFrame>>', when='tail')
 
     if not self.camera.open():
       print('Camera failed to start')
@@ -710,22 +732,26 @@ class CameraFrame:
       if not self.camera.startStreamCapture():
         print('Failed to start stream capture for camera')
 
+    self._on_new_frame()
+
+
   def cleanup(self):
     if self.camera is not None:
       self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
     start_time = time.time()
-    resized_img = cv2.resize(camera_image, (0, 0), fx=0.5, fy=0.5)
-    img = cv2.cvtColor(resized_img, cv2.COLOR_RGB2GRAY)
-    img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+    resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
+
+    camera_image[:, :, 1] = 0 # disable green since it shouldn't be used for focus
+    img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
+    img = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
     self.event_dispatcher.set_focus_score(img_lapl.var() / mean)
     end_time = time.time()
     #print(f'Took {(end_time - start_time)*1000}ms to process')
 
-    resized_img = cv2.resize(resized_img, (0, 0), fx=0.5, fy=0.5)
     gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
     self.label.configure(image=gui_img) # type:ignore
     self.gui_img = gui_img
@@ -1515,14 +1541,14 @@ class LithographerGui:
 
   event_dispatcher: EventDispatcher
 
-  def __init__(self, stage: StageController, camera, title='Lithographer'):
+  def __init__(self, stage: StageController, camera, camera_scale, title='Lithographer'):
     self.root = Tk()
 
     self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root, camera is not None)
 
     self.shown_image = ShownImage.CLEAR
 
-    self.camera = CameraFrame(self.root, self.event_dispatcher, camera)
+    self.camera = CameraFrame(self.root, self.event_dispatcher, camera, camera_scale)
     self.camera.frame.grid(row=0, column=0)
 
     self.middle_panel = ttk.Frame(self.root)
@@ -1577,8 +1603,8 @@ class LithographerGui:
   def cleanup(self):
     print("Patterning GUI closed.")
     print('TODO: Cleanup')
-    self.camera.cleanup()
     self.root.destroy()
+    self.camera.cleanup()
     #if RUN_WITH_STAGE:
       #serial_port.close()
 
@@ -1612,8 +1638,13 @@ def main():
   else:
     print(f'config.toml specifies invalid camera type {camera_config["type"]}')
     return 1
+  
+  try:
+    camera_scale = float(camera_config['gui-scale'])
+  except:
+    camera_scale = 1.0
 
-  lithographer = LithographerGui(stage, camera)
+  lithographer = LithographerGui(stage, camera, camera_scale)
   lithographer.root.mainloop()
 
 main()
