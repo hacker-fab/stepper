@@ -1,5 +1,4 @@
-from abc import ABC, abstractmethod
-from enum import Enum, auto
+from abc import ABC
 
 
 # Using this abstract base class definition allows software testing of a "dummy" camera when no hardware is available

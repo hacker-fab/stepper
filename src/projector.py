@@ -1,6 +1,4 @@
-from time import time
 from tkinter import Label, Tk, Toplevel
-from typing import Callable, Optional
 
 from PIL import Image, ImageTk
 
@@ -9,7 +7,7 @@ from lib.img import image_to_tk_image
 
 class ProjectorController:
     def show(self, image: Image.Image):
-        print(f"ignoring show image on dummy projector")
+        print("ignoring show image on dummy projector")
         self.clear()
 
     def size(self) -> tuple[int, int]:

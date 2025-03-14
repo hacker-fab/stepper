@@ -1,6 +1,5 @@
-import copy
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Optional
 
 from PIL import Image
 

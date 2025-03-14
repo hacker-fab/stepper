@@ -2,9 +2,7 @@
 # Luca Garlati, 2024
 # backend image processing and convenience functions
 
-from math import ceil, cos, pi, radians, sin
-from tkinter import filedialog
-from typing import overload
+from math import ceil, cos, pi, sin
 
 from PIL import Image, ImageTk
 from PIL.ImageOps import invert

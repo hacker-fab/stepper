@@ -1,7 +1,5 @@
-import struct
 
 import cv2
-import msgpack
 import numpy as np
 import zmq
 
@@ -21,7 +19,7 @@ try:
         cv2.ocl.setUseOpenCL(True)
         print("Has OpenCL been Enabled?: ", end="")
         print(cv2.ocl.useOpenCL())
-except cv2.error as e:
+except cv2.error:
     print("Error using OpenCL")
 
 

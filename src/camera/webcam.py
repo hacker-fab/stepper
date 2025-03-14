@@ -1,8 +1,6 @@
 import threading
-import time
 
 import cv2
-from PIL import Image
 
 from camera.camera_module import CameraModule
 

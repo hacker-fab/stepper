@@ -6,7 +6,6 @@ Created on Wed Sep 27 19:26:39 2023
 @author: frankzhao
 """
 
-import time
 
 import cv2
 import numpy as np

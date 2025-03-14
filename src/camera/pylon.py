@@ -1,10 +1,6 @@
 import threading
-import time
 
-import cv2
-import numpy
-from PIL import Image
-from pypylon import genicam, pylon
+from pypylon import pylon
 
 from camera.camera_module import CameraModule
 

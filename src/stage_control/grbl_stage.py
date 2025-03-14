@@ -2,9 +2,7 @@
 # J. Kent Wirant
 # GRBL Stage Controller
 
-import io
 import time
-from typing import List
 
 from stage_control.stage_controller import StageController, UnsupportedCommand
 

@@ -5,9 +5,6 @@
 # region: imports
 from __future__ import annotations
 
-from dataclasses import dataclass
-from os.path import basename
-from time import time
 from tkinter import (
     BooleanVar,
     Button,
@@ -21,7 +18,6 @@ from tkinter import (
     Widget,
     filedialog,
 )
-from tkinter.ttk import Progressbar
 from typing import Any, Callable, Literal, Optional, Union
 
 from PIL import Image, ImageTk
