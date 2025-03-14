@@ -142,100 +142,95 @@ class Chip:
 
 
 class EventDispatcher:
+    hardware: Lithographer
+    camera_exists: bool
+    root: Tk
     red_focus: ProcessedImage
     uv_focus: ProcessedImage
     pattern: ProcessedImage
-
-    hardware: Lithographer
-
-    stage_setpoint: tuple[float, float, float]
-
-    listeners: dict[Event, List[Callable]]
-
-    exposure_time: int
-    posterize_strength: Optional[int]
-    patterning_progress: float  # ranges from 0.0 to 1.0
-
-    autofocus_on_mode_switch: bool
-
-    shown_image: ShownImage
-    autofocus_busy: bool
-    patterning_busy: bool
-
     pattern_image: Image.Image
     red_focus_image: Image.Image
     uv_focus_image: Image.Image
-
     solid_red_image: Image.Image
-    red_focus_source: RedFocusSource
-
     image_adjust_position: tuple[float, float, float]
     border_size: float
-
+    posterize_strength: Optional[int]
+    red_focus_source: RedFocusSource
+    stage_setpoint: tuple[float, float, float]
+    shown_image: ShownImage
+    autofocus_busy: bool
+    patterning_busy: bool
+    autofocus_on_mode_switch: bool
+    first_autofocus: bool
+    should_abort: bool
     focus_score: float
-
+    exposure_time: int
+    patterning_progress: float # ranges from 0.0 to 1.0
     exposure_history: List[ExposureLog]
-
+    chip: Chip
     auto_snapshot_on_uv: bool
     snapshot_directory: Path
+    listeners: dict[Event, List[Callable]]
 
-    chip: Chip
-
-    def __init__(self, stage, proj, root, camera_exists):
-        self.listeners = dict()
-
+    def __init__(
+        self, 
+        stage: StageController,
+        proj: TkProjector,
+        root: Tk,
+        camera_exists: bool
+    ):
+        # Hardware components
+        self.hardware = Lithographer(stage, proj)
         self.camera_exists = camera_exists
-
-        self.hardware = Lithographer(stage, proj)  # TODO:
-
         self.root = root
 
+        # Image processing objects
         self.red_focus = ProcessedImage()
         self.uv_focus = ProcessedImage()
         self.pattern = ProcessedImage()
 
-        self.exposure_time = 8000
-        self.posterize_strength = None
-
-        self.patterning_progress = 0.0
-
-        self.shown_image = ShownImage.CLEAR
-        self.autofocus_busy = False
-        self.patterning_busy = False
-
-        self.autofocus_on_mode_switch = True
-
+        # Source images
         self.pattern_image = Image.new("RGB", (1, 1), "black")
         self.red_focus_image = Image.new("RGB", (1, 1), "black")
         self.uv_focus_image = Image.new("RGB", (1, 1), "black")
-
         self.solid_red_image = Image.new("RGB", (1, 1), "red")
-        self.red_focus_source = RedFocusSource.IMAGE
 
-        self.first_autofocus = True
-
-        self.should_abort = False
-
-        self.focus_score = 0.0
-
+        # Image settings
         self.image_adjust_position = (0.0, 0.0, 0.0)
         self.border_size = 0.0
+        self.posterize_strength = None
+        self.red_focus_source = RedFocusSource.IMAGE
 
+        # Stage control
         self.stage_setpoint = (0.0, 0.0, 0.0)
 
+        # Status flags
+        self.shown_image = ShownImage.CLEAR
+        self.autofocus_busy = False
+        self.patterning_busy = False
+        self.autofocus_on_mode_switch = True
+        self.first_autofocus = True
+        self.should_abort = False
+        self.focus_score = 0.0
+
+        # Exposure settings and progress
+        self.exposure_time = 8000
+        self.patterning_progress = 0.0
+
+        # History and logging
         self.exposure_history = []
-
-        self.auto_snapshot_on_uv = True
-        self.snapshot_directory = Path("stepper_captures")
-
-        # Create snapshot directory if it doesn't exist
-        self.snapshot_directory.mkdir(exist_ok=True)
-
         self.chip = Chip([ChipLayer([])])
 
+        # Snapshot settings
+        self.auto_snapshot_on_uv = True
+        self.snapshot_directory = Path("stepper_captures")
+        self.snapshot_directory.mkdir(exist_ok=True)
+
+        # Event handling
+        self.listeners = dict()
         self.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self._update_projector())
 
-    def load_chip(self, path):
+    def load_chip(self, path: str):
         print(f"Loading chip at {path!r}")
         with open(path, "r") as f:
             d = json.load(f)
@@ -251,17 +246,17 @@ class EventDispatcher:
         self.chip.layers.append(ChipLayer([]))
         self.on_event(Event.CHIP_CHANGED)
 
-    def save_chip(self, path):
+    def save_chip(self, path: str):
         with open(path, "w") as f:
             json.dump(self.chip.to_disk(), f)
 
-    def delete_chip_exposure(self, layer, ex):
+    def delete_chip_exposure(self, layer: int, ex: int):
         self.chip.layers[layer].exposures.pop(ex)
         print(f"Deleted exposure {layer} {ex}")
         self.on_event(Event.CHIP_CHANGED)
 
     @property
-    def current_image(self):
+    def current_image(self) -> Optional[Image.Image]:
         match self.shown_image:
             case ShownImage.CLEAR:
                 return None
@@ -289,10 +284,6 @@ class EventDispatcher:
                 size=self.hardware.projector.size(),
                 image_adjust=self.image_adjust_position,
                 border_size=self.border_size,
-                # size=self.pattern_image.size,
-                # flatfield=None,
-                # image_adjust=(0.0, 0.0, 0.0),
-                # border_size=0.0,
             ),
         )
 
@@ -304,11 +295,11 @@ class EventDispatcher:
 
         self.on_event(Event.PATTERN_IMAGE_CHANGED)
 
-    def set_red_focus_source(self, source):
+    def set_red_focus_source(self, source: RedFocusSource):
         self.red_focus_source = source
         self._refresh_red_focus()
 
-    def _red_focus_source(self):
+    def _red_focus_source(self) -> Image.Image:
         match self.red_focus_source:
             case RedFocusSource.IMAGE:
                 return self.red_focus_image
@@ -356,13 +347,13 @@ class EventDispatcher:
         if self.shown_image == ShownImage.UV_FOCUS:
             self.on_event(Event.SHOWN_IMAGE_CHANGED)
 
-    def set_posterize_strength(self, strength):
+    def set_posterize_strength(self, strength: Optional[int]):
         self.posterize_strength = strength
         self._refresh_red_focus()
         self._refresh_uv_focus()
         self._refresh_pattern()
 
-    def set_border_size(self, border_size):
+    def set_border_size(self, border_size: float):
         self.border_size = border_size
         self._refresh_red_focus()
         self._refresh_uv_focus()
@@ -1223,9 +1214,7 @@ class ChipFrame:
 class ExposureFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
-
         self.frame.columnconfigure(0, weight=1)
-
         ttk.Label(self.frame, text="Exposure Time (ms)", anchor="w").grid(row=0, column=0)
         self.exposure_time_entry = IntEntry(self.frame, default=8000, min_value=0)
         self.exposure_time_entry.widget.grid(row=0, column=1, columnspan=2, sticky="nesw")
@@ -1527,9 +1516,7 @@ class ExposureHistoryFrame:
         self.frame = ttk.LabelFrame(parent, text="Exposure History")
         self.text = tkinter.Text(self.frame, width=80, height=10, wrap="none", state="disabled")
         self.text.grid(row=0, column=0)
-
         self.event_dispatcher = event_dispatcher
-
         event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, lambda: self._refresh())
 
     def _refresh(self):
@@ -1686,6 +1673,7 @@ class LithographerGui:
         self.camera.cleanup()
         # if RUN_WITH_STAGE:
         # serial_port.close()
+
 
 
 def main():
