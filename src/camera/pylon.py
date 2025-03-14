@@ -22,11 +22,15 @@ class BaslerPylon(CameraModule):
         # Print the model name of the camera.
         print("Using device ", self.camera.GetDeviceInfo().GetModelName())
 
+        print("Reading file back to camera's node map...")
+        pylon.FeaturePersistence.Load('NodeMap.pfs', self.camera.GetNodeMap(), True)
+
         #self.camera.ExposureMode = pylon.ExposureMode_Timed
-        self.camera.ExposureTime.Value = 8333.0
+        #self.camera.ExposureTime.Value = 8333.0
+        #self.camera.ExposureTime.Value = 4167.0
 
         #self.camera.AcquisitionFrameRateEnable = True
-        self.camera.AcquisitionFrameRate.Value = 30.0
+        #self.camera.AcquisitionFrameRate.Value = 30.0
 
 
 

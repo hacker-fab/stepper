@@ -677,7 +677,6 @@ class CameraFrame:
     self.label.grid(row=0, column=0, sticky='nesw')
     self.gui_camera_scale = camera_scale
 
-    
     self.snapshot = SnapshotFrame(self.frame, c is not None, event_dispatcher)
     self.snapshot.frame.grid(row=1, column=0)
 
@@ -697,11 +696,11 @@ class CameraFrame:
     # If you send an event, events will just pile up in the queue if we ever fall behind.
     # This might have the same problem!
     # I have no idea how to fix this
-    self.event_dispatcher.root.after(33, lambda: self._on_new_frame())
     if self.pending_frame is None:
+      self.event_dispatcher.root.after(33, lambda: self._on_new_frame())
       return
-    image, dimensions, format = self.pending_frame
-
+    image, dimensions, fmt = self.pending_frame
+    self.gui_camera_preview(image, dimensions)
 
     try:
       filename = self.snapshots_pending.get_nowait()
@@ -711,9 +710,7 @@ class CameraFrame:
     except queue.Empty:
       pass
 
-
-    self.gui_camera_preview(image, dimensions)
-
+    self.event_dispatcher.root.after(33, lambda: self._on_new_frame())
 
 
   def start(self):
@@ -735,36 +732,7 @@ class CameraFrame:
     def cameraCallback(image, dimensions, format):
       self.pending_frame = (image, dimensions, format)
       #self.event_dispatcher.root.event_generate('<<NewFrame>>', when='tail')
-      try:
-        filename = self.snapshots_pending.get_nowait()
-        print(f'Saving image {filename}')
-        img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        cv2.imwrite(filename, img)
-      except queue.Empty:
-        pass
 
-      # Run detection if enabled
-      display_image = image
-      if self.enable_detection and self.model is not None:
-        try:
-          image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-          original_height, original_width = image_rgb.shape[:2]
-          resized = cv2.resize(image_rgb, (640, 640))
-          results = self.model(resized)
-          display_image = image.copy()
-          boxes = results[0].boxes
-          for box in boxes:
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-            x1 = int(x1 * original_width / 640)
-            x2 = int(x2 * original_width / 640)
-            y1 = int(y1 * original_height / 640)
-            y2 = int(y2 * original_height / 640)
-            cv2.rectange(display_image, (x1, y1), (x2, y2), (255, 0, 0), 5)
-        except Exception as e:
-          print(f"Detection failed: {e}")
-          display_image = image
-
-      self.gui_camera_preview(display_image, dimensions)
 
     if not self.camera.open():
       print('Camera failed to start')
@@ -782,8 +750,33 @@ class CameraFrame:
       self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
+    # Run detection if enabled
+    try:
+      self.foo
+    except:
+      self.foo = 0
+
+    if self.enable_detection and self.model is not None:
+      try:
+        image_rgb = camera_image
+        original_height, original_width = image_rgb.shape[:2]
+        resized = cv2.resize(image_rgb, (640, 640))
+        results = self.model(resized)
+        display_image = camera_image.copy()
+        boxes = results[0].boxes
+        for box in []:
+          x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+          x1 = int(x1 * original_width / 640)
+          x2 = int(x2 * original_width / 640)
+          y1 = int(y1 * original_height / 640)
+          y2 = int(y2 * original_height / 640)
+          cv2.rectangle(display_image, (x1, y1), (x2, y2), (255, 0, 0), 5)
+        camera_image = display_image
+      except Exception as e:
+        print(f"Detection failed: {e}")
+        #display_image = camera_image
+
     start_time = time.time()
-    resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
 
     camera_image[:, :, 1] = 0 # disable green since it shouldn't be used for focus
     img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
@@ -794,6 +787,7 @@ class CameraFrame:
     end_time = time.time()
     #print(f'Took {(end_time - start_time)*1000}ms to process')
 
+    resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
     gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
     self.label.configure(image=gui_img) # type:ignore
     self.gui_img = gui_img
