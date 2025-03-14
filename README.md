@@ -115,15 +115,88 @@ and you are ready to use the GUI.
 
 **Set `homing=true` under `[stage]` in your config file to enable the use of sensors.**
 
+
 # Software Setup
 
-It is strongly recommended to use a [virtual environment](https://docs.python.org/3/library/venv.html).
+## Python Setup
+
+As is good practice for Python, we recommend using a 
+[virtual environment](https://docs.python.org/3/library/venv.html).
 
 ```bash
-python3 -m venv venv
+python -m venv venv       # name may change depending on system python
 source venv/bin/activate  # depending on your shell, see venv docs
+python --version          # ensure version is correct (<=3.10)
 pip install -r requirements.txt
 ```
 
+### Using a Basler (Pylon) camera
+
+To use a Basler camera with the GUI, you will need to install `pylon` from
+[Basler's website](https://www.baslerweb.com/en-us/downloads/software/).
+
+Select the "Software Suite" download under Pylon, as it contains useful tools for debugging the camera view.
+
+After a few steps, the installer will prompt you to **restart the computer**.
+Do not delay this restart as the Pylon installer has several more steps that are run only after restarting.
+
+### Using a FLIR camera
+
+If you are using the FLIR camera with your stage,
+ask in the Hacker Fab Discord for an invitation to the FLIR repository.
+
+Then, update the git submodules to add support for the FLIR:
+
+```bash
+git submodule init
+git submodule update
+```
+
+If the submodule update doesn't work, clone the `flir-private` repo as follows:
+
+```bash
+cd src/camera
+git clone git@github.com:hacker-fab/flir-private.git flir
+```
+
+In order to use the FLIR camera, you will need to use a version of Python **at or before 3.10.**
+Specify a version when creating your venv to make this work:
+```bash
+python3.10 -m venv venv   # name may change depending on system python
+```
+
+This restriction does not apply to other camera brands.
+
 > [!NOTE]
 > This software is in active development, and features are subject to change. Though each change to the main branch has been tested, there remains a chance that some bugs are undetected. To report a bug or to suggest additional features, please create an issue on this repository.
+
+## Configuration
+
+The GUI uses a `config.toml` file (in the [TOML](https://toml.io/en/) format) for configuration.
+A sample configuration file with an explanation of the settings is shown below.
+
+```toml
+# This section configures the camera used for the GUI's preview.
+[camera]
+# Available options are:
+# "webcam" (for a generic USB camera),
+# "basler" (for a Basler/Pylon camera)
+# "flir" (for a FLIR camera)
+# "none" (to disable camera)
+type = "webcam"
+# The index field is optional and is only used to select which of multiple webcams should be used,
+# e.g. on a laptop where there may be a builtin webcam in addition to an external USB camera.
+index = 1
+
+# This section configures the motion stage
+[stage]
+# Set enabled to false to disable all motion.
+enabled = true
+# Set homing to false if your stage does not have limit sensors
+homing = true
+# Select the correct serial port for the device running GRBL.
+# The correct serial port can be checked with Device Manager on Windows.
+port = "COM6"
+# GRBL's baud rate is almost always 115200, do not change this value
+baud-rate = 115200
+```

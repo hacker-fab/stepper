@@ -118,8 +118,10 @@ class EventDispatcher:
   auto_snapshot_on_uv: bool
   snapshot_directory: Path
 
-  def __init__(self, stage, proj, root):
+  def __init__(self, stage, proj, root, camera_exists):
     self.listeners = dict()
+    
+    self.camera_exists = camera_exists
 
     self.hardware = Lithographer(stage, proj) # TODO:
 
@@ -442,6 +444,10 @@ class EventDispatcher:
       self.autofocus()
   
   def autofocus(self):
+    if not self.camera_exists:
+      print('No camera connected, skipping autofocus')
+      return
+
     if self.first_autofocus:
       # TODO: Fix this spuriously triggering
       self.first_autofocus = False
@@ -496,17 +502,19 @@ class SnapshotFrame:
   Presents a frame with a filename entry and a button to save screenshots of the current camera view.
   '''
 
-  def __init__(self, parent, event_dispatcher: EventDispatcher):
+  def __init__(self, parent, enable, event_dispatcher: EventDispatcher):
     self.frame = ttk.Frame(parent)
     self.frame.grid(row=1, column=0)
-    
+
+    state = 'normal' if enable else 'disable'
+
     # TODO: Allow %X, %Y, %Z formats to save position on chip
     self.name_var = StringVar(value='output_%T.png')
     self.name_var.trace_add('write', lambda _a, _b, _c: self._refresh_name_preview())
 
     self.counter = 0
 
-    self.name_entry = ttk.Entry(self.frame, textvariable=self.name_var)
+    self.name_entry = ttk.Entry(self.frame, textvariable=self.name_var, state=state)
     self.name_entry.grid(row=0, column=0)
 
     self.name_preview = ttk.Label(self.frame)
@@ -517,7 +525,7 @@ class SnapshotFrame:
       self.counter += 1
       self._refresh_name_preview()
 
-    self.button = ttk.Button(self.frame, text='Take Snapshot', command=on_snapshot_button)
+    self.button = ttk.Button(self.frame, text='Take Snapshot', command=on_snapshot_button, state=state)
     self.button.grid(row=0, column=2)
 
     self._refresh_name_preview()
@@ -538,10 +546,10 @@ class SnapshotFrame:
 class CameraFrame:
   def __init__(self, parent, event_dispatcher: EventDispatcher, c: CameraModule):
     self.frame = ttk.Frame(parent)
-    self.label = ttk.Label(self.frame, text='live hackerfab reaction')
+    self.label = ttk.Label(self.frame, text='No Camera Connected')
     self.label.grid(row=0, column=0, sticky='nesw')
     
-    self.snapshot = SnapshotFrame(self.frame, event_dispatcher)
+    self.snapshot = SnapshotFrame(self.frame, c is not None, event_dispatcher)
     self.snapshot.frame.grid(row=1, column=0)
 
     self.event_dispatcher = event_dispatcher
@@ -553,6 +561,10 @@ class CameraFrame:
     self.camera = c
 
   def start(self):
+    if not self.camera:
+      print('No camera available')
+      return
+
     def cameraCallback(image, dimensions, format):
       try:
         filename = self.snapshots_pending.get_nowait()
@@ -573,7 +585,8 @@ class CameraFrame:
         print('Failed to start stream capture for camera')
 
   def cleanup(self):
-    self.camera.close()
+    if self.camera is not None:
+      self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
     start_time = time.time()
@@ -1108,7 +1121,7 @@ class LithographerGui:
   def __init__(self, stage: StageController, camera, title='Lithographer'):
     self.root = Tk()
 
-    self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root)
+    self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root, camera is not None)
 
     self.shown_image = ShownImage.CLEAR
 
@@ -1180,20 +1193,22 @@ def main():
     stage = StageController()
   
   camera_config = config['camera']
-  if 'webcam' in camera_config and 'flir' in camera_config:
-    print('config.toml cannot enable both the FLIR camera and a webcam!')
-    return 1
-  elif 'webcam' in camera_config:
-    camera = Webcam(camera_config['webcam'])
-  elif 'flir' in camera_config:
+  if camera_config['type'] == 'webcam':
+    try:
+      index = int(camera_config['index'])
+    except:
+      index = 0
+    camera = Webcam(index)
+  elif camera_config['type'] == "flir":
     import camera.flir.flir_camera as flir 
     camera = flir.FlirCamera()
-  elif 'pylon' in camera_config:
+  elif camera_config['type'] in ('basler', 'pylon'):
     camera = BaslerPylon()
+  elif camera_config['type'] == 'none':
+    camera = None
   else:
-    print('config.toml must specify either a webcam or a FLIR camera!')
+    print(f'config.toml specifies invalid camera type {camera_config["type"]}')
     return 1
-
 
   lithographer = LithographerGui(stage, camera)
   lithographer.root.mainloop()
