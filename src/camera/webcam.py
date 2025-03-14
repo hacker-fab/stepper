@@ -1,8 +1,9 @@
-from camera.camera_module import CameraModule
-from PIL import Image
 import threading
+
 import cv2
-import time
+
+from camera.camera_module import CameraModule
+
 
 class Webcam(CameraModule):
     def __init__(self, index):
@@ -10,11 +11,11 @@ class Webcam(CameraModule):
         self.index = index
         self.capture_thread = None
         self.should_stop = threading.Event()
-    
+
     def open(self):
         self.camera = cv2.VideoCapture(self.index)
         return self.camera.isOpened()
-    
+
     def close(self):
         self.should_stop.set()
         if self.camera is not None:
@@ -25,7 +26,7 @@ class Webcam(CameraModule):
             self.capture_thread = None
 
         return True
-    
+
     def startStreamCapture(self):
         self.should_stop.clear()
 
@@ -37,12 +38,12 @@ class Webcam(CameraModule):
                 if not ok:
                     break
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                self.__streamCaptureCallback__(frame, frame.size, 'RGB888')
-            print('Exited the loop!')
+                self.__streamCaptureCallback__(frame, frame.size, "RGB888")
+            print("Exited the loop!")
 
         if self.capture_thread is None and self.__streamCaptureCallback__ is not None:
             self.capture_thread = threading.Thread(target=capture_thread)
             self.capture_thread.start()
             return True
-        
+
         return False
