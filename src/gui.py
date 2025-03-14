@@ -1,30 +1,32 @@
-import serial
-import tomllib as toml
-import cv2
-import numpy as np
-import time
-import queue
 import json
-from pathlib import Path
+import queue
+import time
+
+import tkinter
 from dataclasses import dataclass
 from datetime import datetime
-from functools import partial
-from hardware import Lithographer, ImageProcessSettings, ProcessedImage
-from typing import Callable, List, Optional
-from PIL import Image, ImageOps
-from camera.camera_module import CameraModule
-from camera.webcam import Webcam
-from camera.pylon import BaslerPylon
-from stage_control.stage_controller import StageController
-from stage_control.grbl_stage import GrblStage
-from projector import TkProjector
 from enum import Enum, auto
+from functools import partial
+from pathlib import Path
+from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, ttk
+from tkinter.ttk import Progressbar
+from typing import Callable, List, Optional
+
+import cv2
+import numpy as np
+import serial
+import tomllib as toml
+from PIL import Image, ImageOps
+
+from camera.camera_module import CameraModule
+from camera.pylon import BaslerPylon
+from camera.webcam import Webcam
+from hardware import ImageProcessSettings, Lithographer, ProcessedImage
 from lib.gui import IntEntry, Thumbnail
 from lib.img import image_to_tk_image
-from tkinter.ttk import Progressbar
-from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar, messagebox, filedialog
-# import toml # Need to use a package because we're stuck on Python 3.10
-import tkinter
+from projector import TkProjector
+from stage_control.grbl_stage import GrblStage
+from stage_control.stage_controller import StageController
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int,int] = (160,90)
@@ -1626,7 +1628,7 @@ def main():
       index = 0
     camera = Webcam(index)
   elif camera_config['type'] == "flir":
-    import camera.flir.flir_camera as flir 
+    import camera.flir.flir_camera as flir
     camera = flir.FlirCamera()
   elif camera_config['type'] in ('basler', 'pylon'):
     camera = BaslerPylon()

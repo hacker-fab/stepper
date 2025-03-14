@@ -1,8 +1,9 @@
+import struct
+
 import cv2
+import msgpack
 import numpy as np
 import zmq
-import msgpack
-import struct
 
 SEND_CAMERA_IMAGE_TO_GUI = True
 

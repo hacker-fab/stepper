@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from enum import Enum, auto
 
+
 # Using this abstract base class definition allows software testing of a "dummy" camera when no hardware is available
 class CameraModule(ABC):
     __resolutionsModeA__ = [(40, 30), (800, 600)] # 4:3 aspect ratio

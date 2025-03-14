@@ -2,14 +2,15 @@
 # Luca Garlati, 2024
 # backend image processing and convenience functions
 
+from math import ceil, cos, pi, radians, sin
 from tkinter import filedialog
+from typing import overload
+
 from PIL import Image, ImageTk
 from PIL.ImageOps import invert
-from math import ceil, cos, sin, radians
-from typing import overload
-from math import pi
 
 from .tuple import *
+
 
 def select_channels(image: Image.Image, red: bool = True, green: bool = True, blue: bool = True) -> Image.Image:
   img_cpy: Image.Image = image.copy()
@@ -506,8 +507,9 @@ def __run_tests():
 
 # performance benchmarks for transform
 if(False):
-  from time import time
   from random import randint, random
+  from time import time
+
   import numpy
   def __timing_tests(resolution: tuple[int,int], runs: int = 10):
     print("Running",runs,"tests at",resolution,"...")

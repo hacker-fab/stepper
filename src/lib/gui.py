@@ -4,18 +4,32 @@
 
 #region: imports
 from __future__ import annotations
-from typing import Any, Optional
-from tkinter import Tk, Button, Toplevel, Entry, IntVar, DoubleVar, Variable, filedialog, Label, Widget, BooleanVar
-from tkinter.ttk import Progressbar
-from PIL import ImageTk, Image
-from time import time
-from os.path import basename
-from typing import Callable, Literal, Union
+
 from dataclasses import dataclass
+from os.path import basename
+from time import time
+from tkinter import (
+  BooleanVar,
+  Button,
+  DoubleVar,
+  Entry,
+  IntVar,
+  Label,
+  Tk,
+  Toplevel,
+  Variable,
+  Widget,
+  filedialog,
+)
+from tkinter.ttk import Progressbar
+from typing import Any, Callable, Literal, Optional, Union
+
+from PIL import Image, ImageTk
 
 #import sys and use path insert to add lib files
-from .img import image_to_tk_image, fit_image, RGBA_to_RGB, LA_to_L
+from .img import LA_to_L, RGBA_to_RGB, fit_image, image_to_tk_image
 from .tuple import *
+
 #endregion
 
 # widget to display info, errors, warning, and text

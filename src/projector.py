@@ -1,8 +1,11 @@
-from PIL import Image, ImageTk
 from time import time
-from tkinter import Tk, Toplevel, Label
+from tkinter import Label, Tk, Toplevel
 from typing import Callable, Optional
+
+from PIL import Image, ImageTk
+
 from lib.img import image_to_tk_image
+
 
 class ProjectorController:
     def show(self, image: Image.Image):

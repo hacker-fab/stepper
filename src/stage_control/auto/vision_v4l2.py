@@ -1,9 +1,10 @@
 # sudo modprobe v4l2loopback
 # scrcpy --v4l2-sink=/dev/video4 --no-video-playback --video-source=camera --camera-size=2560x1920  --camera-facing=front
 # scrcpy --v4l2-sink=/dev/video4 --no-video-playback --video-source=camera --camera-id=3 --camera-size=640x480
-import numpy as np
 import sys
+
 import cv2
+import numpy as np
 
 # Get Image From Camera
 camera_port=4

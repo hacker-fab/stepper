@@ -2,10 +2,12 @@
 # J. Kent Wirant
 # GRBL Stage Controller
 
-from stage_control.stage_controller import StageController, UnsupportedCommand
-from typing import List
 import io
 import time
+from typing import List
+
+from stage_control.stage_controller import StageController, UnsupportedCommand
+
 
 def clamp(value, lo, hi):
     if value > hi:

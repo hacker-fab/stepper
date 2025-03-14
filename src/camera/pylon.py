@@ -1,12 +1,13 @@
-from camera.camera_module import CameraModule
-from PIL import Image
 import threading
-import cv2
 import time
-import numpy
 
-from pypylon import pylon
-from pypylon import genicam
+import cv2
+import numpy
+from PIL import Image
+from pypylon import genicam, pylon
+
+from camera.camera_module import CameraModule
+
 
 class BaslerPylon(CameraModule):
     def __init__(self):

@@ -4,11 +4,14 @@
 
 #region: imports
 from __future__ import annotations
-from PIL import  Image
+
 from typing import Callable, Literal
+
+from PIL import Image
 
 from .img import slice_image
 from .tuple import *
+
 #endregion
   
 # TODO add calibration function

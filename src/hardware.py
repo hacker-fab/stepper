@@ -1,10 +1,19 @@
-from PIL import Image
-from dataclasses import dataclass
-from typing import Optional, Callable, List
-from lib.img import posterize, select_channels, fit_image, convert_to_alpha_channel, dec_to_alpha
-from stage_control.stage_controller import StageController
-from projector import ProjectorController
 import copy
+from dataclasses import dataclass
+from typing import Callable, List, Optional
+
+from PIL import Image
+
+from lib.img import (
+  convert_to_alpha_channel,
+  dec_to_alpha,
+  fit_image,
+  posterize,
+  select_channels,
+)
+from projector import ProjectorController
+from stage_control.stage_controller import StageController
+
 
 @dataclass
 class ImageProcessSettings:

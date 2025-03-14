@@ -2,9 +2,11 @@
 # Hacker Fab
 # Amscope Camera Module
 
-from camera.camera_module import *
-import camera.amscope.amcam as amcam
 import time
+
+import camera.amscope.amcam as amcam
+from camera.camera_module import *
+
 
 class AmscopeCamera(CameraModule):
 

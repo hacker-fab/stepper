@@ -6,7 +6,9 @@
 #    (1) en.html, English
 #    (2) hans.html, Simplified Chinese
 #
-import sys, ctypes, os.path
+import ctypes
+import os.path
+import sys
 
 AMCAM_MAX = 128
 

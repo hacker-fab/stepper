@@ -6,8 +6,9 @@
 # For performance evaluation, this script reports the framerate of a particular camera. For now,
 # manual modification of settings is required for profiling different hardware or hardware settings.
 
-from camera.flir.flir_camera import FlirCamera
 import time
+
+from camera.flir.flir_camera import FlirCamera
 
 last_time = 0
 this_time = 0

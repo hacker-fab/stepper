@@ -1,8 +1,11 @@
-from camera.camera_module import CameraModule
-from PIL import Image
 import threading
-import cv2
 import time
+
+import cv2
+from PIL import Image
+
+from camera.camera_module import CameraModule
+
 
 class Webcam(CameraModule):
     def __init__(self, index):
