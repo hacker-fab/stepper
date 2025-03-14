@@ -764,13 +764,13 @@ class CameraFrame:
         results = self.model(resized)
         display_image = camera_image.copy()
         boxes = results[0].boxes
-        for box in []:
+        for box in boxes:
           x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
           x1 = int(x1 * original_width / 640)
           x2 = int(x2 * original_width / 640)
           y1 = int(y1 * original_height / 640)
           y2 = int(y2 * original_height / 640)
-          cv2.rectangle(display_image, (x1, y1), (x2, y2), (255, 0, 0), 5)
+          cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 5)
         camera_image = display_image
       except Exception as e:
         print(f"Detection failed: {e}")
@@ -778,8 +778,9 @@ class CameraFrame:
 
     start_time = time.time()
 
-    camera_image[:, :, 1] = 0 # disable green since it shouldn't be used for focus
-    img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
+    img2 = camera_image.copy()
+    img2[:, :, 1] = 0 # disable green since it shouldn't be used for focus
+    img = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
