@@ -1,5 +1,5 @@
 import serial
-#import tomllib
+import tomllib as toml
 import cv2
 import numpy as np
 import time
@@ -23,7 +23,7 @@ from lib.gui import IntEntry, Thumbnail
 from lib.img import image_to_tk_image, fit_image
 from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar, messagebox, filedialog
-import toml # Need to use a package because we're stuck on Python 3.10
+# import toml # Need to use a package because we're stuck on Python 3.10
 import tkinter
 
 # TODO: Don't hardcode
@@ -716,8 +716,8 @@ class CameraFrame:
 
   def gui_camera_preview(self, camera_image, dimensions):
     start_time = time.time()
-    resized_img = cv2.resize(camera_image, (0, 0), fx=0.25, fy=0.25)
-    img = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
+    resized_img = cv2.resize(camera_image, (0, 0), fx=0.5, fy=0.5)
+    img = cv2.cvtColor(resized_img, cv2.COLOR_RGB2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
@@ -1584,7 +1584,7 @@ class LithographerGui:
 
 
 def main():
-  with open('config.toml', 'r') as f:
+  with open('config.toml', 'rb') as f:
     config = toml.load(f)
 
   stage_config = config['stage']

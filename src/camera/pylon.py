@@ -31,7 +31,7 @@ class BaslerPylon(CameraModule):
         self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly) 
         self.converter = pylon.ImageFormatConverter()
 
-        self.converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+        self.converter.OutputPixelFormat = pylon.PixelType_RGB8packed
         self.converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
         return True
 
