@@ -57,9 +57,6 @@ class PatterningStatus(StrAutoEnum):
     ABORTING = auto()
 
 
-OnShownImageChange = Callable[[ShownImage], None]
-
-
 class Event(StrAutoEnum):
     """Events that can be dispatched to listeners"""
 
@@ -79,9 +76,7 @@ class MovementLock(StrAutoEnum):
     """Controls whether stage position can be manually adjusted"""
 
     UNLOCKED = auto()  # X, Y, and Z are free to move
-    XY_LOCKED = (
-        auto()
-    )  # Only Z (focus) is free to move to avoid smearing UV focus pattern
+    XY_LOCKED = auto() # Only Z (focus) is free to move to avoid smearing UV focus pattern
     LOCKED = auto()  # No positions can move to avoid disrupting patterning
 
 
@@ -99,7 +94,7 @@ class ExposureLog:
     time: datetime
     path: str
     coords: tuple[float, float, float]
-    duration: float  # ms
+    duration: float # ms
     aborted: bool
 
     def to_disk(self):
@@ -238,9 +233,7 @@ class EventDispatcher:
 
         self.chip = Chip([ChipLayer([])])
 
-        self.add_event_listener(
-            Event.SHOWN_IMAGE_CHANGED, lambda: self._update_projector()
-        )
+        self.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self._update_projector())
 
     def load_chip(self, path):
         print(f"Loading chip at {path!r}")
@@ -303,10 +296,7 @@ class EventDispatcher:
             ),
         )
 
-        if self.red_focus_source in (
-            RedFocusSource.PATTERN,
-            RedFocusSource.INV_PATTERN,
-        ):
+        if self.red_focus_source in (RedFocusSource.PATTERN, RedFocusSource.INV_PATTERN):
             self._refresh_red_focus()
 
         # TODO:
@@ -327,15 +317,11 @@ class EventDispatcher:
             case RedFocusSource.PATTERN:
                 return self.pattern_image.getchannel("B").convert("RGBA")
             case RedFocusSource.INV_PATTERN:
-                return ImageOps.invert(self.pattern_image.getchannel("B")).convert(
-                    "RGBA"
-                )
+                return ImageOps.invert(self.pattern_image.getchannel("B")).convert("RGBA")
 
     def _refresh_red_focus(self):
         if self.hardware.projector.size() != self.solid_red_image.size:
-            self.solid_red_image = Image.new(
-                "RGB", self.hardware.projector.size(), "red"
-            )
+            self.solid_red_image = Image.new("RGB", self.hardware.projector.size(), "red")
 
         img = self._red_focus_source()
 
@@ -400,9 +386,7 @@ class EventDispatcher:
         y = coords.get("y", 0) + self.stage_setpoint[1]
         z = coords.get("z", 0) + self.stage_setpoint[2]
         self.stage_setpoint = (x, y, z)
-        self.hardware.stage.move_to(
-            {k: self.stage_setpoint[i] for k, i in (("x", 0), ("y", 1), ("z", 2))}
-        )
+        self.hardware.stage.move_to({k: self.stage_setpoint[i] for k, i in (("x", 0), ("y", 1), ("z", 2))})
         self.on_event(Event.STAGE_POSITION_CHANGED)
 
     def set_use_solid_red(self, use: bool):
@@ -473,10 +457,7 @@ class EventDispatcher:
     def movement_lock(self):
         if self.patterning_busy or self.autofocus_busy:
             return MovementLock.LOCKED
-        elif (
-            self.shown_image == ShownImage.UV_FOCUS
-            or self.shown_image == ShownImage.PATTERN
-        ):
+        elif (self.shown_image == ShownImage.UV_FOCUS or self.shown_image == ShownImage.PATTERN):
             return MovementLock.XY_LOCKED
         else:
             return MovementLock.UNLOCKED
@@ -500,12 +481,8 @@ class EventDispatcher:
         # TODO: Update patterning preview
 
         print("Patterning at ", self.stage_setpoint)
-
         duration = self.exposure_time
-
-        print(
-            f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration) / 1000))}s"
-        )
+        print(f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration) / 1000))}s")
 
         # TODO: Image slicing.
         # Note that flatfield correction and image adjustment should be applied *after* slicing
@@ -675,9 +652,7 @@ class SnapshotFrame:
 
         # TODO: Allow %X, %Y, %Z formats to save position on chip
         self.name_var = StringVar(value="output_%T.png")
-        self.name_var.trace_add(
-            "write", lambda _a, _b, _c: self._refresh_name_preview()
-        )
+        self.name_var.trace_add("write", lambda _a, _b, _c: self._refresh_name_preview())
 
         self.counter = 0
 
@@ -692,9 +667,7 @@ class SnapshotFrame:
             self.counter += 1
             self._refresh_name_preview()
 
-        self.button = ttk.Button(
-            self.frame, text="Take Snapshot", command=on_snapshot_button, state=state
-        )
+        self.button = ttk.Button(self.frame, text="Take Snapshot", command=on_snapshot_button, state=state)
         self.button.grid(row=0, column=2)
 
         self._refresh_name_preview()
@@ -731,9 +704,7 @@ class CameraFrame:
         self.event_dispatcher = event_dispatcher
 
         self.snapshots_pending = queue.Queue()
-        self.event_dispatcher.add_event_listener(
-            Event.SNAPSHOT, lambda filename: self.snapshots_pending.put(filename)
-        )
+        self.event_dispatcher.add_event_listener(Event.SNAPSHOT, lambda filename: self.snapshots_pending.put(filename))
 
         self.gui_img = None
         self.camera = c
@@ -787,9 +758,7 @@ class CameraFrame:
             self.camera.close()
 
     def gui_camera_preview(self, camera_image, dimensions):
-        resized_img = cv2.resize(
-            camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale
-        )
+        resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
 
         camera_image[:, :, 1] = 0  # disable green since it shouldn't be used for focus
         img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
@@ -819,18 +788,14 @@ class StagePositionFrame:
         self.absolute_frame.grid(row=0, column=0)
 
         for i, coord in ((0, "x"), (1, "y"), (2, "z")):
-            self.position_intputs.append(
-                IntEntry(parent=self.absolute_frame, default=0)
-            )
+            self.position_intputs.append(IntEntry(parent=self.absolute_frame, default=0))
             self.position_intputs[-1].widget.grid(row=0, column=i)
 
         def callback_set():
             x, y, z = self._position()
             event_dispatcher.move_absolute({"x": x, "y": y, "z": z})
 
-        self.set_position_button = ttk.Button(
-            self.absolute_frame, text="Set Stage Position", command=callback_set
-        )
+        self.set_position_button = ttk.Button(self.absolute_frame, text="Set Stage Position", command=callback_set)
         self.set_position_button.grid(row=1, column=0, columnspan=3, sticky="ew")
 
         # Relative
@@ -909,9 +874,7 @@ class StagePositionFrame:
             for i in range(3):
                 self.position_intputs[i].set(pos[i])
 
-        event_dispatcher.add_event_listener(
-            Event.STAGE_POSITION_CHANGED, on_position_change
-        )
+        event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, on_position_change)
 
     def _position(self) -> tuple[int, int, int]:
         return tuple(intput.get() for intput in self.position_intputs)
@@ -948,13 +911,10 @@ class ImageAdjustFrame:
             x, y, t = self._position()
             event_dispatcher.set_image_position(x, y, t)
 
-        self.set_position_button = ttk.Button(
-            self.absolute_frame, text="Set Image Position", command=callback_set
-        )
+        self.set_position_button = ttk.Button(self.absolute_frame, text="Set Image Position", command=callback_set)
         self.set_position_button.grid(row=1, column=0, columnspan=3, sticky="ew")
 
         # Relative
-
         self.relative_frame = ttk.LabelFrame(self.frame, text="Adjustment")
         self.relative_frame.grid(row=1, column=0)
 
@@ -1010,9 +970,7 @@ class ImageAdjustFrame:
             for i in range(3):
                 self.position_intputs[i].set(pos[i])
 
-        event_dispatcher.add_event_listener(
-            Event.IMAGE_ADJUST_CHANGED, on_position_change
-        )
+        event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, on_position_change)
 
         def on_lock_change():
             if event_dispatcher.movement_lock == MovementLock.UNLOCKED:
@@ -1051,17 +1009,12 @@ class MultiImageSelectFrame:
         self.frame = ttk.Frame(parent)
 
         def get_name(path):
-            if path == "":
-                return ""
-            else:
-                return Path(path).name
+          return "" if path == "" else Path(path).name
 
         self.pattern_frame = ImageSelectFrame(
             self.frame,
             "Pattern",
-            lambda t: event_dispatcher.set_pattern_image(
-                self.pattern_image(), self.pattern_frame.thumb.path
-            ),
+            lambda t: event_dispatcher.set_pattern_image(self.pattern_image(), self.pattern_frame.thumb.path),
         )
         self.uv_focus_frame = ImageSelectFrame(
             self.frame,
@@ -1072,10 +1025,7 @@ class MultiImageSelectFrame:
         self.pattern_frame.frame.grid(row=0, column=0)
         self.uv_focus_frame.frame.grid(row=1, column=0)
 
-        event_dispatcher.add_event_listener(
-            Event.SHOWN_IMAGE_CHANGED,
-            lambda: self.highlight_button(event_dispatcher.shown_image),
-        )
+        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self.highlight_button(event_dispatcher.shown_image))
 
     def pattern_image(self):
         return self.pattern_frame.thumb.image
@@ -1086,37 +1036,6 @@ class MultiImageSelectFrame:
     def highlight_button(self, which: ShownImage):
         # TODO:
         pass
-
-
-"""
-class StackupFrame:
-  def __init__(self, parent, event_dispatcher):
-    self.frame = ttk.Frame(parent)
-    self.stackup = None
-
-    def on_button():
-      dirname = filedialog.askdirectory()
-      try:
-        stackup = Stackup.from_folder(dirname)
-        self._load_stackup(stackup)
-      except Exception as e:
-        print(f'Could not load stackup: {e}')
-    
-    self.load_button = ttk.Button(self.frame, text='Load Stackup', command=on_button)
-    self.load_button.grid(row=0, column=0)
-
-    s = ttk.Style()
-    s.configure('Treeview', rowheight=50)
-"""
-
-# def _load_stackup(self, stackup: Stackup):
-#   if self.stackup is not None:
-#     for layer in self.stackup.layers:
-#       self.treeview.delete(layer.name)
-#
-#   self.stackup = stackup
-#   for layer in self.stackup.layers:
-#       self.treeview.insert('', 'end', layer.name, text=layer.name, image=layer.pattern_icon) #type:ignore
 
 
 class ChipFrame:
@@ -1156,10 +1075,7 @@ class ChipFrame:
         def on_delete_exposure():
             pair = self._selected_exposure()
             assert pair is not None
-            yes = messagebox.askyesno(
-                title="Delete Exposure",
-                message="Are you sure you want to delete the selected exposure?",
-            )
+            yes = messagebox.askyesno(title="Delete Exposure", message="Are you sure you want to delete the selected exposure?")
             if yes:
                 self.model.delete_chip_exposure(pair[0], pair[1])
                 if self.path.get() != "":
@@ -1203,21 +1119,13 @@ class ChipFrame:
 
         self.model.add_event_listener(Event.CHIP_CHANGED, on_chip_changed)
 
-        self.open_chip_button = ttk.Button(
-            self.chip_select_frame, text="Open", command=on_open
-        )
+        self.open_chip_button = ttk.Button(self.chip_select_frame, text="Open", command=on_open)
         self.open_chip_button.grid(row=0, column=2)
-        self.new_chip_button = ttk.Button(
-            self.chip_select_frame, text="New", command=on_new
-        )
+        self.new_chip_button = ttk.Button(self.chip_select_frame, text="New", command=on_new)
         self.new_chip_button.grid(row=0, column=3)
-        self.save_chip_button = ttk.Button(
-            self.chip_select_frame, text="Save As", command=on_save
-        )
+        self.save_chip_button = ttk.Button(self.chip_select_frame, text="Save As", command=on_save)
         self.save_chip_button.grid(row=0, column=4)
-        self.finish_layer_button = ttk.Button(
-            self.chip_select_frame, text="Finish Layer", command=on_finish_layer
-        )
+        self.finish_layer_button = ttk.Button(self.chip_select_frame, text="Finish Layer", command=on_finish_layer)
         self.finish_layer_button.grid(row=0, column=5)
         self.finish_layer_button.configure(state="disabled")
         self.delete_exposure_button = ttk.Button(
@@ -1239,17 +1147,11 @@ class ChipFrame:
         self.tree_view_style = ttk.Style()
         self.tree_view_style.configure("Treeview", rowheight=50)
 
-        self.prev_layer_view = ttk.Treeview(
-            self.prev_layer_frame, selectmode="browse", columns=("XYZ",), height=5
-        )
+        self.prev_layer_view = ttk.Treeview(self.prev_layer_frame, selectmode="browse", columns=("XYZ",), height=5)
         self.prev_layer_view.grid(row=0, column=0)
-        self.prev_layer_view.bind(
-            "<<TreeviewSelect>>", lambda e: on_select(e, cur=False)
-        )
+        self.prev_layer_view.bind("<<TreeviewSelect>>", lambda e: on_select(e, cur=False))
         self.prev_layer_view.bind("<Double-1>", lambda e: on_double_click(cur=False))
-        self.cur_layer_view = ttk.Treeview(
-            self.cur_layer_frame, selectmode="browse", columns=("XYZ",), height=5
-        )
+        self.cur_layer_view = ttk.Treeview(self.cur_layer_frame, selectmode="browse", columns=("XYZ",), height=5)
         self.cur_layer_view.grid(row=0, column=0)
         self.cur_layer_view.bind("<<TreeviewSelect>>", lambda e: on_select(e, cur=True))
         self.cur_layer_view.bind("<Double-1>", lambda e: on_double_click(cur=True))
@@ -1262,9 +1164,7 @@ class ChipFrame:
 
         self.prev_layer_select_var = StringVar()
         self.prev_layer_select_var.trace_add("write", prev_layer_index_changed)
-        self.prev_layer_select = ttk.Spinbox(
-            select_frame, from_=0, to=0, textvariable=self.prev_layer_select_var
-        )
+        self.prev_layer_select = ttk.Spinbox(select_frame, from_=0, to=0, textvariable=self.prev_layer_select_var)
         self.prev_layer_select.configure(state="disabled")
         self.prev_layer_select.grid(row=0, column=1)
 
@@ -1297,9 +1197,7 @@ class ChipFrame:
         try:
             idx = int(self.prev_layer_select_var.get())
         except ValueError:
-            print(
-                f"Leaving previous layer empty because select var is {self.prev_layer_select_var.get()!r}"
-            )
+            print(f"Leaving previous layer empty because select var is {self.prev_layer_select_var.get()!r}")
             return
 
         if len(chip.layers) < 2:
@@ -1308,9 +1206,7 @@ class ChipFrame:
         for i, ex in enumerate(chip.layers[idx].exposures):
             ex_id = f"{idx}_{i}"
             pos = f"{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}"
-            self.prev_layer_view.insert(
-                "", "end", ex_id, image=self._get_thumbnail(ex.path), values=(pos,)
-            )
+            self.prev_layer_view.insert("", "end", ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
 
     def refresh_cur_layer(self):
         chip = self.model.chip
@@ -1321,9 +1217,7 @@ class ChipFrame:
         for i, ex in enumerate(chip.layers[-1].exposures):
             ex_id = f"{len(chip.layers) - 1}_{i}"
             pos = f"{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}"
-            self.cur_layer_view.insert(
-                "", "end", ex_id, image=self._get_thumbnail(ex.path), values=(pos,)
-            )
+            self.cur_layer_view.insert("", "end", ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
 
 
 class ExposureFrame:
@@ -1332,13 +1226,9 @@ class ExposureFrame:
 
         self.frame.columnconfigure(0, weight=1)
 
-        ttk.Label(self.frame, text="Exposure Time (ms)", anchor="w").grid(
-            row=0, column=0
-        )
+        ttk.Label(self.frame, text="Exposure Time (ms)", anchor="w").grid(row=0, column=0)
         self.exposure_time_entry = IntEntry(self.frame, default=8000, min_value=0)
-        self.exposure_time_entry.widget.grid(
-            row=0, column=1, columnspan=2, sticky="nesw"
-        )
+        self.exposure_time_entry.widget.grid(row=0, column=1, columnspan=2, sticky="nesw")
 
         def on_exposure_time_change(_a, _b, _c):
             event_dispatcher.exposure_time = self.exposure_time_entry._var.get()
@@ -1346,7 +1236,6 @@ class ExposureFrame:
         self.exposure_time_entry._var.trace_add("write", on_exposure_time_change)
 
         # Posterization
-
         def on_posterize_change(*args):
             event_dispatcher.set_posterize_strength(self._posterize_strength())
 
@@ -1371,9 +1260,7 @@ class ExposureFrame:
         self.posterize_checkbutton.grid(row=2, column=0)
         self.posterize_strength_var = IntVar()
         self.posterize_strength_var.trace_add("write", on_posterize_change)
-        self.posterize_scale = ttk.Scale(
-            self.frame, variable=self.posterize_strength_var, from_=0.0, to=100.0
-        )
+        self.posterize_scale = ttk.Scale(self.frame, variable=self.posterize_strength_var, from_=0.0, to=100.0)
         self.posterize_scale.grid(row=2, column=1, sticky="nesw")
         self.posterize_scale["state"] = "disabled"
         self.posterize_cutoff_entry = IntEntry(
@@ -1398,9 +1285,7 @@ class PatterningFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
 
-        self.preview_tile = ttk.Label(
-            self.frame, text="Next Pattern Tile", compound="top"
-        )  # type:ignore
+        self.preview_tile = ttk.Label(self.frame, text="Next Pattern Tile", compound="top")  # type:ignore
         self.preview_tile.grid(row=0, column=0)
 
         self.begin_patterning_button = ttk.Button(
@@ -1419,12 +1304,8 @@ class PatterningFrame:
         )
         self.abort_patterning_button.grid(row=2, column=0)
 
-        ttk.Label(self.frame, text="Exposure Progress", anchor="s").grid(
-            row=3, column=0
-        )
-        self.exposure_progress = Progressbar(
-            self.frame, orient="horizontal", mode="determinate", maximum=1000
-        )
+        ttk.Label(self.frame, text="Exposure Progress", anchor="s").grid(row=3, column=0)
+        self.exposure_progress = Progressbar(self.frame, orient="horizontal", mode="determinate", maximum=1000)
         self.exposure_progress.grid(row=4, column=0, sticky="ew")
 
         self.set_image(Image.new("RGB", (1, 1)))
@@ -1437,22 +1318,13 @@ class PatterningFrame:
                 self.begin_patterning_button["state"] = "normal"
                 self.abort_patterning_button["state"] = "disabled"
 
-        event_dispatcher.add_event_listener(
-            Event.PATTERNING_BUSY_CHANGED, on_change_patterning_status
-        )
-        event_dispatcher.add_event_listener(
-            Event.PATTERN_IMAGE_CHANGED,
-            lambda: self.set_image(event_dispatcher.pattern.processed()),
-        )
+        event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, on_change_patterning_status)
+        event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, lambda: self.set_image(event_dispatcher.pattern.processed()))
 
         def on_progress_changed():
-            self.exposure_progress["value"] = (
-                event_dispatcher.exposure_progress * 1000.0
-            )
+            self.exposure_progress["value"] = (event_dispatcher.exposure_progress * 1000.0)
 
-        event_dispatcher.add_event_listener(
-            Event.EXPOSURE_PATTERN_PROGRESS_CHANGED, on_progress_changed
-        )
+        event_dispatcher.add_event_listener(Event.EXPOSURE_PATTERN_PROGRESS_CHANGED, on_progress_changed)
 
     def set_image(self, img: Image.Image):
         # TODO: What is the correct size?
@@ -1550,10 +1422,7 @@ class ModeSelectFrame:
         # event_dispatcher.add_event_listener(Event.EnterUvMode, lambda: on_tab_event(Event.EnterUvMode))
 
     def _current_tab(self):
-        if "redmode" in self.notebook.select():
-            return "red"
-        else:
-            return "uv"
+      return "red" if "redmode" in self.notebook.select() else "uv"
 
 
 class GlobalSettingsFrame:
@@ -1561,9 +1430,7 @@ class GlobalSettingsFrame:
         self.frame = ttk.LabelFrame(parent, text="Global Settings")
 
         def set_value(*_):
-            event_dispatcher.autofocus_on_mode_switch = (
-                self.autofocus_on_mode_switch_var.get()
-            )
+            event_dispatcher.autofocus_on_mode_switch = self.autofocus_on_mode_switch_var.get()
 
         self.autofocus_on_mode_switch_var = BooleanVar(value=True)
         self.autofocus_on_mode_switch_check = ttk.Checkbutton(
@@ -1575,9 +1442,7 @@ class GlobalSettingsFrame:
 
         self.autofocus_on_mode_switch_var.trace_add("write", set_value)
 
-        self.autofocus_button = ttk.Button(
-            self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus()
-        )
+        self.autofocus_button = ttk.Button(self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus())
         self.autofocus_button.grid(row=1, column=0, columnspan=2, sticky="ew")
 
         # Maybe this should have a scale?
@@ -1585,9 +1450,7 @@ class GlobalSettingsFrame:
         self.border_size_var = IntVar()
         self.border_label = ttk.Label(self.frame, text="Border Size (%)")
         self.border_label.grid(row=2, column=0)
-        self.border_entry = IntEntry(
-            self.frame, var=self.border_size_var, default=0, min_value=0, max_value=100
-        )
+        self.border_entry = IntEntry(self.frame, var=self.border_size_var, default=0, min_value=0, max_value=100)
         self.border_entry.widget.grid(row=2, column=1, sticky="nesw")
 
         def on_border_size_change(*_):
@@ -1595,9 +1458,7 @@ class GlobalSettingsFrame:
 
         self.border_size_var.trace_add("write", on_border_size_change)
 
-        self.placeholder_photo = image_to_tk_image(
-            Image.new("RGB", THUMBNAIL_SIZE, "black")
-        )
+        self.placeholder_photo = image_to_tk_image(Image.new("RGB", THUMBNAIL_SIZE, "black"))
         self.photo = None
 
         self.current_image = ttk.Label(self.frame, image=self.placeholder_photo)  # type:ignore
@@ -1610,24 +1471,18 @@ class GlobalSettingsFrame:
             else:
                 self.autofocus_button.configure(state="normal")
 
-        event_dispatcher.add_event_listener(
-            Event.MOVEMENT_LOCK_CHANGED, movement_lock_changed
-        )
+        event_dispatcher.add_event_listener(Event.MOVEMENT_LOCK_CHANGED, movement_lock_changed)
 
         def shown_image_changed():
             img = event_dispatcher.current_image
             if img is None:
                 self.current_image.configure(image=self.placeholder_photo)  # type:ignore
             else:
-                photo = image_to_tk_image(
-                    img.resize(THUMBNAIL_SIZE, Image.Resampling.NEAREST)
-                )
+                photo = image_to_tk_image(img.resize(THUMBNAIL_SIZE, Image.Resampling.NEAREST))
                 self.current_image.configure(image=photo)  # type:ignore
                 self.photo = photo
 
-        event_dispatcher.add_event_listener(
-            Event.SHOWN_IMAGE_CHANGED, shown_image_changed
-        )
+        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, shown_image_changed)
 
         self.snapshot_frame = ttk.LabelFrame(self.frame, text="Snapshot Settings")
         self.snapshot_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=5)
@@ -1648,9 +1503,7 @@ class GlobalSettingsFrame:
         # Directory selection
         ttk.Label(self.snapshot_frame, text="Save Directory:").grid(row=1, column=0)
         self.directory_var = StringVar(value=str(event_dispatcher.snapshot_directory))
-        self.directory_entry = ttk.Entry(
-            self.snapshot_frame, textvariable=self.directory_var, state="readonly"
-        )
+        self.directory_entry = ttk.Entry(self.snapshot_frame, textvariable=self.directory_var, state="readonly")
         self.directory_entry.grid(row=1, column=1, sticky="ew")
 
         def choose_directory():
@@ -1662,9 +1515,7 @@ class GlobalSettingsFrame:
                 event_dispatcher.set_snapshot_directory(Path(dir_path))
                 self.directory_var.set(dir_path)
 
-        self.choose_dir_button = ttk.Button(
-            self.snapshot_frame, text="Choose Directory", command=choose_directory
-        )
+        self.choose_dir_button = ttk.Button(self.snapshot_frame, text="Choose Directory", command=choose_directory)
         self.choose_dir_button.grid(row=2, column=0, columnspan=2, sticky="ew")
 
         # Configure grid weights for proper expansion
@@ -1674,16 +1525,12 @@ class GlobalSettingsFrame:
 class ExposureHistoryFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.LabelFrame(parent, text="Exposure History")
-        self.text = tkinter.Text(
-            self.frame, width=80, height=10, wrap="none", state="disabled"
-        )
+        self.text = tkinter.Text(self.frame, width=80, height=10, wrap="none", state="disabled")
         self.text.grid(row=0, column=0)
 
         self.event_dispatcher = event_dispatcher
 
-        event_dispatcher.add_event_listener(
-            Event.PATTERNING_BUSY_CHANGED, lambda: self._refresh()
-        )
+        event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, lambda: self._refresh())
 
     def _refresh(self):
         self.text["state"] = "normal"
@@ -1710,9 +1557,7 @@ class OffsetAmountFrame:
         amount_label = ttk.Label(self.frame, text="Amount")
         amount_label.grid(row=0, column=2)
         self.amount_var = StringVar(value="1")
-        self.amount_spinbox = ttk.Spinbox(
-            self.frame, from_=-20, to=20, textvariable=self.amount_var, width=3
-        )
+        self.amount_spinbox = ttk.Spinbox(self.frame, from_=-20, to=20, textvariable=self.amount_var, width=3)
         self.amount_spinbox.grid(row=0, column=3)
 
 
@@ -1738,10 +1583,7 @@ class TilingFrame:
             y_dir = 1 if y_amount > 0 else -1
             y_amount = abs(y_amount)
 
-            x_start, y_start = (
-                self.model.stage_setpoint[0],
-                self.model.stage_setpoint[1],
-            )
+            x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
 
             for x_idx in range(x_amount):
                 for y_idx in range(y_amount):
@@ -1764,22 +1606,14 @@ class TilingFrame:
         def on_abort():
             pass
 
-        self.begin_tiling_button = ttk.Button(
-            self.frame, text="Begin Tiling", command=on_begin, state="enabled"
-        )
+        self.begin_tiling_button = ttk.Button(self.frame, text="Begin Tiling", command=on_begin, state="enabled")
         self.begin_tiling_button.grid(row=2, column=0)
-
-        self.abort_tiling_button = ttk.Button(
-            self.frame, text="Abort Tiling", command=on_abort, state="disabled"
-        )
+        self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
         self.abort_tiling_button.grid(row=3, column=0)
 
 
 class LithographerGui:
     root: Tk
-
-    # flatfield_image: ProcessedImage
-
     event_dispatcher: EventDispatcher
 
     def __init__(
@@ -1787,15 +1621,11 @@ class LithographerGui:
     ):
         self.root = Tk()
 
-        self.event_dispatcher = EventDispatcher(
-            stage, TkProjector(self.root), self.root, camera is not None
-        )
+        self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root, camera is not None)
 
         self.shown_image = ShownImage.CLEAR
 
-        self.camera = CameraFrame(
-            self.root, self.event_dispatcher, camera, camera_scale
-        )
+        self.camera = CameraFrame(self.root, self.event_dispatcher, camera, camera_scale)
         self.camera.frame.grid(row=0, column=0)
 
         self.middle_panel = ttk.Frame(self.root)
@@ -1810,24 +1640,16 @@ class LithographerGui:
         self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
         self.chip_frame.frame.grid(row=0, column=0)
 
-        self.global_settings_frame = GlobalSettingsFrame(
-            self.bottom_panel, self.event_dispatcher
-        )
+        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
         self.global_settings_frame.frame.grid(row=0, column=2)
 
-        self.stage_position_frame = StagePositionFrame(
-            self.middle_panel, self.event_dispatcher
-        )
+        self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
         self.stage_position_frame.frame.grid(row=0, column=1)
 
-        self.image_adjust_frame = ImageAdjustFrame(
-            self.bottom_panel, self.event_dispatcher
-        )
+        self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
         self.image_adjust_frame.frame.grid(row=0, column=1)
 
-        self.mode_select_frame = ModeSelectFrame(
-            self.middle_panel, self.event_dispatcher
-        )
+        self.mode_select_frame = ModeSelectFrame(self.middle_panel, self.event_dispatcher)
         self.mode_select_frame.notebook.grid(row=0, column=2)
 
         self.tiling_frame = TilingFrame(self.middle_panel, self.event_dispatcher)
@@ -1836,14 +1658,10 @@ class LithographerGui:
         self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
         self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
 
-        self.pattern_progress = Progressbar(
-            self.root, orient="horizontal", mode="determinate"
-        )
+        self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
         self.pattern_progress.grid(row=1, column=0, sticky="ew")
 
-        self.multi_image_select_frame = MultiImageSelectFrame(
-            self.middle_panel, self.event_dispatcher
-        )
+        self.multi_image_select_frame = MultiImageSelectFrame(self.middle_panel, self.event_dispatcher)
         self.multi_image_select_frame.frame.grid(row=0, column=0)
 
         self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
@@ -1854,9 +1672,7 @@ class LithographerGui:
             self.camera.start()
             if self.event_dispatcher.hardware.stage.has_homing():
                 self.event_dispatcher.home_stage()
-                self.event_dispatcher.move_relative(
-                    {"x": 5000.0, "y": 3500.0, "z": 1900.0}
-                )
+                self.event_dispatcher.move_relative({"x": 5000.0, "y": 3500.0, "z": 1900.0})
             messagebox.showinfo(
                 message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
             )
