@@ -11,16 +11,16 @@ from datetime import datetime
 from functools import partial
 from hardware import Lithographer, ImageProcessSettings, ProcessedImage
 from typing import Callable, List, Optional
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageOps
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
 from camera.pylon import BaslerPylon
-from stage_control.stage_controller import StageController, UnsupportedCommand
+from stage_control.stage_controller import StageController
 from stage_control.grbl_stage import GrblStage
-from projector import ProjectorController, TkProjector
+from projector import TkProjector
 from enum import Enum, auto
 from lib.gui import IntEntry, Thumbnail
-from lib.img import image_to_tk_image, fit_image
+from lib.img import image_to_tk_image
 from tkinter.ttk import Progressbar
 from tkinter import ttk, Tk, BooleanVar, IntVar, StringVar, messagebox, filedialog
 # import toml # Need to use a package because we're stuck on Python 3.10
@@ -122,12 +122,12 @@ class Chip:
 
   def to_disk(self):
     return {
-      'layers': [l.to_disk() for l in self.layers]
+      'layers': [layer.to_disk() for layer in self.layers]
     }
   
   @classmethod
   def from_disk(cls, d):
-    return cls([ChipLayer.from_disk(l) for l in d['layers']])
+    return cls([ChipLayer.from_disk(layer) for layer in d['layers']])
 
 
 class EventDispatcher:
@@ -447,8 +447,8 @@ class EventDispatcher:
     if event not in self.listeners:
       return
 
-    for l in self.listeners[event]:
-      l(*args, **kwargs)
+    for listener in self.listeners[event]:
+      listener(*args, **kwargs)
   
   def on_event_cb(self, event: Event, *args, **kwargs):
     return lambda: self.on_event(event, *args, **kwargs) 
@@ -740,7 +740,6 @@ class CameraFrame:
       self.camera.close()
 
   def gui_camera_preview(self, camera_image, dimensions):
-    start_time = time.time()
     resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
 
     camera_image[:, :, 1] = 0 # disable green since it shouldn't be used for focus
@@ -749,8 +748,6 @@ class CameraFrame:
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
     self.event_dispatcher.set_focus_score(img_lapl.var() / mean)
-    end_time = time.time()
-    #print(f'Took {(end_time - start_time)*1000}ms to process')
 
     gui_img = image_to_tk_image(Image.fromarray(resized_img, mode='RGB'))
     self.label.configure(image=gui_img) # type:ignore
@@ -1625,7 +1622,7 @@ def main():
   if camera_config['type'] == 'webcam':
     try:
       index = int(camera_config['index'])
-    except:
+    except Exception:
       index = 0
     camera = Webcam(index)
   elif camera_config['type'] == "flir":
@@ -1641,10 +1638,11 @@ def main():
   
   try:
     camera_scale = float(camera_config['gui-scale'])
-  except:
+  except Exception:
     camera_scale = 1.0
 
   lithographer = LithographerGui(stage, camera, camera_scale)
   lithographer.root.mainloop()
 
-main()
+if __name__ == "__main__":
+  main()
