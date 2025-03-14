@@ -7,15 +7,16 @@ import cv2
 import numpy as np
 
 # Get Image From Camera
-camera_port=4
-camera=cv2.VideoCapture(camera_port) #this makes a web cam object
+camera_port = 4
+camera = cv2.VideoCapture(camera_port)  # this makes a web cam object
+
 
 def get_img(buffer):
-	global camera
-	_, im = camera.read()
-	img = cv2.rotate(im, cv2.ROTATE_90_CLOCKWISE)
-	buffer[:, :] = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-	return 1
+    global camera
+    _, im = camera.read()
+    img = cv2.rotate(im, cv2.ROTATE_90_CLOCKWISE)
+    buffer[:, :] = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    return 1
 
 
 _, im = camera.read()

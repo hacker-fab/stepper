@@ -17,6 +17,7 @@ def clamp(value, lo, hi):
     else:
         return value
 
+
 class GrblStage(StageController):
     # only x, y, and z axes are supported by this interface
     # may support alternative axes schemes in the future
@@ -28,90 +29,89 @@ class GrblStage(StageController):
         time.sleep(3.0)
         print(self.controller_target.read_all())
 
-        self.axes = ('x', 'y', 'z')
+        self.axes = ("x", "y", "z")
 
-        self.resp_buffer = b''
-        
+        self.resp_buffer = b""
+
         print(self._query_state())
 
     def _fill_resp_buffer(self):
         self.resp_buffer += self.controller_target.read_all()
-    
+
     def _send_msg(self, msg: bytes):
         self.controller_target.write(msg)
-        while b'\r\n' not in self.resp_buffer:
+        while b"\r\n" not in self.resp_buffer:
             self._fill_resp_buffer()
-        resp, self.resp_buffer = self.resp_buffer.split(b'\r\n', maxsplit=1)
-        if resp != b'ok':
+        resp, self.resp_buffer = self.resp_buffer.split(b"\r\n", maxsplit=1)
+        if resp != b"ok":
             raise Exception(f"not ok!!! {resp}")
-    
+
     def _query_state(self):
-        self.controller_target.write(b'?')
-        while b'>\r\n' not in self.resp_buffer:
+        self.controller_target.write(b"?")
+        while b">\r\n" not in self.resp_buffer:
             self._fill_resp_buffer()
-        resp, self.resp_buffer = self.resp_buffer.split(b'>\r\n', maxsplit=1)
-        resp = resp.decode('ascii')
+        resp, self.resp_buffer = self.resp_buffer.split(b">\r\n", maxsplit=1)
+        resp = resp.decode("ascii")
         print(repr(resp))
         print(len(self.resp_buffer), self.controller_target.in_waiting)
         idle = False
-        for part in resp.split('|'):
-            if 'Idle' in part:
+        for part in resp.split("|"):
+            if "Idle" in part:
                 idle = True
-            elif part.startswith('MPos:'):
-                x, y, z = part.removeprefix('MPos:').split(',')
+            elif part.startswith("MPos:"):
+                x, y, z = part.removeprefix("MPos:").split(",")
                 position = (float(x), float(y), float(z))
 
         return idle, position
 
-
     def __del__(self):
-        self._send_msg(b'G91\n')
-    
+        self._send_msg(b"G91\n")
+
     def has_homing(self):
         return self.enable_homing
-    
+
     def home(self):
         if self.enable_homing:
-            self._send_msg(b'$H\n')
+            self._send_msg(b"$H\n")
         else:
             raise UnsupportedCommand()
-     
+
     def _move(self, microns: dict[str, float], relative):
         if relative:
-            self._send_msg(b'G91\n')
+            self._send_msg(b"G91\n")
         else:
-            self._send_msg(b'G90\n')
-    
-        msg = 'G0'
-        if 'x' in microns:
-            x_mm = microns['x'] / 1000.0
-            msg += f' x{x_mm:.3f}'
-        # TODO: Yes the axes are swapped, this is because of Reasons:tm:
-        if 'z' in microns:
-            z_mm = microns['z'] / 1000.0
-            msg += f' y{z_mm:.3f}'
-        if 'y' in microns:
-            y_mm = microns['y'] / 1000.0
-            msg += f' z{y_mm:.3f}'
-        msg += '\n'
+            self._send_msg(b"G90\n")
 
-        self._send_msg(msg.encode('ascii'))
+        msg = "G0"
+        if "x" in microns:
+            x_mm = microns["x"] / 1000.0
+            msg += f" x{x_mm:.3f}"
+        # TODO: Yes the axes are swapped, this is because of Reasons:tm:
+        if "z" in microns:
+            z_mm = microns["z"] / 1000.0
+            msg += f" y{z_mm:.3f}"
+        if "y" in microns:
+            y_mm = microns["y"] / 1000.0
+            msg += f" z{y_mm:.3f}"
+        msg += "\n"
+
+        self._send_msg(msg.encode("ascii"))
 
     def move_relative(self, microns: dict[str, float]):
-        print('moving relative', microns)
+        print("moving relative", microns)
         self._move(microns, relative=True)
-    
+
     def move_absolute(self, microns: dict[str, float]):
-        print('moving absolute', microns)
+        print("moving absolute", microns)
         self._move(microns, relative=False)
-    
+
     def move_by(self, amounts):
         self.move_relative(amounts)
-    
+
     def move_to(self, amounts):
         self.move_absolute(amounts)
 
-    '''
+    """
     # pass in list of amounts to move by. Dictionary in "axis: amount" format
     def move_by(self, amounts: dict[str, float]):
         # first make sure axes are valid
@@ -167,4 +167,4 @@ class GrblStage(StageController):
         print(coords)
         print(clamped_amt)
         return clamped_amt
-    '''
+    """
