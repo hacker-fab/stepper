@@ -187,6 +187,9 @@ type = "webcam"
 # The index field is optional and is only used to select which of multiple webcams should be used,
 # e.g. on a laptop where there may be a builtin webcam in addition to an external USB camera.
 index = 1
+# The output from the camera is typically too large to show at full resolution.
+# This parameter adjusts the size of the camera feed before it is displayed in the GUI.
+gui-scale = 0.25
 
 # This section configures the motion stage
 [stage]
