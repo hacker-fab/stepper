@@ -28,6 +28,10 @@ class CameraModule(ABC):
     # set to None if no callback desired
     def setStreamCaptureCallback(self, callback):
         self.__streamCaptureCallback__ = callback
+    
+    # value is in microseconds
+    def setExposureTime(self, value):
+        print(f'Adjusting exposure is unsupported (value {value})')
 
     # camera configuration functions (e.g. 'exposure_time', 'gain', 'image_mode', etc.)
     def getSetting(self, settingName):
