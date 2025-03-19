@@ -14,6 +14,9 @@ class BaslerPylon(CameraModule):
 
         self.capture_thread = None
         self.should_stop = threading.Event()
+    
+    def setExposureTime(self, value):
+        self.camera.ExposureTime.Value = value
 
     def open(self):
         self.camera.Open()

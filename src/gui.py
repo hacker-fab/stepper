@@ -1,4 +1,5 @@
 import json
+import os
 import queue
 import time
 
@@ -408,8 +409,9 @@ class EventDispatcher:
         self.exposure_progress = exposure_progress
         self.on_event(Event.EXPOSURE_PATTERN_PROGRESS_CHANGED)
 
-    def set_focus_score(self, focus_score: float):
+    def set_focus_score(self, focus_score: float, img):
         self.focus_score = focus_score
+        self.focus_image = img
 
     def set_autofocus_busy(self, busy):
         self.autofocus_busy = busy
@@ -553,18 +555,37 @@ class EventDispatcher:
         if self.autofocus_busy:
             print("Skipping nested autofocus!")
             return
+         
+        log_focus = True
+
+        if log_focus:
+            try:
+                os.mkdir('aftest')
+                log_file = open('aftest/log.csv', 'w')
+            except FileExistsError:
+                pass
+        
+        counter = 0
+        def sample_focus():
+            nonlocal counter
+            if log_focus:
+                log_file.write(f'{counter},{self.focus_score}\n')
+                cv2.imwrite(f'aftest/img{counter}.png', self.focus_image)
+            counter += 1
+            return self.focus_score
+            
 
         print("Starting autofocus")
 
         self.set_autofocus_busy(True)
         self.non_blocking_delay(1.0)
-        mid_score = self.focus_score
+        mid_score = sample_focus()
         self.move_relative({"z": -20.0})
         self.non_blocking_delay(1.0)
-        neg_score = self.focus_score
+        neg_score = sample_focus()
         self.move_relative({"z": 40.0})
         self.non_blocking_delay(1.0)
-        pos_score = self.focus_score
+        pos_score = sample_focus()
         self.move_relative({"z": -20.0})
         self.non_blocking_delay(1.0)
 
@@ -575,36 +596,40 @@ class EventDispatcher:
             for i in range(30):
                 self.move_relative({"z": 10.0})
                 self.non_blocking_delay(0.5)
-                if last_focus > self.focus_score:
+                new_score = sample_focus()
+                if last_focus > new_score:
                     print(f"Successful +Z coarse autofocus {i}")
-                    last_focus = self.focus_score
+                    last_focus = new_score
                     break
-                last_focus = self.focus_score
+                last_focus = new_score
 
             for i in range(10):
                 self.move_relative({"z": -2.0})
                 self.non_blocking_delay(0.5)
-                if last_focus > self.focus_score:
+                new_score = sample_focus()
+                if last_focus > new_score:
                     print(f"Successful -Z fine autofocus {i}")
                     break
-                last_focus = self.focus_score
+                last_focus = new_score
         elif neg_score > mid_score > pos_score:
             # Improved focus is in the -Z direction
             for i in range(30):
                 self.move_relative({"z": -10.0})
                 self.non_blocking_delay(0.5)
-                if last_focus > self.focus_score:
+                new_score = sample_focus()
+                if last_focus > new_score:
                     print(f"Successful -Z coarse autofocus {i}")
                     break
-                last_focus = self.focus_score
+                last_focus = new_score
 
             for i in range(10):
                 self.move_relative({"z": 2.0})
                 self.non_blocking_delay(0.5)
-                if last_focus > self.focus_score:
+                new_score = sample_focus()
+                if last_focus > new_score:
                     print(f"Successful +Z fine autofocus {i}")
                     break
-                last_focus = self.focus_score
+                last_focus = new_score
         elif neg_score < mid_score and pos_score < mid_score:
             # We are very close to already being in focus
             print("Almost in focus!")
@@ -614,10 +639,11 @@ class EventDispatcher:
             for i in range(30):
                 self.move_relative({"z": 2.0})
                 self.non_blocking_delay(0.5)
-                if last_focus > self.focus_score:
+                new_score = sample_focus()
+                if last_focus > new_score:
                     print(f"Successful +Z fine autofocus {i}")
                     break
-                last_focus = self.focus_score
+                last_focus = new_score
         else:
             print("Autofocus is confused!")
 
@@ -757,7 +783,7 @@ class CameraFrame:
         img = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
         mean = np.sum(img) / (img.shape[0] * img.shape[1])
         img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
-        self.event_dispatcher.set_focus_score(img_lapl.var() / mean)
+        self.event_dispatcher.set_focus_score(img_lapl.var() / mean, camera_image)
 
         gui_img = image_to_tk_image(Image.fromarray(resized_img, mode="RGB"))
         self.label.configure(image=gui_img)  # type:ignore
