@@ -552,7 +552,7 @@ class EventDispatcher:
             self.non_blocking_delay(2.0)
             self.autofocus(blue_only=True)
 
-    def autofocus(self, blue_only):
+    def autofocus(self, blue_only, log=False):
         if not self.camera_exists:
             print("No camera connected, skipping autofocus")
             return
@@ -566,9 +566,7 @@ class EventDispatcher:
             print("Skipping nested autofocus!")
             return
          
-        log_focus = True
-
-        if log_focus:
+        if log:
             try:
                 os.mkdir('aftest')
             except FileExistsError:
@@ -579,7 +577,7 @@ class EventDispatcher:
         def sample_focus():
             focus_score = compute_focus_score(self.camera_image, blue_only=blue_only)
             nonlocal counter
-            if log_focus:
+            if log:
                 log_file.write(f'{counter},{focus_score}\n')
                 cv2.imwrite(f'aftest/img{counter}.png', self.camera_image)
             counter += 1
