@@ -32,6 +32,16 @@ from stage_control.stage_controller import StageController
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 
+def compute_focus_score(camera_image, blue_only):
+    camera_image = camera_image.copy()
+    camera_image[:, :, 1] = 0  # green should never be used for focus
+    if blue_only:
+        camera_image[:, :, 0] = 0  # disable red
+    img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
+    img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+    mean = np.sum(img) / (img.shape[0] * img.shape[1])
+    img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
+    return img_lapl.var() / mean
 
 class StrAutoEnum(str, Enum):
     """Base class for string-valued enums that use auto()"""
@@ -164,7 +174,6 @@ class EventDispatcher:
     autofocus_on_mode_switch: bool
     first_autofocus: bool
     should_abort: bool
-    focus_score: float
     exposure_time: int
     patterning_progress: float # ranges from 0.0 to 1.0
     exposure_history: List[ExposureLog]
@@ -212,7 +221,6 @@ class EventDispatcher:
         self.autofocus_on_mode_switch = True
         self.first_autofocus = True
         self.should_abort = False
-        self.focus_score = 0.0
 
         # Exposure settings and progress
         self.exposure_time = 8000
@@ -408,10 +416,9 @@ class EventDispatcher:
         self.patterning_progress = pattern_progress
         self.exposure_progress = exposure_progress
         self.on_event(Event.EXPOSURE_PATTERN_PROGRESS_CHANGED)
-
-    def set_focus_score(self, focus_score: float, img):
-        self.focus_score = focus_score
-        self.focus_image = img
+    
+    def set_latest_image(self, camera_image):
+        self.camera_image = camera_image
 
     def set_autofocus_busy(self, busy):
         self.autofocus_busy = busy
@@ -520,7 +527,7 @@ class EventDispatcher:
         print("enter_red_mode")
         self.set_shown_image(ShownImage.RED_FOCUS)
         if mode_switch_autofocus and self.autofocus_on_mode_switch:
-            self.autofocus()
+            self.autofocus(blue_only=False)
 
     def enter_uv_mode(self, mode_switch_autofocus=True):
         if self.auto_snapshot_on_uv:
@@ -540,9 +547,9 @@ class EventDispatcher:
 
         if mode_switch_autofocus and self.autofocus_on_mode_switch:
             self.non_blocking_delay(2.0)
-            self.autofocus()
+            self.autofocus(blue_only=True)
 
-    def autofocus(self):
+    def autofocus(self, blue_only):
         if not self.camera_exists:
             print("No camera connected, skipping autofocus")
             return
@@ -561,18 +568,19 @@ class EventDispatcher:
         if log_focus:
             try:
                 os.mkdir('aftest')
-                log_file = open('aftest/log.csv', 'w')
             except FileExistsError:
                 pass
+            log_file = open('aftest/log.csv', 'w')
         
         counter = 0
         def sample_focus():
+            focus_score = compute_focus_score(self.camera_image, blue_only=blue_only)
             nonlocal counter
             if log_focus:
-                log_file.write(f'{counter},{self.focus_score}\n')
-                cv2.imwrite(f'aftest/img{counter}.png', self.focus_image)
+                log_file.write(f'{counter},{focus_score}\n')
+                cv2.imwrite(f'aftest/img{counter}.png', self.camera_image)
             counter += 1
-            return self.focus_score
+            return focus_score
             
 
         print("Starting autofocus")
@@ -775,15 +783,9 @@ class CameraFrame:
             self.camera.close()
 
     def gui_camera_preview(self, camera_image, dimensions):
+        self.event_dispatcher.set_latest_image(camera_image)
         resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
 
-        img2 = camera_image.copy()
-        img2[:, :, 1] = 0  # disable green since it shouldn't be used for focus
-        img = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY)
-        img = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
-        mean = np.sum(img) / (img.shape[0] * img.shape[1])
-        img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
-        self.event_dispatcher.set_focus_score(img_lapl.var() / mean, camera_image)
 
         gui_img = image_to_tk_image(Image.fromarray(resized_img, mode="RGB"))
         self.label.configure(image=gui_img)  # type:ignore
@@ -1458,6 +1460,7 @@ class GlobalSettingsFrame:
 
         self.autofocus_on_mode_switch_var.trace_add("write", set_value)
 
+        # TODO: Fix this
         self.autofocus_button = ttk.Button(self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus())
         self.autofocus_button.grid(row=1, column=0, columnspan=2, sticky="ew")
 
@@ -1607,12 +1610,12 @@ class TilingFrame:
                             "y": y_start + y_dir * y_idx * y_offset,
                         }
                     )
-                    self.model.autofocus()
+                    self.model.autofocus(blue_only=False)
 
                     self.model.move_relative({"z": -85.0})
                     self.model.non_blocking_delay(0.5)
                     self.model.enter_uv_mode(mode_switch_autofocus=False)
-                    self.model.autofocus()
+                    self.model.autofocus(blue_only=True)
 
                     self.model.begin_patterning()
                     self.model.enter_red_mode(mode_switch_autofocus=False)
