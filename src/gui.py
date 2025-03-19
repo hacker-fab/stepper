@@ -428,6 +428,9 @@ class EventDispatcher:
         self.should_abort = True
         print("Aborting patterning")
 
+    def in_uv(self):
+        return self.shown_image in (ShownImage.PATTERN, ShownImage.UV_FOCUS)
+
     def home_stage(self):
         self.hardware.stage.home()
         self.non_blocking_delay(1.0)
@@ -1461,7 +1464,7 @@ class GlobalSettingsFrame:
         self.autofocus_on_mode_switch_var.trace_add("write", set_value)
 
         # TODO: Fix this
-        self.autofocus_button = ttk.Button(self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus())
+        self.autofocus_button = ttk.Button(self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus(blue_only=event_dispatcher.in_uv()))
         self.autofocus_button.grid(row=1, column=0, columnspan=2, sticky="ew")
 
         # Maybe this should have a scale?
