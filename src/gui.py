@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import requests
 import time
 
 import tkinter
@@ -663,6 +664,41 @@ class EventDispatcher:
     def set_snapshot_directory(self, directory: Path):
         self.snapshot_directory = directory
         self.snapshot_directory.mkdir(exist_ok=True)
+
+    def _poll_queue(self):
+        try:
+            response = requests.get(f'{self.queue_host}/jobs/next?machine=lithographer')
+            if response.status_code == 200:
+                j = response.json()['input_parameters']
+                x = j['x']
+                y = j['y']
+                image = j['image']
+
+                print('automated patterning: ', response.json())
+
+                confirm = messagebox.askyesno('Automated Patterning', f'Pattern image {image} at X {x} Y {y}?')
+                if confirm:
+                    self.move_absolute({'x': x, 'y': y})
+                    self.autofocus(blue_only=False)
+
+                    self.move_relative({"z": -85.0})
+                    self.non_blocking_delay(0.5)
+                    self.enter_uv_mode(mode_switch_autofocus=False)
+                    self.autofocus(blue_only=True)
+
+                    self.begin_patterning()
+                    self.enter_red_mode(mode_switch_autofocus=False)
+
+        except Exception as e:
+            print(f'Exception while polling web queue: {e}')
+         
+        self.root.after(5000, self._poll_queue)
+    
+    def start_queue_polling(self, host):
+        if host is not None:
+            self.queue_host = host
+            self.root.after(5000, self._poll_queue)
+
 
 
 class SnapshotFrame:
@@ -1635,7 +1671,7 @@ class LithographerGui:
     event_dispatcher: EventDispatcher
 
     def __init__(
-        self, stage: StageController, camera, camera_scale, title="Lithographer"
+        self, stage: StageController, camera, camera_scale, queue_host=None, title="Lithographer",
     ):
         self.root = Tk()
 
@@ -1694,6 +1730,7 @@ class LithographerGui:
             messagebox.showinfo(
                 message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
             )
+            self.event_dispatcher.start_queue_polling(queue_host)
 
         self.root.after(0, on_start)
 
@@ -1737,13 +1774,18 @@ def main():
     else:
         print(f"config.toml specifies invalid camera type {camera_config['type']}")
         return 1
+    
+    queue_host = None
+    if "queue" in config:
+        if "host" in config["queue"]:
+            queue_host = config["queue"]["host"]
 
     try:
         camera_scale = float(camera_config["gui-scale"])
     except Exception:
         camera_scale = 1.0
 
-    lithographer = LithographerGui(stage, camera, camera_scale)
+    lithographer = LithographerGui(stage, camera, camera_scale, queue_host)
     lithographer.root.mainloop()
 
 
