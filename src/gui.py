@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import requests
 import shutil
 import time
 
@@ -141,6 +142,7 @@ class LithographerConfig:
     uv_exposure: float
     enable_detection: bool
     model_path: str
+    queue_host: str
 
 
 @dataclass
@@ -735,6 +737,41 @@ class EventDispatcher:
     def set_snapshot_directory(self, directory: Path):
         self.snapshot_directory = directory
         self.snapshot_directory.mkdir(exist_ok=True)
+
+    def _poll_queue(self):
+        try:
+            response = requests.get(f'{self.queue_host}/jobs/next?machine=lithographer')
+            if response.status_code == 200:
+                j = response.json()['input_parameters']
+                x = j['x']
+                y = j['y']
+                image = j['image']
+
+                print('automated patterning: ', response.json())
+
+                confirm = messagebox.askyesno('Automated Patterning', f'Pattern image {image} at X {x} Y {y}?')
+                if confirm:
+                    self.move_absolute({'x': x, 'y': y})
+                    self.autofocus(blue_only=False)
+
+                    self.move_relative({"z": -85.0})
+                    self.non_blocking_delay(0.5)
+                    self.enter_uv_mode(mode_switch_autofocus=False)
+                    self.autofocus(blue_only=True)
+
+                    self.begin_patterning()
+                    self.enter_red_mode(mode_switch_autofocus=False)
+
+        except Exception as e:
+            print(f'Exception while polling web queue: {e}')
+         
+        self.root.after(5000, self._poll_queue)
+    
+    def start_queue_polling(self, host):
+        if host is not None:
+            self.queue_host = host
+            self.root.after(5000, self._poll_queue)
+
 
 
 class SnapshotFrame:
@@ -1841,6 +1878,7 @@ class LithographerGui:
             messagebox.showinfo(
                 message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
             )
+            self.event_dispatcher.start_queue_polling(config.queue_host)
 
         self.root.after(0, on_start)
     
@@ -1895,6 +1933,11 @@ def main():
     else:
         print(f"config.toml specifies invalid camera type {camera_config['type']}")
         return 1
+    
+    queue_host = None
+    if "queue" in config:
+        if "host" in config["queue"]:
+            queue_host = config["queue"]["host"]
 
     try:
         camera_scale = float(camera_config["gui-scale"])
@@ -1911,6 +1954,11 @@ def main():
     except Exception:
         uv_exposure = DEFAULT_UV_EXPOSURE
 
+    try:
+        queue_host = config["queue"]["hostname"]
+    except Exception:
+        queue_host = None
+
     # ALIGNMENT CONFIG
 
     alignment_config = config["alignment"]
@@ -1923,6 +1971,7 @@ def main():
         uv_exposure,
         alignment_config["enabled"],
         alignment_config["model_path"],
+        queue_host,
     )
 
     lithographer = LithographerGui(lithographer_config)
