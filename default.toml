@@ -24,3 +24,10 @@ homing = false
 port = "COM6"
 # GRBL's baud rate is almost always 115200, do not change this value
 baud-rate = 115200
+
+# This section configures alignment marker detection
+[alignment]
+# Enable or disable real-time detection of alignment markers
+enabled = false
+# Path to the YOLO model weights file
+model_path = "best.pt"
