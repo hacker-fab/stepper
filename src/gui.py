@@ -200,6 +200,7 @@ class EventDispatcher:
     autofocus_busy: bool
     patterning_busy: bool
     autofocus_on_mode_switch: bool
+    realtime_detection: bool
     first_autofocus: bool
     should_abort: bool
     exposure_time: int
@@ -247,6 +248,7 @@ class EventDispatcher:
         self.autofocus_busy = False
         self.patterning_busy = False
         self.autofocus_on_mode_switch = True
+        self.realtime_detection = ENABLE_DETECTION
         self.first_autofocus = True
         self.should_abort = False
 
@@ -765,13 +767,12 @@ class CameraFrame:
         self.pending_frame = None
 
         self.model: Optional[YOLO] = None
-        self.enable_detection = ENABLE_DETECTION
-        if self.enable_detection:
+        if event_dispatcher.realtime_detection:
             try:
                 self.model = YOLO(MODEL_PATH)
             except Exception as e:
                 print(f"Failed to load YOLO model: {e}")
-                self.enable_detection = False
+                event_dispatcher.enable_detection = False
 
     def _on_new_frame(self):
         # FIXME: is this really the only way tkinter exposes to do this??
@@ -821,7 +822,7 @@ class CameraFrame:
             self.camera.close()
 
     def gui_camera_preview(self, camera_image, dimensions):
-        if self.enable_detection:
+        if self.event_dispatcher.realtime_detection:
             _, camera_image = detect_alignment_markers(self.model, camera_image, draw_rectangle=True)
         self.event_dispatcher.set_latest_image(camera_image)
         resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
@@ -1485,7 +1486,7 @@ class GlobalSettingsFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.LabelFrame(parent, text="Global Settings")
 
-        def set_value(*_):
+        def set_autofocus_on_mode_switch(*_):
             event_dispatcher.autofocus_on_mode_switch = self.autofocus_on_mode_switch_var.get()
 
         self.autofocus_on_mode_switch_var = BooleanVar(value=True)
@@ -1495,12 +1496,23 @@ class GlobalSettingsFrame:
             variable=self.autofocus_on_mode_switch_var,
         )
         self.autofocus_on_mode_switch_check.grid(row=0, column=0, columnspan=2)
+        self.autofocus_on_mode_switch_var.trace_add("write", set_autofocus_on_mode_switch)
 
-        self.autofocus_on_mode_switch_var.trace_add("write", set_value)
+        def set_realtime_detection(*_):
+            event_dispatcher.realtime_detection = self.realtime_detection_var.get()
+        
+        self.realtime_detection_var = BooleanVar(value=True)
+        self.realtime_detection_check = ttk.Checkbutton(
+            self.frame,
+            text="Detect alignment markers in real time",
+            variable=self.realtime_detection_var,
+        )
+        self.realtime_detection_check.grid(row=1, column=0, columnspan=2)
+        self.realtime_detection_var.trace_add("write", set_realtime_detection)
 
         # TODO: Fix this
         self.autofocus_button = ttk.Button(self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus(blue_only=event_dispatcher.in_uv()))
-        self.autofocus_button.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.autofocus_button.grid(row=2, column=0, columnspan=2, sticky="ew")
 
         # Maybe this should have a scale?
         # Or, even further, maybe this should just be the same as the interface for posterization strength?
