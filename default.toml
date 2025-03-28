@@ -1,0 +1,26 @@
+# This section configures the camera used for the GUI's preview.
+[camera]
+# Available options are:
+# "webcam" (for a generic USB camera),
+# "basler" (for a Basler/Pylon camera)
+# "flir" (for a FLIR camera)
+# "none" (to disable camera)
+type = "webcam"
+# The index field is optional and is only used to select which of multiple webcams should be used,
+# e.g. on a laptop where there may be a builtin webcam in addition to an external USB camera.
+index = 1
+# The output from the camera is typically too large to show at full resolution.
+# This parameter adjusts the size of the camera feed before it is displayed in the GUI.
+gui-scale = 0.25
+
+# This section configures the motion stage
+[stage]
+# Set enabled to false to disable all motion.
+enabled = false
+# Set homing to false if your stage does not have limit sensors
+homing = false
+# Select the correct serial port for the device running GRBL.
+# The correct serial port can be checked with Device Manager on Windows.
+port = "COM6"
+# GRBL's baud rate is almost always 115200, do not change this value
+baud-rate = 115200
