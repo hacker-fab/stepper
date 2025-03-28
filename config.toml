@@ -1,9 +1,0 @@
-[camera]
-type = "none"
-gui-scale = 0.1
-
-[stage]
-homing = false
-enabled = false
-port = "COM4"
-baud-rate = 115200

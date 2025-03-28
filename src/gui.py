@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import shutil
 import time
 
 import tkinter
@@ -1707,8 +1708,14 @@ class LithographerGui:
 
 
 def main():
-    with open("config.toml", "r") as f:
-        config = toml.load(f)
+    try:
+        with open("config.toml", "r") as f:
+            config = toml.load(f)
+    except FileNotFoundError:
+        print("config.toml does not exist, copying settings from default.toml")
+        shutil.copy("default.toml", "config.toml")
+        with open("config.toml", "r") as f:
+            config = toml.load(f)
 
     # STAGE CONFIG
 
