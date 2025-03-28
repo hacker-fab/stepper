@@ -18,6 +18,7 @@ import numpy as np
 import serial
 import tomllib as toml
 from PIL import Image, ImageOps
+from ultralytics import YOLO
 
 from camera.camera_module import CameraModule
 from camera.pylon import BaslerPylon
@@ -31,6 +32,8 @@ from stage_control.stage_controller import StageController
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
+ENABLE_DETECTION = True
+MODEL_PATH = "best.pt"
 
 def compute_focus_score(camera_image, blue_only):
     camera_image = camera_image.copy()
@@ -42,6 +45,31 @@ def compute_focus_score(camera_image, blue_only):
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
     return img_lapl.var() / mean
+
+
+def detect_alignment_markers(model, image, draw_rectangle=False):
+    detections = []
+    display_image = image.copy()
+    try:
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        original_height, original_width = image_rgb.shape[:2]
+        resized = cv2.resize(image_rgb, (640, 640))
+        results = model(resized)
+        boxes = results[0].boxes
+        for box in boxes:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            x1 = int(x1 * original_width / 640)
+            x2 = int(x2 * original_width / 640)
+            y1 = int(y1 * original_height / 640)
+            y2 = int(y2 * original_height / 640)
+            detections.append((x1, y1), (x2, y2))
+            if draw_rectangle:
+                cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 5)
+    except Exception as e:
+        print(f"Detection failed: {e}")
+
+    return detections, display_image 
+
 
 class StrAutoEnum(str, Enum):
     """Base class for string-valued enums that use auto()"""
@@ -736,6 +764,15 @@ class CameraFrame:
         self.camera = c
         self.pending_frame = None
 
+        self.model: Optional[YOLO] = None
+        self.enable_detection = ENABLE_DETECTION
+        if self.enable_detection:
+            try:
+                self.model = YOLO(MODEL_PATH)
+            except Exception as e:
+                print(f"Failed to load YOLO model: {e}")
+                self.enable_detection = False
+
     def _on_new_frame(self):
         # FIXME: is this really the only way tkinter exposes to do this??
         # We want to send frames from the callback over to the main thread,
@@ -784,10 +821,10 @@ class CameraFrame:
             self.camera.close()
 
     def gui_camera_preview(self, camera_image, dimensions):
+        if self.enable_detection:
+            _, camera_image = detect_alignment_markers(self.model, camera_image, draw_rectangle=True)
         self.event_dispatcher.set_latest_image(camera_image)
         resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
-
-
         gui_img = image_to_tk_image(Image.fromarray(resized_img, mode="RGB"))
         self.label.configure(image=gui_img)  # type:ignore
         self.gui_img = gui_img
