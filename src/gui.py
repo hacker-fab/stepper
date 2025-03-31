@@ -16,11 +16,10 @@ from typing import Callable, List, Optional
 import cv2
 import numpy as np
 import serial
-import tomllib as toml
+import toml
 from PIL import Image, ImageOps
 
 from camera.camera_module import CameraModule
-from camera.pylon import BaslerPylon
 from camera.webcam import Webcam
 from hardware import ImageProcessSettings, Lithographer, ProcessedImage
 from lib.gui import IntEntry, Thumbnail
@@ -1708,8 +1707,10 @@ class LithographerGui:
 
 
 def main():
-    with open("config.toml", "rb") as f:
+    with open("config.toml", "r") as f:
         config = toml.load(f)
+
+    # STAGE CONFIG
 
     stage_config = config["stage"]
     if stage_config["enabled"]:
@@ -1719,7 +1720,10 @@ def main():
     else:
         stage = StageController()
 
+    # CAMERA CONFIG
+
     camera_config = config["camera"]
+    
     if camera_config["type"] == "webcam":
         try:
             index = int(camera_config["index"])
@@ -1728,9 +1732,9 @@ def main():
         camera = Webcam(index)
     elif camera_config["type"] == "flir":
         import camera.flir.flir_camera as flir
-
         camera = flir.FlirCamera()
     elif camera_config["type"] in ("basler", "pylon"):
+        from camera.pylon import BaslerPylon
         camera = BaslerPylon()
     elif camera_config["type"] == "none":
         camera = None
