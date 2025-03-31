@@ -735,38 +735,14 @@ class CameraFrame:
         self.camera = c
         self.pending_frame = None
 
-    def _on_new_frame(self):
-        # FIXME: is this really the only way tkinter exposes to do this??
-        # We want to send frames from the callback over to the main thread,
-        # but in way where it just grabs the most recently-made-available frame.
-        # If you send an event, events will just pile up in the queue if we ever fall behind.
-        # This might have the same problem!
-        # I have no idea how to fix this
-        self.event_dispatcher.root.after(33, lambda: self._on_new_frame())
-        if self.pending_frame is None:
-            return
-        image, dimensions, format = self.pending_frame
-
-        try:
-            filename = self.snapshots_pending.get_nowait()
-            print(f"Saving image {filename}")
-            img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            cv2.imwrite(filename, img)
-        except queue.Empty:
-            pass
-
-        self.gui_camera_preview(image, dimensions)
-
     def start(self):
         if not self.camera:
             print("No camera available")
             return
 
-        # self.event_dispatcher.root.bind('<<NewFrame>>', lambda x: self._on_new_frame(x))
-
         def cameraCallback(image, dimensions, format):
             self.pending_frame = (image, dimensions, format)
-            # self.event_dispatcher.root.event_generate('<<NewFrame>>', when='tail')
+            self.event_dispatcher.root.after_idle(lambda: self._on_new_frame(image, dimensions, format))
 
         if not self.camera.open():
             print("Camera failed to start")
@@ -775,8 +751,17 @@ class CameraFrame:
             self.camera.setStreamCaptureCallback(cameraCallback)
             if not self.camera.startStreamCapture():
                 print("Failed to start stream capture for camera")
+        
+    def _on_new_frame(self, image, dimensions, format):
+        try:
+            filename = self.snapshots_pending.get_nowait()
+            print(f"Saving image {filename}")
+            img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            cv2.imwrite(f"{self.event_dispatcher.snapshot_directory}/{filename}", img)
+        except queue.Empty:
+            pass
 
-        self._on_new_frame()
+        self.gui_camera_preview(image, dimensions)
 
     def cleanup(self):
         if self.camera is not None:
@@ -1724,6 +1709,7 @@ def main():
 
     camera_config = config["camera"]
     
+    # Camera Type Selection
     if camera_config["type"] == "webcam":
         try:
             index = int(camera_config["index"])
@@ -1742,6 +1728,7 @@ def main():
         print(f"config.toml specifies invalid camera type {camera_config['type']}")
         return 1
 
+    # GUI-Scaling
     try:
         camera_scale = float(camera_config["gui-scale"])
     except Exception:
