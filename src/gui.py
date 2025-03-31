@@ -346,7 +346,6 @@ class EventDispatcher:
     self.on_event(Event.ShownImageChanged)
   
   def move_absolute(self, coords: dict[str, float]):
-    self.hardware.stage.move_to(coords)
     x = coords.get('x', self.stage_setpoint[0])
     y = coords.get('y', self.stage_setpoint[1])
     z = coords.get('z', self.stage_setpoint[2])
@@ -1581,7 +1580,7 @@ class LithographerGui:
       self.camera.start()
       if self.event_dispatcher.hardware.stage.has_homing():
         self.event_dispatcher.home_stage()
-        self.event_dispatcher.move_relative({ 'x': 1000.0, 'y': 1000.0, 'z': 1000.0 })
+        self.event_dispatcher.move_relative({ 'x': 9000.0, 'y': 2500.0, 'z': 5000.0 })
       messagebox.showinfo(message='BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!')
 
     self.root.after(0, on_start)
