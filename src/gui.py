@@ -33,10 +33,10 @@ THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 
 def compute_focus_score(camera_image, blue_only):
     camera_image = camera_image.copy()
-    camera_image[:, :, 1] = 0  # green should never be used for focus
-    if blue_only:
-        camera_image[:, :, 0] = 0  # disable red
-    img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
+    # camera_image[:, :, 1] = 0  # green should never be used for focus
+    # if blue_only:
+    #     camera_image[:, :, 0] = 0  # disable red
+    img = cv2.cvtColor(camera_image, cv2.COLOR_BGR2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
