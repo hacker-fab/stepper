@@ -1,9 +1,9 @@
 [camera]
-type = "none"
+type = "flir"
 gui-scale = 0.1
 
 [stage]
-homing = false
-enabled = false
+homing = true
+enabled = true
 port = "COM4"
 baud-rate = 115200
