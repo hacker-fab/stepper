@@ -6,7 +6,6 @@ import time
 import tkinter
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum, auto
 from functools import partial
 from pathlib import Path
 from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, ttk
@@ -28,6 +27,9 @@ from projector import TkProjector
 from stage_control.grbl_stage import GrblStage
 from stage_control.stage_controller import StageController
 
+from components.ChipView import ChipView
+from structs import *
+
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 
@@ -41,63 +43,6 @@ def compute_focus_score(camera_image, blue_only):
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
     img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
     return img_lapl.var() / mean
-
-class StrAutoEnum(str, Enum):
-    """Base class for string-valued enums that use auto()"""
-
-    def _generate_next_value_(name, *_):
-        return name.lower()
-
-
-class ShownImage(StrAutoEnum):
-    """The type of image currently being displayed by the projector"""
-
-    CLEAR = auto()
-    PATTERN = auto()
-    FLATFIELD = auto()
-    RED_FOCUS = auto()
-    UV_FOCUS = auto()
-
-
-class PatterningStatus(StrAutoEnum):
-    """The current state of the patterning process"""
-
-    IDLE = auto()
-    PATTERNING = auto()
-    ABORTING = auto()
-
-
-class Event(StrAutoEnum):
-    """Events that can be dispatched to listeners"""
-
-    SNAPSHOT = auto()
-    SHOWN_IMAGE_CHANGED = auto()
-    STAGE_POSITION_CHANGED = auto()
-    IMAGE_ADJUST_CHANGED = auto()
-    PATTERN_IMAGE_CHANGED = auto()
-    MOVEMENT_LOCK_CHANGED = auto()
-    EXPOSURE_PATTERN_PROGRESS_CHANGED = auto()
-    PATTERNING_BUSY_CHANGED = auto()
-    PATTERNING_FINISHED = auto()
-    CHIP_CHANGED = auto()
-
-
-class MovementLock(StrAutoEnum):
-    """Controls whether stage position can be manually adjusted"""
-
-    UNLOCKED = auto()  # X, Y, and Z are free to move
-    XY_LOCKED = auto() # Only Z (focus) is free to move to avoid smearing UV focus pattern
-    LOCKED = auto()  # No positions can move to avoid disrupting patterning
-
-
-class RedFocusSource(StrAutoEnum):
-    """The source image to use for red focus mode"""
-
-    IMAGE = auto()  # Uses the dedicated red focus image
-    SOLID = auto()  # Shows a solid red screen
-    PATTERN = auto()  # Uses the blue channel from the pattern image
-    INV_PATTERN = auto()  # Uses the inverse of the blue channel from the pattern image
-
 
 @dataclass
 class ExposureLog:
@@ -1043,186 +988,186 @@ class MultiImageSelectFrame:
         pass
 
 
-class ChipFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
-        self.frame = ttk.Frame(parent)
-        self.model = event_dispatcher
-        self.path = StringVar()
+# class ChipFrame:
+#     def __init__(self, parent, event_dispatcher: EventDispatcher):
+#         self.frame = ttk.Frame(parent)
+#         self.model = event_dispatcher
+#         self.path = StringVar()
 
-        self.image_cache = dict()
+#         self.image_cache = dict()
 
-        self.chip_select_frame = ttk.Frame(self.frame)
-        self.chip_select_frame.grid(row=0, column=0)
-        ttk.Label(self.chip_select_frame, text="Current Chip: ").grid(row=0, column=0)
-        ttk.Label(self.chip_select_frame, textvariable=self.path).grid(row=0, column=1)
+#         self.chip_select_frame = ttk.Frame(self.frame)
+#         self.chip_select_frame.grid(row=0, column=0)
+#         ttk.Label(self.chip_select_frame, text="Current Chip: ").grid(row=0, column=0)
+#         ttk.Label(self.chip_select_frame, textvariable=self.path).grid(row=0, column=1)
 
-        def on_open():
-            path = filedialog.askopenfilename(title="Open Chip")
-            self.path.set(path)
-            self.model.load_chip(path)
+#         def on_open():
+#             path = filedialog.askopenfilename(title="Open Chip")
+#             self.path.set(path)
+#             self.model.load_chip(path)
 
-        def on_new():
-            path = filedialog.asksaveasfilename(title="Create Chip As")
-            self.path.set(path)
-            self.model.new_chip()
+#         def on_new():
+#             path = filedialog.asksaveasfilename(title="Create Chip As")
+#             self.path.set(path)
+#             self.model.new_chip()
 
-        def on_save():
-            path = filedialog.asksaveasfilename(title="Save As")
-            if path != "":
-                self.path.set(path)
-                self.model.save_chip(self.path.get())
+#         def on_save():
+#             path = filedialog.asksaveasfilename(title="Save As")
+#             if path != "":
+#                 self.path.set(path)
+#                 self.model.save_chip(self.path.get())
 
-        def on_finish_layer():
-            print("Layer finished!")
-            self.model.add_chip_layer()
-            self.model.save_chip(self.path.get())
+#         def on_finish_layer():
+#             print("Layer finished!")
+#             self.model.add_chip_layer()
+#             self.model.save_chip(self.path.get())
 
-        def on_delete_exposure():
-            pair = self._selected_exposure()
-            assert pair is not None
-            yes = messagebox.askyesno(title="Delete Exposure", message="Are you sure you want to delete the selected exposure?")
-            if yes:
-                self.model.delete_chip_exposure(pair[0], pair[1])
-                if self.path.get() != "":
-                    self.model.save_chip(self.path.get())
+#         def on_delete_exposure():
+#             pair = self._selected_exposure()
+#             assert pair is not None
+#             yes = messagebox.askyesno(title="Delete Exposure", message="Are you sure you want to delete the selected exposure?")
+#             if yes:
+#                 self.model.delete_chip_exposure(pair[0], pair[1])
+#                 if self.path.get() != "":
+#                     self.model.save_chip(self.path.get())
 
-        def on_select(e, cur):
-            if cur and len(self.cur_layer_view.selection()) > 0:
-                self.prev_layer_view.selection_set([])
-                self.delete_exposure_button["state"] = "normal"
-            elif not cur and len(self.prev_layer_view.selection()) > 0:
-                self.cur_layer_view.selection_set([])
-                self.delete_exposure_button["state"] = "normal"
-            else:
-                self.delete_exposure_button["state"] = "disabled"
+#         def on_select(e, cur):
+#             if cur and len(self.cur_layer_view.selection()) > 0:
+#                 self.prev_layer_view.selection_set([])
+#                 self.delete_exposure_button["state"] = "normal"
+#             elif not cur and len(self.prev_layer_view.selection()) > 0:
+#                 self.cur_layer_view.selection_set([])
+#                 self.delete_exposure_button["state"] = "normal"
+#             else:
+#                 self.delete_exposure_button["state"] = "disabled"
 
-        def on_double_click(cur):
-            pair = self._selected_exposure()
-            assert pair is not None
-            x, y, z = self.model.chip.layers[pair[0]].exposures[pair[1]].coords
-            self.model.move_absolute({"x": x, "y": y, "z": z})
+#         def on_double_click(cur):
+#             pair = self._selected_exposure()
+#             assert pair is not None
+#             x, y, z = self.model.chip.layers[pair[0]].exposures[pair[1]].coords
+#             self.model.move_absolute({"x": x, "y": y, "z": z})
 
-        def on_chip_changed():
-            if len(self.model.chip.layers) < 2:
-                self.prev_layer_select.configure(state="disabled")
-                self.prev_layer_select.configure(to=0)
-            else:
-                self.prev_layer_select.configure(state="readonly")
-                self.prev_layer_select.configure(to=len(self.model.chip.layers) - 2)
-                self.prev_layer_select_var.set(str(len(self.model.chip.layers) - 2))
-            self.refresh_prev_layer()
-            self.refresh_cur_layer()
-            if self.path.get() != "":
-                self.model.save_chip(self.path.get())
-            if len(self.model.chip.layers[-1].exposures) > 0:
-                self.finish_layer_button.configure(state="normal")
-            else:
-                self.finish_layer_button.configure(state="disabled")
+#         def on_chip_changed():
+#             if len(self.model.chip.layers) < 2:
+#                 self.prev_layer_select.configure(state="disabled")
+#                 self.prev_layer_select.configure(to=0)
+#             else:
+#                 self.prev_layer_select.configure(state="readonly")
+#                 self.prev_layer_select.configure(to=len(self.model.chip.layers) - 2)
+#                 self.prev_layer_select_var.set(str(len(self.model.chip.layers) - 2))
+#             self.refresh_prev_layer()
+#             self.refresh_cur_layer()
+#             if self.path.get() != "":
+#                 self.model.save_chip(self.path.get())
+#             if len(self.model.chip.layers[-1].exposures) > 0:
+#                 self.finish_layer_button.configure(state="normal")
+#             else:
+#                 self.finish_layer_button.configure(state="disabled")
 
-        def prev_layer_index_changed(a, b, c):
-            self.refresh_prev_layer()
+#         def prev_layer_index_changed(a, b, c):
+#             self.refresh_prev_layer()
 
-        self.model.add_event_listener(Event.CHIP_CHANGED, on_chip_changed)
+#         self.model.add_event_listener(Event.CHIP_CHANGED, on_chip_changed)
 
-        self.open_chip_button = ttk.Button(self.chip_select_frame, text="Open", command=on_open)
-        self.open_chip_button.grid(row=0, column=2)
-        self.new_chip_button = ttk.Button(self.chip_select_frame, text="New", command=on_new)
-        self.new_chip_button.grid(row=0, column=3)
-        self.save_chip_button = ttk.Button(self.chip_select_frame, text="Save As", command=on_save)
-        self.save_chip_button.grid(row=0, column=4)
-        self.finish_layer_button = ttk.Button(self.chip_select_frame, text="Finish Layer", command=on_finish_layer)
-        self.finish_layer_button.grid(row=0, column=5)
-        self.finish_layer_button.configure(state="disabled")
-        self.delete_exposure_button = ttk.Button(
-            self.chip_select_frame,
-            text="Delete Exposure",
-            command=on_delete_exposure,
-            state="disabled",
-        )
-        self.delete_exposure_button.grid(row=0, column=6)
+#         self.open_chip_button = ttk.Button(self.chip_select_frame, text="Open", command=on_open)
+#         self.open_chip_button.grid(row=0, column=2)
+#         self.new_chip_button = ttk.Button(self.chip_select_frame, text="New", command=on_new)
+#         self.new_chip_button.grid(row=0, column=3)
+#         self.save_chip_button = ttk.Button(self.chip_select_frame, text="Save As", command=on_save)
+#         self.save_chip_button.grid(row=0, column=4)
+#         self.finish_layer_button = ttk.Button(self.chip_select_frame, text="Finish Layer", command=on_finish_layer)
+#         self.finish_layer_button.grid(row=0, column=5)
+#         self.finish_layer_button.configure(state="disabled")
+#         self.delete_exposure_button = ttk.Button(
+#             self.chip_select_frame,
+#             text="Delete Exposure",
+#             command=on_delete_exposure,
+#             state="disabled",
+#         )
+#         self.delete_exposure_button.grid(row=0, column=6)
 
-        self.layer_frame = ttk.Frame(self.frame)
-        self.layer_frame.grid(row=1, column=0)
+#         self.layer_frame = ttk.Frame(self.frame)
+#         self.layer_frame.grid(row=1, column=0)
 
-        self.prev_layer_frame = ttk.Labelframe(self.layer_frame, text="Previous Layer")
-        self.prev_layer_frame.grid(row=0, column=0, sticky="ns")
-        self.cur_layer_frame = ttk.Labelframe(self.layer_frame, text="Current Layer")
-        self.cur_layer_frame.grid(row=0, column=1, sticky="ns")
+#         self.prev_layer_frame = ttk.Labelframe(self.layer_frame, text="Previous Layer")
+#         self.prev_layer_frame.grid(row=0, column=0, sticky="ns")
+#         self.cur_layer_frame = ttk.Labelframe(self.layer_frame, text="Current Layer")
+#         self.cur_layer_frame.grid(row=0, column=1, sticky="ns")
 
-        self.tree_view_style = ttk.Style()
-        self.tree_view_style.configure("Treeview", rowheight=50)
+#         self.tree_view_style = ttk.Style()
+#         self.tree_view_style.configure("Treeview", rowheight=50)
 
-        self.prev_layer_view = ttk.Treeview(self.prev_layer_frame, selectmode="browse", columns=("XYZ",), height=5)
-        self.prev_layer_view.grid(row=0, column=0)
-        self.prev_layer_view.bind("<<TreeviewSelect>>", lambda e: on_select(e, cur=False))
-        self.prev_layer_view.bind("<Double-1>", lambda e: on_double_click(cur=False))
-        self.cur_layer_view = ttk.Treeview(self.cur_layer_frame, selectmode="browse", columns=("XYZ",), height=5)
-        self.cur_layer_view.grid(row=0, column=0)
-        self.cur_layer_view.bind("<<TreeviewSelect>>", lambda e: on_select(e, cur=True))
-        self.cur_layer_view.bind("<Double-1>", lambda e: on_double_click(cur=True))
+#         self.prev_layer_view = ttk.Treeview(self.prev_layer_frame, selectmode="browse", columns=("XYZ",), height=5)
+#         self.prev_layer_view.grid(row=0, column=0)
+#         self.prev_layer_view.bind("<<TreeviewSelect>>", lambda e: on_select(e, cur=False))
+#         self.prev_layer_view.bind("<Double-1>", lambda e: on_double_click(cur=False))
+#         self.cur_layer_view = ttk.Treeview(self.cur_layer_frame, selectmode="browse", columns=("XYZ",), height=5)
+#         self.cur_layer_view.grid(row=0, column=0)
+#         self.cur_layer_view.bind("<<TreeviewSelect>>", lambda e: on_select(e, cur=True))
+#         self.cur_layer_view.bind("<Double-1>", lambda e: on_double_click(cur=True))
 
-        select_frame = ttk.Frame(self.prev_layer_frame)
-        select_frame.grid(row=1, column=0)
+#         select_frame = ttk.Frame(self.prev_layer_frame)
+#         select_frame.grid(row=1, column=0)
 
-        prev_layer_select_label = ttk.Label(select_frame, text="Select previous layer:")
-        prev_layer_select_label.grid(row=0, column=0)
+#         prev_layer_select_label = ttk.Label(select_frame, text="Select previous layer:")
+#         prev_layer_select_label.grid(row=0, column=0)
 
-        self.prev_layer_select_var = StringVar()
-        self.prev_layer_select_var.trace_add("write", prev_layer_index_changed)
-        self.prev_layer_select = ttk.Spinbox(select_frame, from_=0, to=0, textvariable=self.prev_layer_select_var)
-        self.prev_layer_select.configure(state="disabled")
-        self.prev_layer_select.grid(row=0, column=1)
+#         self.prev_layer_select_var = StringVar()
+#         self.prev_layer_select_var.trace_add("write", prev_layer_index_changed)
+#         self.prev_layer_select = ttk.Spinbox(select_frame, from_=0, to=0, textvariable=self.prev_layer_select_var)
+#         self.prev_layer_select.configure(state="disabled")
+#         self.prev_layer_select.grid(row=0, column=1)
 
-    def _selected_exposure(self):
-        cur_sel = self.cur_layer_view.selection()
-        if len(cur_sel) > 0:
-            layer_idx, ex_idx = cur_sel[0].split("_")
-            return int(layer_idx), int(ex_idx)
-        prev_sel = self.prev_layer_view.selection()
-        if len(prev_sel) > 0:
-            layer_idx, ex_idx = prev_sel[0].split("_")
-            return int(layer_idx), int(ex_idx)
-        return None
+#     def _selected_exposure(self):
+#         cur_sel = self.cur_layer_view.selection()
+#         if len(cur_sel) > 0:
+#             layer_idx, ex_idx = cur_sel[0].split("_")
+#             return int(layer_idx), int(ex_idx)
+#         prev_sel = self.prev_layer_view.selection()
+#         if len(prev_sel) > 0:
+#             layer_idx, ex_idx = prev_sel[0].split("_")
+#             return int(layer_idx), int(ex_idx)
+#         return None
 
-    def _get_thumbnail(self, path: str):
-        try:
-            return self.image_cache[path][1]
-        except KeyError:
-            img = Image.open(path).resize((80, 45))
-            photo = image_to_tk_image(img)
-            self.image_cache[path] = (img, photo)
-            return photo
+#     def _get_thumbnail(self, path: str):
+#         try:
+#             return self.image_cache[path][1]
+#         except KeyError:
+#             img = Image.open(path).resize((80, 45))
+#             photo = image_to_tk_image(img)
+#             self.image_cache[path] = (img, photo)
+#             return photo
 
-    def refresh_prev_layer(self):
-        chip = self.model.chip
+#     def refresh_prev_layer(self):
+#         chip = self.model.chip
 
-        for item in self.prev_layer_view.get_children():
-            self.prev_layer_view.delete(item)
+#         for item in self.prev_layer_view.get_children():
+#             self.prev_layer_view.delete(item)
 
-        try:
-            idx = int(self.prev_layer_select_var.get())
-        except ValueError:
-            print(f"Leaving previous layer empty because select var is {self.prev_layer_select_var.get()!r}")
-            return
+#         try:
+#             idx = int(self.prev_layer_select_var.get())
+#         except ValueError:
+#             print(f"Leaving previous layer empty because select var is {self.prev_layer_select_var.get()!r}")
+#             return
 
-        if len(chip.layers) < 2:
-            return
+#         if len(chip.layers) < 2:
+#             return
 
-        for i, ex in enumerate(chip.layers[idx].exposures):
-            ex_id = f"{idx}_{i}"
-            pos = f"{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}"
-            self.prev_layer_view.insert("", "end", ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
+#         for i, ex in enumerate(chip.layers[idx].exposures):
+#             ex_id = f"{idx}_{i}"
+#             pos = f"{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}"
+#             self.prev_layer_view.insert("", "end", ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
 
-    def refresh_cur_layer(self):
-        chip = self.model.chip
+#     def refresh_cur_layer(self):
+#         chip = self.model.chip
 
-        for item in self.cur_layer_view.get_children():
-            self.cur_layer_view.delete(item)
+#         for item in self.cur_layer_view.get_children():
+#             self.cur_layer_view.delete(item)
 
-        for i, ex in enumerate(chip.layers[-1].exposures):
-            ex_id = f"{len(chip.layers) - 1}_{i}"
-            pos = f"{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}"
-            self.cur_layer_view.insert("", "end", ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
+#         for i, ex in enumerate(chip.layers[-1].exposures):
+#             ex_id = f"{len(chip.layers) - 1}_{i}"
+#             pos = f"{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}"
+#             self.cur_layer_view.insert("", "end", ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
 
 
 class ExposureFrame:
@@ -1417,12 +1362,6 @@ class ModeSelectFrame:
                 event_dispatcher.enter_red_mode()
 
         self.notebook.bind("<<NotebookTabChanged>>", lambda _: on_tab_change())
-
-        # def on_tab_event(evt):
-        #  self.notebook.select(1 if evt == Event.EnterUvMode else 0)
-
-        # event_dispatcher.add_event_listener(Event.EnterRedMode, lambda: on_tab_event(Event.EnterRedMode))
-        # event_dispatcher.add_event_listener(Event.EnterUvMode, lambda: on_tab_event(Event.EnterUvMode))
 
     def _current_tab(self):
       return "red" if "redmode" in self.notebook.select() else "uv"
@@ -1622,49 +1561,58 @@ class LithographerGui:
         self, stage: StageController, camera, camera_scale, title="Lithographer"
     ):
         self.root = Tk()
-
         self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root, camera is not None)
-
         self.shown_image = ShownImage.CLEAR
 
-        self.camera = CameraFrame(self.root, self.event_dispatcher, camera, camera_scale)
-        self.camera.frame.grid(row=0, column=0)
+        # Top Panel
+
+        self.top_panel = ttk.Frame(self.root)
+        self.top_panel.grid(row=0, column=0)
+
+        self.multi_image_select_frame = MultiImageSelectFrame(self.top_panel, self.event_dispatcher)
+        self.multi_image_select_frame.frame.grid(row=0, column=0)
+
+        self.camera = CameraFrame(self.top_panel, self.event_dispatcher, camera, camera_scale)
+        self.camera.frame.grid(row=0, column=1)
+
+        self.chip_view = ChipView(self.top_panel, self.event_dispatcher)
+        self.chip_view.frame.grid(row=0, column = 2)
+
+        # Pattern Progress Bar
+    
+        self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
+        self.pattern_progress.grid(row=1, column=0, sticky="ew")
+
+        # Middle Panel
 
         self.middle_panel = ttk.Frame(self.root)
         self.middle_panel.grid(row=2, column=0)
 
-        self.bottom_panel = ttk.Frame(self.root)
-        self.bottom_panel.grid(row=3, column=0)
-
-        # self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
-        # self.exposure_history_frame.frame.grid(row=0, column=4)
-
-        self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
-        self.chip_frame.frame.grid(row=0, column=0)
-
-        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
-        self.global_settings_frame.frame.grid(row=0, column=2)
-
         self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
-        self.stage_position_frame.frame.grid(row=0, column=1)
+        self.stage_position_frame.frame.grid(row=0, column=0)
 
-        self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
-        self.image_adjust_frame.frame.grid(row=0, column=1)
-
+        self.tiling_frame = TilingFrame(self.middle_panel, self.event_dispatcher)
+        self.tiling_frame.frame.grid(row=0, column=1)
+        
         self.mode_select_frame = ModeSelectFrame(self.middle_panel, self.event_dispatcher)
         self.mode_select_frame.notebook.grid(row=0, column=2)
 
-        self.tiling_frame = TilingFrame(self.middle_panel, self.event_dispatcher)
-        self.tiling_frame.frame.grid(row=0, column=3)
+        # Bottom Panel
 
-        self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
-        self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
+        self.bottom_panel = ttk.Frame(self.root)
+        self.bottom_panel.grid(row=3, column=0)
 
-        self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
-        self.pattern_progress.grid(row=1, column=0, sticky="ew")
+        self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
+        self.image_adjust_frame.frame.grid(row=0, column=3)
 
-        self.multi_image_select_frame = MultiImageSelectFrame(self.middle_panel, self.event_dispatcher)
-        self.multi_image_select_frame.frame.grid(row=0, column=0)
+        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
+        self.global_settings_frame.frame.grid(row=0, column=4)
+
+        # self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
+        # self.chip_frame.frame.grid(row=0, column=0)        
+
+        # self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
+        # self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
 
         self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
         # self.debug.info("Debug info will appear here")
