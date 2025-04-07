@@ -1756,7 +1756,7 @@ class LithographerGui:
         self.root.after(0, on_start)
     
     def initialize_alignment(self, enable_detection: bool = False, model_path: str = None):
-        self.event_dispatcher.initialize_detection(enable_detection, model_path)
+        self.event_dispatcher.initialize_alignment(enable_detection, model_path)
 
     def cleanup(self):
         print("Patterning GUI closed.")
