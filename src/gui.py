@@ -62,7 +62,7 @@ def detect_alignment_markers(model, image, draw_rectangle=False):
             x2 = int(x2 * original_width / 640)
             y1 = int(y1 * original_height / 640)
             y2 = int(y2 * original_height / 640)
-            detections.append((x1, y1), (x2, y2))
+            detections.append(((x1, y1), (x2, y2)))
             if draw_rectangle:
                 cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 5)
     except Exception as e:
@@ -184,6 +184,7 @@ class EventDispatcher:
     hardware: Lithographer
     camera_exists: bool
     root: Tk
+    model: Optional[YOLO]
     red_focus: ProcessedImage
     uv_focus: ProcessedImage
     pattern: ProcessedImage
@@ -224,6 +225,9 @@ class EventDispatcher:
         self.camera_exists = camera_exists
         self.root = root
 
+        # Detection model
+        self.model = None
+
         # Image processing objects
         self.red_focus = ProcessedImage()
         self.uv_focus = ProcessedImage()
@@ -249,8 +253,7 @@ class EventDispatcher:
         self.autofocus_busy = False
         self.patterning_busy = False
         self.autofocus_on_mode_switch = True
-        self.realtime_detection = ENABLE_DETECTION
-        self.model_exists = False
+        self.realtime_detection = False
         self.first_autofocus = True
         self.should_abort = False
 
@@ -691,6 +694,17 @@ class EventDispatcher:
         self.set_autofocus_busy(False)
 
         print("Finished autofocus")
+    
+    def initialize_alignment(self, enable_detection: bool = False, model_path: str = None):
+        self.realtime_detection = enable_detection
+        # Attempt loading the model even if detection is off by default
+        try:
+            print("loading model")
+            model_path = model_path
+            self.model = YOLO(model_path, verbose=False)
+            print("loaded model")
+        except Exception as e:
+            print(f"Failed to load YOLO model: {e}")
 
     def set_snapshot_directory(self, directory: Path):
         self.snapshot_directory = directory
@@ -772,7 +786,7 @@ class CameraFrame:
         if event_dispatcher.realtime_detection:
             try:
                 print("loading model")
-                self.model = YOLO(MODEL_PATH)
+                self.model = YOLO(MODEL_PATH, verbose=False)
                 print("loaded model")
                 event_dispatcher.model_exists = True
             except Exception as e:
@@ -827,8 +841,9 @@ class CameraFrame:
             self.camera.close()
 
     def gui_camera_preview(self, camera_image, dimensions):
-        if self.event_dispatcher.realtime_detection:
-            _, camera_image = detect_alignment_markers(self.model, camera_image, draw_rectangle=True)
+        model = self.event_dispatcher.model
+        if model and self.event_dispatcher.realtime_detection:
+            _, camera_image = detect_alignment_markers(model, camera_image, draw_rectangle=True)
         self.event_dispatcher.set_latest_image(camera_image)
         resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
         gui_img = image_to_tk_image(Image.fromarray(resized_img, mode="RGB"))
@@ -1751,6 +1766,9 @@ class LithographerGui:
             )
 
         self.root.after(0, on_start)
+    
+    def initialize_alignment(self, enable_detection: bool = False, model_path: str = None):
+        self.event_dispatcher.initialize_detection(enable_detection, model_path)
 
     def cleanup(self):
         print("Patterning GUI closed.")
@@ -1759,7 +1777,6 @@ class LithographerGui:
         self.camera.cleanup()
         # if RUN_WITH_STAGE:
         # serial_port.close()
-
 
 
 def main():
@@ -1810,6 +1827,12 @@ def main():
         camera_scale = 1.0
 
     lithographer = LithographerGui(stage, camera, camera_scale)
+
+    # ALIGNMENT CONFIG
+
+    alignment_config = config["alignment"]
+    lithographer.initialize_alignment(alignment_config["enabled"], alignment_config["model_path"])
+
     lithographer.root.mainloop()
 
 
