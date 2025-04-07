@@ -32,6 +32,8 @@ from stage_control.stage_controller import StageController
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
+DEFAULT_RED_EXPOSURE: float = 4167.0
+DEFAULT_UV_EXPOSURE: float = 25000.0
 
 def compute_focus_score(camera_image, blue_only):
     camera_image = camera_image.copy()
@@ -132,6 +134,8 @@ class LithographerConfig:
     stage: StageController
     camera: CameraModule
     camera_scale: float
+    red_exposure: float
+    uv_exposure: float
     enable_detection: bool
     model_path: str
 
@@ -214,6 +218,8 @@ class EventDispatcher:
     should_abort: bool
     exposure_time: int
     patterning_progress: float # ranges from 0.0 to 1.0
+    red_exposure_time: float
+    uv_exposure_time: float
     exposure_history: List[ExposureLog]
     chip: Chip
     auto_snapshot_on_uv: bool
@@ -225,7 +231,9 @@ class EventDispatcher:
         stage: StageController,
         proj: TkProjector,
         root: Tk,
-        camera: Optional[CameraModule]
+        camera: Optional[CameraModule],
+        red_exposure: float,
+        uv_exposure: float,
     ):
         # Hardware components
         self.hardware = Lithographer(stage, proj)
@@ -267,6 +275,8 @@ class EventDispatcher:
         # Exposure settings and progress
         self.exposure_time = 8000
         self.patterning_progress = 0.0
+        self.red_exposure_time = red_exposure
+        self.uv_exposure_time = uv_exposure
 
         # History and logging
         self.exposure_history = []
@@ -571,7 +581,7 @@ class EventDispatcher:
     def enter_red_mode(self, mode_switch_autofocus=True):
         print("enter_red_mode")
         self.set_shown_image(ShownImage.RED_FOCUS)
-        self.camera.setExposureTime(4167.0)
+        self.camera.setExposureTime(self.red_exposure_time)
         if mode_switch_autofocus and self.autofocus_on_mode_switch:
             self.autofocus(blue_only=False)
 
@@ -581,7 +591,7 @@ class EventDispatcher:
             filename = self.snapshot_directory / f"uv_mode_entry_{timestamp}.png"
             self.on_event(Event.SNAPSHOT, str(filename))
 
-        self.camera.setExposureTime(25000.0)
+        self.camera.setExposureTime(self.uv_exposure_time)
         if (
             mode_switch_autofocus
             and not self.autofocus_busy
@@ -1736,7 +1746,14 @@ class LithographerGui:
 
     def __init__(self, config: LithographerConfig):
         self.root = Tk()
-        self.event_dispatcher = EventDispatcher(config.stage, TkProjector(self.root), self.root, config.camera)
+        self.event_dispatcher = EventDispatcher(
+            config.stage, 
+            TkProjector(self.root), 
+            self.root, 
+            config.camera,
+            config.red_exposure,
+            config.uv_exposure,
+        )
         self.event_dispatcher.initialize_alignment(config.enable_detection, config.model_path)
 
         self.shown_image = ShownImage.CLEAR
@@ -1852,6 +1869,16 @@ def main():
         camera_scale = float(camera_config["gui-scale"])
     except Exception:
         camera_scale = 1.0
+    
+    try:
+        red_exposure = float(camera_config["red-exposure"])
+    except Exception:
+        red_exposure = DEFAULT_RED_EXPOSURE
+    
+    try:
+        uv_exposure = float(camera_config["uv-exposure"])
+    except Exception:
+        uv_exposure = DEFAULT_UV_EXPOSURE
 
     # ALIGNMENT CONFIG
 
@@ -1861,6 +1888,8 @@ def main():
         stage,
         camera,
         camera_scale,
+        red_exposure,
+        uv_exposure,
         alignment_config["enabled"],
         alignment_config["model_path"],
     )

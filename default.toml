@@ -12,6 +12,10 @@ index = 1
 # The output from the camera is typically too large to show at full resolution.
 # This parameter adjusts the size of the camera feed before it is displayed in the GUI.
 gui-scale = 0.25
+# The following two values adjust the *camera* exposure in microseconds when viewing red or UV light.
+# Note that using values that are not a multiple of 4167 can lead to flickering.
+red-exposure = 4167.0
+uv-exposure = 25000.0
 
 # This section configures the motion stage
 [stage]
