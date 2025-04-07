@@ -118,9 +118,18 @@ and you are ready to use the GUI.
 
 # Software Setup
 
-## Python Setup
+## Python Setup with UV (Recommended)
 
-As is good practice for Python, we recommend using a 
+The [UV project manager](https://github.com/astral-sh/uv) can be used to handle the Python version and packaging.
+
+```bash
+uv run src/gui.py
+```
+
+TODO: Doesn't currently work on MacOS due to TKinter problems
+
+## Python Setup with venv
+
 [virtual environment](https://docs.python.org/3/library/venv.html).
 
 ```bash
