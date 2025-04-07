@@ -1559,11 +1559,11 @@ class GlobalSettingsFrame:
             print(markers)
         
         self.alignbutton = ttk.Button(self.frame, text="Align :)", command=do_align)
-        self.alignbutton.grid(row=2, column=2)
+        self.alignbutton.grid(row=2, column=1)
 
         # TODO: Fix this
         self.autofocus_button = ttk.Button(self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus(blue_only=event_dispatcher.in_uv()))
-        self.autofocus_button.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.autofocus_button.grid(row=2, column=0, sticky="ew")
 
         # Maybe this should have a scale?
         # Or, even further, maybe this should just be the same as the interface for posterization strength?
