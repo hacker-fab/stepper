@@ -1569,7 +1569,7 @@ class GlobalSettingsFrame:
         # Or, even further, maybe this should just be the same as the interface for posterization strength?
         self.border_size_var = IntVar()
         self.border_label = ttk.Label(self.frame, text="Border Size (%)")
-        self.border_label.grid(row=2, column=0)
+        self.border_label.grid(row=3, column=0)
         self.border_entry = IntEntry(self.frame, var=self.border_size_var, default=0, min_value=0, max_value=100)
         self.border_entry.widget.grid(row=3, column=1, sticky="nesw")
 
