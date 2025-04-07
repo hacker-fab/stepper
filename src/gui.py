@@ -109,6 +109,7 @@ class Event(StrAutoEnum):
     PATTERNING_BUSY_CHANGED = auto()
     PATTERNING_FINISHED = auto()
     CHIP_CHANGED = auto()
+    ALIGNMENT_STATE_CHANGED = auto()
 
 
 class MovementLock(StrAutoEnum):
@@ -126,6 +127,15 @@ class RedFocusSource(StrAutoEnum):
     SOLID = auto()  # Shows a solid red screen
     PATTERN = auto()  # Uses the blue channel from the pattern image
     INV_PATTERN = auto()  # Uses the inverse of the blue channel from the pattern image
+
+
+class AlignmentState(StrAutoEnum):
+    """The current state of the alignment process"""
+    IDLE = auto()
+    SEEKING_MARKERS = auto()
+    ALIGNING = auto()
+    ALIGNED = auto()
+    FAILED = auto()
 
 
 @dataclass
@@ -211,6 +221,9 @@ class EventDispatcher:
     auto_snapshot_on_uv: bool
     snapshot_directory: Path
     listeners: dict[Event, List[Callable]]
+    alignment_state: AlignmentState
+    target_marker_positions: List[tuple[float, float]]
+    found_marker_positions: List[tuple[float, float, float, float]]
 
     def __init__(
         self, 
@@ -270,6 +283,11 @@ class EventDispatcher:
         # Event handling
         self.listeners = dict()
         self.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self._update_projector())
+
+        # Alignment state
+        self.alignment_state = AlignmentState.IDLE
+        self.target_marker_positions = []
+        self.found_marker_positions = []
 
     def load_chip(self, path: str):
         print(f"Loading chip at {path!r}")
@@ -695,6 +713,135 @@ class EventDispatcher:
     def set_snapshot_directory(self, directory: Path):
         self.snapshot_directory = directory
         self.snapshot_directory.mkdir(exist_ok=True)
+
+    def set_alignment_state(self, state: AlignmentState):
+        self.alignment_state = state
+        self.on_event(Event.ALIGNMENT_STATE_CHANGED)
+
+    def begin_alignment(self):
+        """Start the alignment process"""
+        if not self.camera_exists or not self.model_exists:
+            print("Cannot align - camera or detection model not available")
+            return
+            
+        self.found_marker_positions = []
+        self.set_alignment_state(AlignmentState.SEEKING_MARKERS)
+        self._seek_next_marker()
+
+    def _seek_next_marker(self):
+        """Look for markers at the current position"""
+        if self.alignment_state != AlignmentState.SEEKING_MARKERS:
+            return
+
+        detections, _ = detect_alignment_markers(self.model, self.camera_image, draw_rectangle=True)
+        
+        if detections:
+            # For each detected marker, calculate its absolute position based on:
+            # 1. Current stage position (stage_setpoint)
+            # 2. Where in the camera view the marker appears
+            # 3. Camera calibration (pixels to microns)
+            stage_pos = self.stage_setpoint
+            
+            PIXELS_TO_MICRONS = 1.0  # This needs to be measured/calibrated
+            
+            # Camera center offset (assuming camera center is our reference point)
+            camera_center_x = self.camera_image.shape[1] / 2
+            camera_center_y = self.camera_image.shape[0] / 2
+            
+            for marker in detections:
+                marker_x, marker_y = marker[0]  # Camera coordinates
+                
+                # Calculate offset from camera center in microns
+                offset_x = (marker_x - camera_center_x) * PIXELS_TO_MICRONS
+                offset_y = (marker_y - camera_center_y) * PIXELS_TO_MICRONS
+                
+                # Absolute marker position = stage position + offset from camera center
+                absolute_x = stage_pos[0] + offset_x
+                absolute_y = stage_pos[1] + offset_y
+                
+                self.found_marker_positions.append({
+                    'stage_pos': (stage_pos[0], stage_pos[1]),  # Where stage was when we saw it
+                    'camera_pos': (marker_x, marker_y),         # Where in camera view we saw it
+                    'absolute_pos': (absolute_x, absolute_y)    # Calculated absolute position
+                })
+            
+            if len(self.found_marker_positions) >= 1:
+                self._align_to_markers()
+            else:
+                self._spiral_search_next()
+        else:
+            self._spiral_search_next()
+
+    def _spiral_search_next(self):
+        """Move in a spiral pattern to look for markers"""
+        # TODO: need to tune the search pattern
+        STEP_SIZE = 500  # microns
+        
+        if not hasattr(self, '_spiral_n'):
+            self._spiral_n = 1
+            self._spiral_dx = STEP_SIZE
+            self._spiral_dy = 0
+        
+        # Move to next position in spiral
+        self.move_relative({"x": self._spiral_dx, "y": self._spiral_dy})
+        
+        # Update spiral parameters
+        if self._spiral_dx > 0:
+            self._spiral_dy = STEP_SIZE
+            self._spiral_dx = 0
+        elif self._spiral_dy > 0:
+            self._spiral_dx = -STEP_SIZE
+            self._spiral_dy = 0
+        elif self._spiral_dx < 0:
+            self._spiral_dy = -STEP_SIZE
+            self._spiral_dx = 0
+        else:
+            self._spiral_n += 1
+            self._spiral_dx = STEP_SIZE * self._spiral_n
+            self._spiral_dy = 0
+            
+        # Check if we've searched too far
+        if self._spiral_n > 5:  # Adjust this limit as needed
+            self.set_alignment_state(AlignmentState.FAILED)
+            return
+            
+        # Schedule next marker check after movement completes
+        self.root.after(1000, self._seek_next_marker)
+
+    def _align_to_markers(self):
+        """Align stage based on found markers"""
+        self.set_alignment_state(AlignmentState.ALIGNING)
+        
+        if len(self.found_marker_positions) == 1:
+            marker = self.found_marker_positions[0]
+            
+            # We want to move the stage so that the marker appears at our target position
+            # For example, if we want the marker centered in the camera view:
+            camera_center_x = self.camera_image.shape[1] / 2
+            camera_center_y = self.camera_image.shape[0] / 2
+            
+            current_x, current_y = marker['camera_pos']
+            
+            # Calculate how far the marker needs to move in the camera view
+            dx = camera_center_x - current_x
+            dy = camera_center_y - current_y
+            
+            # Convert to stage movement
+            PIXELS_TO_MICRONS = 1.0  # Same calibration factor as above
+            stage_dx = dx * PIXELS_TO_MICRONS
+            stage_dy = dy * PIXELS_TO_MICRONS
+            
+            # Move the stage
+            self.move_relative({"x": stage_dx, "y": stage_dy})
+            self.set_alignment_state(AlignmentState.ALIGNED)
+        else:
+            # TODO: with multiple markers we could also correct rotation
+            pass
+
+    def abort_alignment(self):
+        """Stop the alignment process"""
+        if self.alignment_state in (AlignmentState.SEEKING_MARKERS, AlignmentState.ALIGNING):
+            self.set_alignment_state(AlignmentState.IDLE)
 
 
 class SnapshotFrame:
@@ -1595,6 +1742,44 @@ class GlobalSettingsFrame:
 
         # Configure grid weights for proper expansion
         self.snapshot_frame.columnconfigure(1, weight=1)
+
+        self.alignment_frame = ttk.LabelFrame(self.frame, text="Alignment")
+        self.alignment_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=5)
+        
+        self.align_button = ttk.Button(
+            self.alignment_frame, 
+            text="Begin Alignment",
+            command=lambda: event_dispatcher.begin_alignment(),
+            state="disabled" if not (event_dispatcher.camera_exists and event_dispatcher.model_exists) else "normal"
+        )
+        self.align_button.grid(row=0, column=0, sticky="ew")
+        
+        self.abort_align_button = ttk.Button(
+            self.alignment_frame,
+            text="Abort Alignment",
+            command=lambda: event_dispatcher.abort_alignment(),
+            state="disabled"
+        )
+        self.abort_align_button.grid(row=1, column=0, sticky="ew")
+        
+        self.alignment_status = ttk.Label(self.alignment_frame, text="Status: Idle")
+        self.alignment_status.grid(row=2, column=0)
+        
+        def on_alignment_state_change():
+            state = event_dispatcher.alignment_state
+            self.alignment_status.configure(text=f"Status: {state.value}")
+            
+            if state in (AlignmentState.SEEKING_MARKERS, AlignmentState.ALIGNING):
+                self.align_button.configure(state="disabled")
+                self.abort_align_button.configure(state="normal")
+            else:
+                self.align_button.configure(state="normal")
+                self.abort_align_button.configure(state="disabled")
+                
+        event_dispatcher.add_event_listener(
+            Event.ALIGNMENT_STATE_CHANGED,
+            on_alignment_state_change
+        )
 
 
 class ExposureHistoryFrame:
