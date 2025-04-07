@@ -202,7 +202,6 @@ class EventDispatcher:
     patterning_busy: bool
     autofocus_on_mode_switch: bool
     realtime_detection: bool
-    model_exists: bool
     first_autofocus: bool
     should_abort: bool
     exposure_time: int
@@ -781,17 +780,6 @@ class CameraFrame:
         self.gui_img = None
         self.camera = c
         self.pending_frame = None
-
-        self.model: Optional[YOLO] = None
-        if event_dispatcher.realtime_detection:
-            try:
-                print("loading model")
-                self.model = YOLO(MODEL_PATH, verbose=False)
-                print("loaded model")
-                event_dispatcher.model_exists = True
-            except Exception as e:
-                print(f"Failed to load YOLO model: {e}")
-                event_dispatcher.realtime_detection = False
 
     def _on_new_frame(self):
         # FIXME: is this really the only way tkinter exposes to do this??
@@ -1526,7 +1514,7 @@ class GlobalSettingsFrame:
             self.frame,
             text="Detect alignment markers in real time",
             variable=self.realtime_detection_var,
-            state="disabled" if not event_dispatcher.model_exists else "normal",
+            state="disabled" if event_dispatcher.model is None else "normal",
         )
         self.realtime_detection_check.grid(row=1, column=0, columnspan=2)
         self.realtime_detection_var.trace_add("write", set_realtime_detection)
