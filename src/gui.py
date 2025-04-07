@@ -129,6 +129,15 @@ class RedFocusSource(StrAutoEnum):
 
 
 @dataclass
+class LithographerConfig:
+    stage: StageController
+    camera: CameraModule
+    camera_scale: float
+    enable_detection: bool
+    model_path: str
+
+
+@dataclass
 class ExposureLog:
     time: datetime
     path: str
@@ -1692,16 +1701,14 @@ class LithographerGui:
     root: Tk
     event_dispatcher: EventDispatcher
 
-    def __init__(
-        self, stage: StageController, camera, camera_scale, title="Lithographer"
-    ):
+    def __init__(self, config: LithographerConfig):
         self.root = Tk()
-
-        self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root, camera is not None)
+        self.event_dispatcher = EventDispatcher(config.stage, TkProjector(self.root), self.root, config.camera is not None)
+        self.event_dispatcher.initialize_alignment(config.enable_detection, config.model_path)
 
         self.shown_image = ShownImage.CLEAR
 
-        self.camera = CameraFrame(self.root, self.event_dispatcher, camera, camera_scale)
+        self.camera = CameraFrame(self.root, self.event_dispatcher, config.camera, config.camera_scale)
         self.camera.frame.grid(row=0, column=0)
 
         self.middle_panel = ttk.Frame(self.root)
@@ -1755,8 +1762,6 @@ class LithographerGui:
 
         self.root.after(0, on_start)
     
-    def initialize_alignment(self, enable_detection: bool = False, model_path: str = None):
-        self.event_dispatcher.initialize_alignment(enable_detection, model_path)
 
     def cleanup(self):
         print("Patterning GUI closed.")
@@ -1814,13 +1819,19 @@ def main():
     except Exception:
         camera_scale = 1.0
 
-    lithographer = LithographerGui(stage, camera, camera_scale)
-
     # ALIGNMENT CONFIG
 
     alignment_config = config["alignment"]
-    lithographer.initialize_alignment(alignment_config["enabled"], alignment_config["model_path"])
+    
+    lithographer_config = LithographerConfig(
+        stage,
+        camera,
+        camera_scale,
+        alignment_config["enabled"],
+        alignment_config["model_path"],
+    )
 
+    lithographer = LithographerGui(lithographer_config)
     lithographer.root.mainloop()
 
 
