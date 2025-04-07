@@ -1559,7 +1559,7 @@ class GlobalSettingsFrame:
             print(markers)
         
         self.alignbutton = ttk.Button(self.frame, text="Align :)", command=do_align)
-        self.alignbutton.grid(row=2,column=2)
+        self.alignbutton.grid(row=2, column=2)
 
         # TODO: Fix this
         self.autofocus_button = ttk.Button(self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus(blue_only=event_dispatcher.in_uv()))
@@ -1571,7 +1571,7 @@ class GlobalSettingsFrame:
         self.border_label = ttk.Label(self.frame, text="Border Size (%)")
         self.border_label.grid(row=2, column=0)
         self.border_entry = IntEntry(self.frame, var=self.border_size_var, default=0, min_value=0, max_value=100)
-        self.border_entry.widget.grid(row=2, column=1, sticky="nesw")
+        self.border_entry.widget.grid(row=3, column=1, sticky="nesw")
 
         def on_border_size_change(*_):
             event_dispatcher.set_border_size(self.border_size_var.get())
@@ -1582,7 +1582,7 @@ class GlobalSettingsFrame:
         self.photo = None
 
         self.current_image = ttk.Label(self.frame, image=self.placeholder_photo)  # type:ignore
-        self.current_image.grid(row=3, column=0, columnspan=2)
+        self.current_image.grid(row=4, column=0, columnspan=2)
 
         # Disable the autofocus button if autofocus is already running
         def movement_lock_changed():
@@ -1605,7 +1605,7 @@ class GlobalSettingsFrame:
         event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, shown_image_changed)
 
         self.snapshot_frame = ttk.LabelFrame(self.frame, text="Snapshot Settings")
-        self.snapshot_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=5)
+        self.snapshot_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=5)
 
         self.auto_snapshot_var = BooleanVar(value=event_dispatcher.auto_snapshot_on_uv)
         self.auto_snapshot_check = ttk.Checkbutton(
