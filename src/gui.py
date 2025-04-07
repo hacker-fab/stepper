@@ -32,8 +32,6 @@ from stage_control.stage_controller import StageController
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
-ENABLE_DETECTION = True
-MODEL_PATH = "best.pt"
 
 def compute_focus_score(camera_image, blue_only):
     camera_image = camera_image.copy()
@@ -709,7 +707,7 @@ class EventDispatcher:
         try:
             print("loading model")
             model_path = model_path
-            self.model = YOLO(model_path, verbose=False)
+            self.model = YOLO(model_path)
             print("loaded model")
         except Exception as e:
             print(f"Failed to load YOLO model: {e}")
@@ -1500,13 +1498,13 @@ class ModeSelectFrame:
 
 
 class GlobalSettingsFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
+    def __init__(self, parent, event_dispatcher: EventDispatcher, enable_detection: bool = False):
         self.frame = ttk.LabelFrame(parent, text="Global Settings")
 
         def set_autofocus_on_mode_switch(*_):
             event_dispatcher.autofocus_on_mode_switch = self.autofocus_on_mode_switch_var.get()
 
-        self.autofocus_on_mode_switch_var = BooleanVar(value=True)
+        self.autofocus_on_mode_switch_var = BooleanVar(value=enable_detection)
         self.autofocus_on_mode_switch_check = ttk.Checkbutton(
             self.frame,
             text="Autofocus on Mode Change",
@@ -1723,7 +1721,7 @@ class LithographerGui:
         self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
         self.chip_frame.frame.grid(row=0, column=0)
 
-        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
+        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.enable_detection)
         self.global_settings_frame.frame.grid(row=0, column=2)
 
         self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
