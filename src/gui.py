@@ -1571,7 +1571,7 @@ class TilingFrame:
         # TODO: Tune default offsets
         self.x_settings = OffsetAmountFrame(self.frame, "X", 1050)
         self.x_settings.frame.grid(row=0, column=0)
-        self.y_settings = OffsetAmountFrame(self.frame, "Y", 900)
+        self.y_settings = OffsetAmountFrame(self.frame, "Y", 525)
         self.y_settings.frame.grid(row=1, column=0)
 
         def on_begin():
