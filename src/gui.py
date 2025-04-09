@@ -927,7 +927,7 @@ class ImageAdjustFrame:
             self.step_size_intputs.append(
                 IntEntry(
                     parent=self.relative_frame,
-                    default=10,
+                    default=[840, 540, 200][i],
                     min_value=-1000,
                     max_value=1000,
                 )
@@ -1571,7 +1571,7 @@ class TilingFrame:
         # TODO: Tune default offsets
         self.x_settings = OffsetAmountFrame(self.frame, "X", 840)
         self.x_settings.frame.grid(row=0, column=0)
-        self.y_settings = OffsetAmountFrame(self.frame, "Y", 525)
+        self.y_settings = OffsetAmountFrame(self.frame, "Y", 540)
         self.y_settings.frame.grid(row=1, column=0)
 
         def on_begin():
@@ -1674,7 +1674,7 @@ class LithographerGui:
             self.camera.start()
             if self.event_dispatcher.hardware.stage.has_homing():
                 self.event_dispatcher.home_stage()
-                self.event_dispatcher.move_relative({"x": 5000.0, "y": 3500.0, "z": 1900.0})
+                self.event_dispatcher.move_relative({"x": 1000.0, "y": 3500.0, "z": 4000.0})
             messagebox.showinfo(
                 message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
             )
