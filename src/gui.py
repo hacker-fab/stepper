@@ -35,15 +35,18 @@ THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 DEFAULT_RED_EXPOSURE: float = 4167.0
 DEFAULT_UV_EXPOSURE: float = 25000.0
 
-def compute_focus_score(camera_image, blue_only):
+def compute_focus_score(camera_image, blue_only, save=False):
     camera_image = camera_image.copy()
     camera_image[:, :, 1] = 0  # green should never be used for focus
-    if blue_only:
-        camera_image[:, :, 0] = 0  # disable red
+    #if blue_only:
+    #   camera_image[:, :, 0] = 0  # disable red
     img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
-    img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
+    img_lapl = (np.abs(cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1)) + np.abs(cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=1))) / mean
+    if save:
+        print('saved focus: ', np.min(img_lapl), np.max(img_lapl))
+        cv2.imwrite(save, img_lapl * 255.0 / 5.0)
     return img_lapl.var() / mean
 
 
@@ -267,7 +270,7 @@ class EventDispatcher:
         self.shown_image = ShownImage.CLEAR
         self.autofocus_busy = False
         self.patterning_busy = False
-        self.autofocus_on_mode_switch = True
+        self.autofocus_on_mode_switch = False
         self.realtime_detection = False
         self.first_autofocus = True
         self.should_abort = False
@@ -493,7 +496,7 @@ class EventDispatcher:
                 break
 
         # TODO: Yes the axis flip is intentional
-        self.stage_setpoint = (pos[0] * 1000.0, pos[2] * 1000.0, pos[1] * 1000.0)
+        self.stage_setpoint = (pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0)
         print(f"Homed stage to {self.stage_setpoint}")
         self.on_event(Event.STAGE_POSITION_CHANGED)
 
@@ -584,6 +587,7 @@ class EventDispatcher:
         self.camera.setExposureTime(self.red_exposure_time)
         if mode_switch_autofocus and self.autofocus_on_mode_switch:
             self.autofocus(blue_only=False)
+        self.on_event(Event.MOVEMENT_LOCK_CHANGED)
 
     def enter_uv_mode(self, mode_switch_autofocus=True):
         if self.auto_snapshot_on_uv:
@@ -598,13 +602,16 @@ class EventDispatcher:
             and self.autofocus_on_mode_switch
         ):
             # UV mode usually needs about -70 to be in focus compared to red mode
-            self.move_relative({"z": -85.0})
+            #self.move_relative({"z": -85.0})
+            pass
 
         self.set_shown_image(ShownImage.UV_FOCUS)
 
         if mode_switch_autofocus and self.autofocus_on_mode_switch:
             self.non_blocking_delay(2.0)
             self.autofocus(blue_only=True)
+        
+        self.on_event(Event.MOVEMENT_LOCK_CHANGED)
 
     def autofocus(self, blue_only, log=False):
         if not self.camera:
@@ -629,7 +636,10 @@ class EventDispatcher:
         
         counter = 0
         def sample_focus():
-            focus_score = compute_focus_score(self.camera_image, blue_only=blue_only)
+            def do_thing():
+                self.non_blocking_delay(0.1)
+                return compute_focus_score(self.camera_image, blue_only=blue_only)
+            focus_score = sorted([do_thing() for _ in range(3)])[1]
             nonlocal counter
             if log:
                 log_file.write(f'{counter},{focus_score}\n')
@@ -789,6 +799,9 @@ class CameraFrame:
         self.label.grid(row=0, column=0, sticky="nesw")
         self.gui_camera_scale = camera_scale
 
+        self.focus_score_label = ttk.Label(self.frame, text="Focus Score: N/A")
+        self.focus_score_label.grid(row=0, column=1)
+
         self.snapshot = SnapshotFrame(self.frame, c is not None, event_dispatcher)
         self.snapshot.frame.grid(row=1, column=0)
 
@@ -808,14 +821,20 @@ class CameraFrame:
         # If you send an event, events will just pile up in the queue if we ever fall behind.
         # This might have the same problem!
         # I have no idea how to fix this
-        self.event_dispatcher.root.after(33, lambda: self._on_new_frame())
+        self.event_dispatcher.root.update_idletasks()
+        self.event_dispatcher.root.after_idle(lambda: self._on_new_frame())
         if self.pending_frame is None:
             return
         image, dimensions, format = self.pending_frame
+        red_score = compute_focus_score(image, blue_only=False)
+        blue_score = compute_focus_score(image, blue_only=True)
+        self.focus_score_label.configure(text=f"Focus Score: {red_score:.3e} {blue_score:.3e}")
 
         try:
             filename = self.snapshots_pending.get_nowait()
             print(f"Saving image {filename}")
+            compute_focus_score(image, blue_only=False, save='focusred.png')
+            compute_focus_score(image, blue_only=False, save='focusblue.png')
             img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             cv2.imwrite(filename, img)
         except queue.Empty:
@@ -962,6 +981,22 @@ class StagePositionFrame:
                 self.position_intputs[i].set(pos[i])
 
         event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, on_position_change)
+
+        self.shortcut_frame = ttk.LabelFrame(self.frame, text="Shortcuts")
+        self.shortcut_frame.grid(row=2, column=0)
+
+        def on_chip_origin():
+            event_dispatcher.move_absolute({ "x": -14500.0, "y": -13500.0, "z": -13844.0 })
+        def on_chip_unload():
+            event_dispatcher.move_absolute({ "x": -14500.0, "y": -14500.0, "z": -14500.0 })
+
+
+        btn_state = "normal" if event_dispatcher.hardware.stage.has_homing() else "disabled"
+        self.chip_origin_button = ttk.Button(self.shortcut_frame, text="Chip origin", command=on_chip_origin, state=btn_state)
+        self.chip_origin_button.grid(row=0, column=0)
+        self.chip_unload_button = ttk.Button(self.shortcut_frame, text="Load/unload", command=on_chip_unload, state=btn_state)
+        self.chip_unload_button.grid(row=0, column=1)
+
 
     def _position(self) -> tuple[int, int, int]:
         return tuple(intput.get() for intput in self.position_intputs)
@@ -1517,7 +1552,7 @@ class GlobalSettingsFrame:
         def set_autofocus_on_mode_switch(*_):
             event_dispatcher.autofocus_on_mode_switch = self.autofocus_on_mode_switch_var.get()
 
-        self.autofocus_on_mode_switch_var = BooleanVar(value=enable_detection)
+        self.autofocus_on_mode_switch_var = BooleanVar(value=False)
         self.autofocus_on_mode_switch_check = ttk.Checkbutton(
             self.frame,
             text="Autofocus on Mode Change",
@@ -1806,7 +1841,7 @@ class LithographerGui:
             self.event_dispatcher.enter_red_mode(mode_switch_autofocus=False) # ensure exposure settings are correctly set
             if self.event_dispatcher.hardware.stage.has_homing():
                 self.event_dispatcher.home_stage()
-                self.event_dispatcher.move_relative({"x": 5000.0, "y": 3500.0, "z": 1900.0})
+                #self.event_dispatcher.move_relative({"x": 5000.0, "y": 3500.0, "z": 1900.0})
             messagebox.showinfo(
                 message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
             )
