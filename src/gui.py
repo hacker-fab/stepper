@@ -3,6 +3,7 @@ import os
 import queue
 import shutil
 import time
+import toml
 
 import tkinter
 from dataclasses import dataclass
@@ -17,7 +18,6 @@ from typing import Callable, List, Optional
 import cv2
 import numpy as np
 import serial
-import toml
 from PIL import Image, ImageOps
 from ultralytics import YOLO
 
@@ -133,14 +133,25 @@ class RedFocusSource(StrAutoEnum):
 
 
 @dataclass
+class AlignmentConfig:
+    enabled: bool
+    model_path: str
+    right_marker_x: float
+    left_marker_x: float
+    top_marker_y: float
+    bottom_marker_y: float
+    x_scale_factor: float
+    y_scale_factor: float
+
+
+@dataclass
 class LithographerConfig:
     stage: StageController
     camera: CameraModule
     camera_scale: float
     red_exposure: float
     uv_exposure: float
-    enable_detection: bool
-    model_path: str
+    alignment: AlignmentConfig
 
 
 @dataclass
@@ -724,12 +735,13 @@ class EventDispatcher:
 
         print("Finished autofocus")
     
-    def initialize_alignment(self, enable_detection: bool = False, model_path: str = None):
-        self.realtime_detection = enable_detection
+    def initialize_alignment(self, config: LithographerConfig):
+        self.config = config
+        self.realtime_detection = config.alignment.enabled
         # Attempt loading the model even if detection is off by default
         try:
             print("loading model")
-            model_path = model_path
+            model_path = config.alignment.model_path
             self.model = YOLO(model_path)
             print("loaded model")
         except Exception as e:
@@ -1581,22 +1593,26 @@ class GlobalSettingsFrame:
             if len(markers) == 0:
                 return
             
+            # Get alignment parameters from config
+            alignment = event_dispatcher.config.alignment
+            
             for m in markers:
                 xy0, xy1 = m
                 x0, y0 = xy0
                 x1, y1 = xy1
+                # compute normalized centers of the bounding box
                 x = (x0 + x1) / 2 / w
                 y = (y0 + y1) / 2 / h
-                #mark at  1634.0 117.5
-                #mark at  1630.5 1001.5
+                
                 if x > 0.5:
-                    dx += -1040 * (1634.0 / w - x)
+                    dx += alignment.x_scale_factor * (alignment.right_marker_x / w - x)
                 else:
-                    dx += -1040 * (0.0 - x)
+                    dx += alignment.x_scale_factor * (alignment.left_marker_x / w - x)
                 if y > 0.5:
-                    dy += -580 * (1001.5 / h - y)
+                    dy += alignment.y_scale_factor * (alignment.bottom_marker_y / h - y)
                 else:
-                    dy += -580 * (117.5 / h - y)
+                    dy += alignment.y_scale_factor * (alignment.top_marker_y / h - y)
+            
             dx /= len(markers)
             dy /= len(markers)
             event_dispatcher.move_relative({ 'x': dx, 'y': dy })
@@ -1789,7 +1805,7 @@ class LithographerGui:
             config.red_exposure,
             config.uv_exposure,
         )
-        self.event_dispatcher.initialize_alignment(config.enable_detection, config.model_path)
+        self.event_dispatcher.initialize_alignment(config)
 
         self.shown_image = ShownImage.CLEAR
 
@@ -1808,7 +1824,7 @@ class LithographerGui:
         self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
         self.chip_frame.frame.grid(row=0, column=0)
 
-        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.enable_detection)
+        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.alignment.enabled)
         self.global_settings_frame.frame.grid(row=0, column=2)
 
         self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
@@ -1900,24 +1916,36 @@ def main():
         print(f"config.toml specifies invalid camera type {camera_config['type']}")
         return 1
 
-    try:
-        camera_scale = float(camera_config["gui-scale"])
-    except Exception:
-        camera_scale = 1.0
+    camera_scale = float(camera_config.get("gui-scale", 1.0))
+    red_exposure = float(camera_config.get("red-exposure", DEFAULT_RED_EXPOSURE))
+    uv_exposure = float(camera_config.get("uv-exposure", DEFAULT_UV_EXPOSURE))
     
-    try:
-        red_exposure = float(camera_config["red-exposure"])
-    except Exception:
-        red_exposure = DEFAULT_RED_EXPOSURE
-    
-    try:
-        uv_exposure = float(camera_config["uv-exposure"])
-    except Exception:
-        uv_exposure = DEFAULT_UV_EXPOSURE
-
     # ALIGNMENT CONFIG
 
     alignment_config = config["alignment"]
+    alignment_enabled = alignment_config.get("enabled", False)
+    alignment_model = alignment_config.get("model_path", "best.pt")
+    
+    # Get alignment marker reference coordinates with defaults
+    right_marker_x = float(alignment_config.get("right_marker_x", 1634.0))
+    left_marker_x = float(alignment_config.get("left_marker_x", 0.0))
+    top_marker_y = float(alignment_config.get("top_marker_y", 117.5))
+    bottom_marker_y = float(alignment_config.get("bottom_marker_y", 1001.5))
+    
+    # Get scaling factors with defaults
+    x_scale_factor = float(alignment_config.get("x_scale_factor", -1040))
+    y_scale_factor = float(alignment_config.get("y_scale_factor", -580))
+    
+    alignment_config = AlignmentConfig(
+        enabled=alignment_enabled,
+        model_path=alignment_model,
+        right_marker_x=right_marker_x,
+        left_marker_x=left_marker_x,
+        top_marker_y=top_marker_y,
+        bottom_marker_y=bottom_marker_y,
+        x_scale_factor=x_scale_factor,
+        y_scale_factor=y_scale_factor,
+    )
     
     lithographer_config = LithographerConfig(
         stage,
@@ -1925,8 +1953,7 @@ def main():
         camera_scale,
         red_exposure,
         uv_exposure,
-        alignment_config["enabled"],
-        alignment_config["model_path"],
+        alignment_config,
     )
 
     lithographer = LithographerGui(lithographer_config)

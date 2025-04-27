@@ -35,3 +35,11 @@ baud-rate = 115200
 enabled = false
 # Path to the YOLO model weights file
 model_path = "best.pt"
+# Alignment marker reference coordinates (in pixels)
+right_marker_x = 1634.0  # x-coordinate for markers on the right side
+top_marker_y = 117.5     # y-coordinate for markers on the top
+bottom_marker_y = 1001.5 # y-coordinate for markers on the bottom
+left_marker_x = 0.0      # x-coordinate for markers on the left side
+# Scaling factors for converting normalized differences to stage movements (in µm)
+x_scale_factor = -1040   # Scaling factor for x-axis movements
+y_scale_factor = -580    # Scaling factor for y-axis movements

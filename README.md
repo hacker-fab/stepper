@@ -209,6 +209,10 @@ index = 1
 # The output from the camera is typically too large to show at full resolution.
 # This parameter adjusts the size of the camera feed before it is displayed in the GUI.
 gui-scale = 0.25
+# The following two values adjust the *camera* exposure in microseconds when viewing red or UV light.
+# Note that using values that are not a multiple of 4167 can lead to flickering.
+red-exposure = 4167.0
+uv-exposure = 25000.0
 
 # This section configures the motion stage
 [stage]
@@ -228,4 +232,12 @@ baud-rate = 115200
 enabled = false
 # Path to the YOLO model weights file
 model_path = "best.pt"
+# Alignment marker reference coordinates (in pixels)
+right_marker_x = 1634.0  # x-coordinate for markers on the right side
+top_marker_y = 117.5     # y-coordinate for markers on the top
+bottom_marker_y = 1001.5 # y-coordinate for markers on the bottom
+left_marker_x = 0.0      # x-coordinate for markers on the left side
+# Scaling factors for converting normalized differences to stage movements (in µm)
+x_scale_factor = -1040   # Scaling factor for x-axis movements
+y_scale_factor = -580    # Scaling factor for y-axis movements
 ```
