@@ -833,26 +833,29 @@ class CameraFrame:
         # If you send an event, events will just pile up in the queue if we ever fall behind.
         # This might have the same problem!
         # I have no idea how to fix this
-        self.event_dispatcher.root.update_idletasks()
-        self.event_dispatcher.root.after_idle(lambda: self._on_new_frame())
-        if self.pending_frame is None:
-            return
-        image, dimensions, format = self.pending_frame
-        red_score = compute_focus_score(image, blue_only=False)
-        blue_score = compute_focus_score(image, blue_only=True)
-        self.focus_score_label.configure(text=f"Focus Score: {red_score:.3e} {blue_score:.3e}")
-
+        # self.event_dispatcher.root.update_idletasks()
+        # self.event_dispatcher.root.after_idle(lambda: self._on_new_frame())
         try:
-            filename = self.snapshots_pending.get_nowait()
-            print(f"Saving image {filename}")
-            compute_focus_score(image, blue_only=False, save='focusred.png')
-            compute_focus_score(image, blue_only=False, save='focusblue.png')
-            img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            cv2.imwrite(filename, img)
-        except queue.Empty:
-            pass
+            if self.pending_frame is None:
+                return
+            image, dimensions, format = self.pending_frame
+            red_score = compute_focus_score(image, blue_only=False)
+            blue_score = compute_focus_score(image, blue_only=True)
+            self.focus_score_label.configure(text=f"Focus Score: {red_score:.3e} {blue_score:.3e}")
 
-        self.gui_camera_preview(image, dimensions)
+            try:
+                filename = self.snapshots_pending.get_nowait()
+                print(f"Saving image {filename}")
+                compute_focus_score(image, blue_only=False, save='focusred.png')
+                compute_focus_score(image, blue_only=False, save='focusblue.png')
+                img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                cv2.imwrite(filename, img)
+            except queue.Empty:
+                pass
+
+            self.gui_camera_preview(image, dimensions)
+        finally:
+            self.event_dispatcher.root.after(66, lambda: self._on_new_frame())
 
     def start(self):
         if not self.camera:
