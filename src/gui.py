@@ -3,6 +3,7 @@ import os
 import queue
 import shutil
 import time
+import toml
 
 import tkinter
 from dataclasses import dataclass
@@ -17,8 +18,8 @@ from typing import Callable, List, Optional
 import cv2
 import numpy as np
 import serial
-import toml
 from PIL import Image, ImageOps
+from ultralytics import YOLO
 
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
@@ -31,17 +32,48 @@ from stage_control.stage_controller import StageController
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
+DEFAULT_RED_EXPOSURE: float = 4167.0
+DEFAULT_UV_EXPOSURE: float = 25000.0
 
-def compute_focus_score(camera_image, blue_only):
+def compute_focus_score(camera_image, blue_only, save=False):
     camera_image = camera_image.copy()
     camera_image[:, :, 1] = 0  # green should never be used for focus
-    if blue_only:
-        camera_image[:, :, 0] = 0  # disable red
+    #if blue_only:
+    #   camera_image[:, :, 0] = 0  # disable red
     img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
-    img_lapl = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1) / mean
+    img_lapl = (np.abs(cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1)) + np.abs(cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=1))) / mean
+    if save:
+        print('saved focus: ', np.min(img_lapl), np.max(img_lapl))
+        cv2.imwrite(save, img_lapl * 255.0 / 5.0)
     return img_lapl.var() / mean
+
+
+def detect_alignment_markers(model, image, draw_rectangle=False):
+    detections = []
+    display_image = image.copy()
+    try:
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        original_height, original_width = image_rgb.shape[:2]
+        resized = cv2.resize(image_rgb, (640, 640))
+        results = model(resized)
+        boxes = results[0].boxes
+        for box in boxes:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            x1 = int(x1 * original_width / 640)
+            x2 = int(x2 * original_width / 640)
+            y1 = int(y1 * original_height / 640)
+            y2 = int(y2 * original_height / 640)
+            detections.append(((x1, y1), (x2, y2)))
+            print('mark at ', (x1 + x2) / 2, (y1 + y2) / 2)
+            if draw_rectangle:
+                cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 5)
+    except Exception as e:
+        print(f"Detection failed: {e}")
+
+    return detections, display_image 
+
 
 class StrAutoEnum(str, Enum):
     """Base class for string-valued enums that use auto()"""
@@ -101,6 +133,28 @@ class RedFocusSource(StrAutoEnum):
 
 
 @dataclass
+class AlignmentConfig:
+    enabled: bool
+    model_path: str
+    right_marker_x: float
+    left_marker_x: float
+    top_marker_y: float
+    bottom_marker_y: float
+    x_scale_factor: float
+    y_scale_factor: float
+
+
+@dataclass
+class LithographerConfig:
+    stage: StageController
+    camera: CameraModule
+    camera_scale: float
+    red_exposure: float
+    uv_exposure: float
+    alignment: AlignmentConfig
+
+
+@dataclass
 class ExposureLog:
     time: datetime
     path: str
@@ -154,8 +208,9 @@ class Chip:
 
 class EventDispatcher:
     hardware: Lithographer
-    camera_exists: bool
     root: Tk
+    model: Optional[YOLO]
+    camera: Optional[CameraModule]
     red_focus: ProcessedImage
     uv_focus: ProcessedImage
     pattern: ProcessedImage
@@ -172,10 +227,13 @@ class EventDispatcher:
     autofocus_busy: bool
     patterning_busy: bool
     autofocus_on_mode_switch: bool
+    realtime_detection: bool
     first_autofocus: bool
     should_abort: bool
     exposure_time: int
     patterning_progress: float # ranges from 0.0 to 1.0
+    red_exposure_time: float
+    uv_exposure_time: float
     exposure_history: List[ExposureLog]
     chip: Chip
     auto_snapshot_on_uv: bool
@@ -187,12 +245,17 @@ class EventDispatcher:
         stage: StageController,
         proj: TkProjector,
         root: Tk,
-        camera_exists: bool
+        camera: Optional[CameraModule],
+        red_exposure: float,
+        uv_exposure: float,
     ):
         # Hardware components
         self.hardware = Lithographer(stage, proj)
-        self.camera_exists = camera_exists
+        self.camera = camera
         self.root = root
+
+        # Detection model
+        self.model = None
 
         # Image processing objects
         self.red_focus = ProcessedImage()
@@ -218,13 +281,16 @@ class EventDispatcher:
         self.shown_image = ShownImage.CLEAR
         self.autofocus_busy = False
         self.patterning_busy = False
-        self.autofocus_on_mode_switch = True
+        self.autofocus_on_mode_switch = False
+        self.realtime_detection = False
         self.first_autofocus = True
         self.should_abort = False
 
         # Exposure settings and progress
         self.exposure_time = 8000
         self.patterning_progress = 0.0
+        self.red_exposure_time = red_exposure
+        self.uv_exposure_time = uv_exposure
 
         # History and logging
         self.exposure_history = []
@@ -440,8 +506,7 @@ class EventDispatcher:
             if idle:
                 break
 
-        # TODO: Yes the axis flip is intentional
-        self.stage_setpoint = (pos[0] * 1000.0, pos[2] * 1000.0, pos[1] * 1000.0)
+        self.stage_setpoint = (pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0)
         print(f"Homed stage to {self.stage_setpoint}")
         self.on_event(Event.STAGE_POSITION_CHANGED)
 
@@ -529,8 +594,10 @@ class EventDispatcher:
     def enter_red_mode(self, mode_switch_autofocus=True):
         print("enter_red_mode")
         self.set_shown_image(ShownImage.RED_FOCUS)
+        self.camera.setExposureTime(self.red_exposure_time)
         if mode_switch_autofocus and self.autofocus_on_mode_switch:
             self.autofocus(blue_only=False)
+        self.on_event(Event.MOVEMENT_LOCK_CHANGED)
 
     def enter_uv_mode(self, mode_switch_autofocus=True):
         if self.auto_snapshot_on_uv:
@@ -538,22 +605,26 @@ class EventDispatcher:
             filename = self.snapshot_directory / f"uv_mode_entry_{timestamp}.png"
             self.on_event(Event.SNAPSHOT, str(filename))
 
+        self.camera.setExposureTime(self.uv_exposure_time)
         if (
             mode_switch_autofocus
             and not self.autofocus_busy
             and self.autofocus_on_mode_switch
         ):
             # UV mode usually needs about -70 to be in focus compared to red mode
-            self.move_relative({"z": -85.0})
+            #self.move_relative({"z": -85.0})
+            pass
 
         self.set_shown_image(ShownImage.UV_FOCUS)
 
         if mode_switch_autofocus and self.autofocus_on_mode_switch:
             self.non_blocking_delay(2.0)
             self.autofocus(blue_only=True)
+        
+        self.on_event(Event.MOVEMENT_LOCK_CHANGED)
 
     def autofocus(self, blue_only, log=False):
-        if not self.camera_exists:
+        if not self.camera:
             print("No camera connected, skipping autofocus")
             return
 
@@ -575,7 +646,10 @@ class EventDispatcher:
         
         counter = 0
         def sample_focus():
-            focus_score = compute_focus_score(self.camera_image, blue_only=blue_only)
+            def do_thing():
+                self.non_blocking_delay(0.1)
+                return compute_focus_score(self.camera_image, blue_only=blue_only)
+            focus_score = sorted([do_thing() for _ in range(3)])[1]
             nonlocal counter
             if log:
                 log_file.write(f'{counter},{focus_score}\n')
@@ -641,7 +715,7 @@ class EventDispatcher:
                 last_focus = new_score
         elif neg_score < mid_score and pos_score < mid_score:
             # We are very close to already being in focus
-            print("Almost in focus!")
+            print(f"Almost in focus! (neg {neg_score} mid {mid_score} pos {pos_score})")
             self.move_relative({"z": -20.0})
             self.non_blocking_delay(0.5)
 
@@ -659,6 +733,18 @@ class EventDispatcher:
         self.set_autofocus_busy(False)
 
         print("Finished autofocus")
+    
+    def initialize_alignment(self, config: LithographerConfig):
+        self.config = config
+        self.realtime_detection = config.alignment.enabled
+        # Attempt loading the model even if detection is off by default
+        try:
+            print("loading model")
+            model_path = config.alignment.model_path
+            self.model = YOLO(model_path)
+            print("loaded model")
+        except Exception as e:
+            print(f"Failed to load YOLO model: {e}")
 
     def set_snapshot_directory(self, directory: Path):
         self.snapshot_directory = directory
@@ -724,6 +810,9 @@ class CameraFrame:
         self.label.grid(row=0, column=0, sticky="nesw")
         self.gui_camera_scale = camera_scale
 
+        self.focus_score_label = ttk.Label(self.frame, text="Focus Score: N/A")
+        self.focus_score_label.grid(row=0, column=1)
+
         self.snapshot = SnapshotFrame(self.frame, c is not None, event_dispatcher)
         self.snapshot.frame.grid(row=1, column=0)
 
@@ -743,20 +832,29 @@ class CameraFrame:
         # If you send an event, events will just pile up in the queue if we ever fall behind.
         # This might have the same problem!
         # I have no idea how to fix this
-        self.event_dispatcher.root.after(33, lambda: self._on_new_frame())
-        if self.pending_frame is None:
-            return
-        image, dimensions, format = self.pending_frame
-
+        # self.event_dispatcher.root.update_idletasks()
+        # self.event_dispatcher.root.after_idle(lambda: self._on_new_frame())
         try:
-            filename = self.snapshots_pending.get_nowait()
-            print(f"Saving image {filename}")
-            img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            cv2.imwrite(filename, img)
-        except queue.Empty:
-            pass
+            if self.pending_frame is None:
+                return
+            image, dimensions, format = self.pending_frame
+            red_score = compute_focus_score(image, blue_only=False)
+            blue_score = compute_focus_score(image, blue_only=True)
+            self.focus_score_label.configure(text=f"Focus Score: {red_score:.3e} {blue_score:.3e}")
 
-        self.gui_camera_preview(image, dimensions)
+            try:
+                filename = self.snapshots_pending.get_nowait()
+                print(f"Saving image {filename}")
+                compute_focus_score(image, blue_only=False, save='focusred.png')
+                compute_focus_score(image, blue_only=False, save='focusblue.png')
+                img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                cv2.imwrite(filename, img)
+            except queue.Empty:
+                pass
+
+            self.gui_camera_preview(image, dimensions)
+        finally:
+            self.event_dispatcher.root.after(66, lambda: self._on_new_frame())
 
     def start(self):
         if not self.camera:
@@ -784,10 +882,11 @@ class CameraFrame:
             self.camera.close()
 
     def gui_camera_preview(self, camera_image, dimensions):
+        model = self.event_dispatcher.model
+        if model and self.event_dispatcher.realtime_detection:
+            _, camera_image = detect_alignment_markers(model, camera_image, draw_rectangle=True)
         self.event_dispatcher.set_latest_image(camera_image)
         resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
-
-
         gui_img = image_to_tk_image(Image.fromarray(resized_img, mode="RGB"))
         self.label.configure(image=gui_img)  # type:ignore
         self.gui_img = gui_img
@@ -896,6 +995,22 @@ class StagePositionFrame:
                 self.position_intputs[i].set(pos[i])
 
         event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, on_position_change)
+
+        self.shortcut_frame = ttk.LabelFrame(self.frame, text="Shortcuts")
+        self.shortcut_frame.grid(row=2, column=0)
+
+        def on_chip_origin():
+            event_dispatcher.move_absolute({ "x": -14500.0, "y": -13500.0, "z": -13844.0 })
+        def on_chip_unload():
+            event_dispatcher.move_absolute({ "x": -14500.0, "y": -14500.0, "z": -14500.0 })
+
+
+        btn_state = "normal" if event_dispatcher.hardware.stage.has_homing() else "disabled"
+        self.chip_origin_button = ttk.Button(self.shortcut_frame, text="Chip origin", command=on_chip_origin, state=btn_state)
+        self.chip_origin_button.grid(row=0, column=0)
+        self.chip_unload_button = ttk.Button(self.shortcut_frame, text="Load/unload", command=on_chip_unload, state=btn_state)
+        self.chip_unload_button.grid(row=0, column=1)
+
 
     def _position(self) -> tuple[int, int, int]:
         return tuple(intput.get() for intput in self.position_intputs)
@@ -1445,33 +1560,86 @@ class ModeSelectFrame:
 
 
 class GlobalSettingsFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
+    def __init__(self, parent, event_dispatcher: EventDispatcher, enable_detection: bool = False):
         self.frame = ttk.LabelFrame(parent, text="Global Settings")
 
-        def set_value(*_):
+        def set_autofocus_on_mode_switch(*_):
             event_dispatcher.autofocus_on_mode_switch = self.autofocus_on_mode_switch_var.get()
 
-        self.autofocus_on_mode_switch_var = BooleanVar(value=True)
+        self.autofocus_on_mode_switch_var = BooleanVar(value=False)
         self.autofocus_on_mode_switch_check = ttk.Checkbutton(
             self.frame,
             text="Autofocus on Mode Change",
             variable=self.autofocus_on_mode_switch_var,
         )
         self.autofocus_on_mode_switch_check.grid(row=0, column=0, columnspan=2)
+        self.autofocus_on_mode_switch_var.trace_add("write", set_autofocus_on_mode_switch)
 
-        self.autofocus_on_mode_switch_var.trace_add("write", set_value)
+        def set_realtime_detection(*_):
+            event_dispatcher.realtime_detection = self.realtime_detection_var.get()
+        
+        self.realtime_detection_var = BooleanVar(value=enable_detection)
+        self.realtime_detection_check = ttk.Checkbutton(
+            self.frame,
+            text="Detect alignment markers in real time",
+            variable=self.realtime_detection_var,
+            state="disabled" if event_dispatcher.model is None else "normal",
+        )
+        self.realtime_detection_check.grid(row=1, column=0, columnspan=2)
+        self.realtime_detection_var.trace_add("write", set_realtime_detection)
+
+        def do_align():
+            h, w, _ = event_dispatcher.camera_image.shape
+            markers, _ = detect_alignment_markers(event_dispatcher.model, event_dispatcher.camera_image)
+            dx, dy = 0, 0
+            if len(markers) == 0:
+                return
+            
+            # Get alignment parameters from config
+            alignment = event_dispatcher.config.alignment
+            
+            for m in markers:
+                xy0, xy1 = m
+                x0, y0 = xy0
+                x1, y1 = xy1
+                # compute normalized centers of the bounding box
+                x = (x0 + x1) / 2 / w
+                y = (y0 + y1) / 2 / h
+                
+                if x > 0.5:
+                    dx += alignment.x_scale_factor * (alignment.right_marker_x / w - x)
+                else:
+                    dx += alignment.x_scale_factor * (alignment.left_marker_x / w - x)
+                if y > 0.5:
+                    dy += alignment.y_scale_factor * (alignment.bottom_marker_y / h - y)
+                else:
+                    dy += alignment.y_scale_factor * (alignment.top_marker_y / h - y)
+            
+            dx /= len(markers)
+            dy /= len(markers)
+            event_dispatcher.move_relative({ 'x': dx, 'y': dy })
+
+            print(markers)
+        
+        self.alignbutton = ttk.Button(
+            self.frame, 
+            text="Align :)", 
+            command=do_align, 
+            state="disabled" if event_dispatcher.model is None else "normal",
+        )
+        self.alignbutton.grid(row=2, column=1)
 
         # TODO: Fix this
         self.autofocus_button = ttk.Button(self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus(blue_only=event_dispatcher.in_uv()))
-        self.autofocus_button.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.autofocus_button.grid(row=2, column=0, sticky="ew")
 
         # Maybe this should have a scale?
         # Or, even further, maybe this should just be the same as the interface for posterization strength?
         self.border_size_var = IntVar()
         self.border_label = ttk.Label(self.frame, text="Border Size (%)")
-        self.border_label.grid(row=2, column=0)
+        self.border_label.grid(row=3, column=0)
         self.border_entry = IntEntry(self.frame, var=self.border_size_var, default=0, min_value=0, max_value=100)
-        self.border_entry.widget.grid(row=2, column=1, sticky="nesw")
+        self.border_entry.widget.grid(row=3, column=1, sticky="nesw")
 
         def on_border_size_change(*_):
             event_dispatcher.set_border_size(self.border_size_var.get())
@@ -1482,7 +1650,7 @@ class GlobalSettingsFrame:
         self.photo = None
 
         self.current_image = ttk.Label(self.frame, image=self.placeholder_photo)  # type:ignore
-        self.current_image.grid(row=3, column=0, columnspan=2)
+        self.current_image.grid(row=4, column=0, columnspan=2)
 
         # Disable the autofocus button if autofocus is already running
         def movement_lock_changed():
@@ -1505,7 +1673,7 @@ class GlobalSettingsFrame:
         event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, shown_image_changed)
 
         self.snapshot_frame = ttk.LabelFrame(self.frame, text="Snapshot Settings")
-        self.snapshot_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=5)
+        self.snapshot_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=5)
 
         self.auto_snapshot_var = BooleanVar(value=event_dispatcher.auto_snapshot_on_uv)
         self.auto_snapshot_check = ttk.Checkbutton(
@@ -1634,16 +1802,21 @@ class LithographerGui:
     root: Tk
     event_dispatcher: EventDispatcher
 
-    def __init__(
-        self, stage: StageController, camera, camera_scale, title="Lithographer"
-    ):
+    def __init__(self, config: LithographerConfig):
         self.root = Tk()
-
-        self.event_dispatcher = EventDispatcher(stage, TkProjector(self.root), self.root, camera is not None)
+        self.event_dispatcher = EventDispatcher(
+            config.stage, 
+            TkProjector(self.root), 
+            self.root, 
+            config.camera,
+            config.red_exposure,
+            config.uv_exposure,
+        )
+        self.event_dispatcher.initialize_alignment(config)
 
         self.shown_image = ShownImage.CLEAR
 
-        self.camera = CameraFrame(self.root, self.event_dispatcher, camera, camera_scale)
+        self.camera = CameraFrame(self.root, self.event_dispatcher, config.camera, config.camera_scale)
         self.camera.frame.grid(row=0, column=0)
 
         self.middle_panel = ttk.Frame(self.root)
@@ -1658,7 +1831,7 @@ class LithographerGui:
         self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
         self.chip_frame.frame.grid(row=0, column=0)
 
-        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher)
+        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.alignment.enabled)
         self.global_settings_frame.frame.grid(row=0, column=2)
 
         self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
@@ -1688,14 +1861,16 @@ class LithographerGui:
         # Things that have to after the main loop begins
         def on_start():
             self.camera.start()
+            self.event_dispatcher.enter_red_mode(mode_switch_autofocus=False) # ensure exposure settings are correctly set
             if self.event_dispatcher.hardware.stage.has_homing():
                 self.event_dispatcher.home_stage()
-                self.event_dispatcher.move_relative({"x": 5000.0, "y": 3500.0, "z": 1900.0})
+                #self.event_dispatcher.move_relative({"x": 5000.0, "y": 3500.0, "z": 1900.0})
             messagebox.showinfo(
                 message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
             )
 
         self.root.after(0, on_start)
+    
 
     def cleanup(self):
         print("Patterning GUI closed.")
@@ -1704,7 +1879,6 @@ class LithographerGui:
         self.camera.cleanup()
         # if RUN_WITH_STAGE:
         # serial_port.close()
-
 
 
 def main():
@@ -1749,12 +1923,47 @@ def main():
         print(f"config.toml specifies invalid camera type {camera_config['type']}")
         return 1
 
-    try:
-        camera_scale = float(camera_config["gui-scale"])
-    except Exception:
-        camera_scale = 1.0
+    camera_scale = float(camera_config.get("gui-scale", 1.0))
+    red_exposure = float(camera_config.get("red-exposure", DEFAULT_RED_EXPOSURE))
+    uv_exposure = float(camera_config.get("uv-exposure", DEFAULT_UV_EXPOSURE))
+    
+    # ALIGNMENT CONFIG
 
-    lithographer = LithographerGui(stage, camera, camera_scale)
+    alignment_config = config["alignment"]
+    alignment_enabled = alignment_config.get("enabled", False)
+    alignment_model = alignment_config.get("model_path", "best.pt")
+    
+    # Get alignment marker reference coordinates with defaults
+    right_marker_x = float(alignment_config.get("right_marker_x", 1820.0))
+    left_marker_x = float(alignment_config.get("left_marker_x", 280.0))
+    top_marker_y = float(alignment_config.get("top_marker_y", 269.0))
+    bottom_marker_y = float(alignment_config.get("bottom_marker_y", 1075.0))
+    
+    # Get scaling factors with defaults
+    x_scale_factor = float(alignment_config.get("x_scale_factor", -1100))
+    y_scale_factor = float(alignment_config.get("y_scale_factor", 800))
+    
+    alignment_config = AlignmentConfig(
+        enabled=alignment_enabled,
+        model_path=alignment_model,
+        right_marker_x=right_marker_x,
+        left_marker_x=left_marker_x,
+        top_marker_y=top_marker_y,
+        bottom_marker_y=bottom_marker_y,
+        x_scale_factor=x_scale_factor,
+        y_scale_factor=y_scale_factor,
+    )
+    
+    lithographer_config = LithographerConfig(
+        stage,
+        camera,
+        camera_scale,
+        red_exposure,
+        uv_exposure,
+        alignment_config,
+    )
+
+    lithographer = LithographerGui(lithographer_config)
     lithographer.root.mainloop()
 
 

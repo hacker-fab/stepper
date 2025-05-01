@@ -12,6 +12,10 @@ index = 1
 # The output from the camera is typically too large to show at full resolution.
 # This parameter adjusts the size of the camera feed before it is displayed in the GUI.
 gui-scale = 0.25
+# The following two values adjust the *camera* exposure in microseconds when viewing red or UV light.
+# Note that using values that are not a multiple of 4167 can lead to flickering.
+red-exposure = 4167.0
+uv-exposure = 25000.0
 
 # This section configures the motion stage
 [stage]
@@ -24,3 +28,18 @@ homing = false
 port = "COM6"
 # GRBL's baud rate is almost always 115200, do not change this value
 baud-rate = 115200
+
+# This section configures alignment marker detection
+[alignment]
+# Enable or disable real-time detection of alignment markers
+enabled = false
+# Path to the YOLO model weights file
+model_path = "best.pt"
+# Alignment marker reference coordinates (in pixels)
+right_marker_x = 1820.0  # x-coordinate for markers on the right side
+top_marker_y = 269.0     # y-coordinate for markers on the top
+bottom_marker_y = 1075.0 # y-coordinate for markers on the bottom
+left_marker_x = 280.0    # x-coordinate for markers on the left side
+# Scaling factors for converting normalized differences to stage movements (in µm)
+x_scale_factor = -1100   # Scaling factor for x-axis movements
+y_scale_factor = 800     # Scaling factor for y-axis movements

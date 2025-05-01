@@ -24,7 +24,7 @@ class GrblStage(StageController):
         self.controller_target = controller_target
         self.enable_homing = enable_homing
 
-        time.sleep(3.0)
+        time.sleep(3.0) # allow time for grbl to boot
         print(self.controller_target.read_all())
 
         self.axes = ("x", "y", "z")
@@ -84,13 +84,12 @@ class GrblStage(StageController):
         if "x" in microns:
             x_mm = microns["x"] / 1000.0
             msg += f" x{x_mm:.3f}"
-        # TODO: Yes the axes are swapped, this is because of Reasons:tm:
-        if "z" in microns:
-            z_mm = microns["z"] / 1000.0
-            msg += f" y{z_mm:.3f}"
         if "y" in microns:
             y_mm = microns["y"] / 1000.0
-            msg += f" z{y_mm:.3f}"
+            msg += f" y{y_mm:.3f}"
+        if "z" in microns:
+            z_mm = microns["z"] / 1000.0
+            msg += f" z{z_mm:.3f}"
         msg += "\n"
 
         self._send_msg(msg.encode("ascii"))
