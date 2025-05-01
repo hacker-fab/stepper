@@ -506,7 +506,6 @@ class EventDispatcher:
             if idle:
                 break
 
-        # TODO: Yes the axis flip is intentional
         self.stage_setpoint = (pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0)
         print(f"Homed stage to {self.stage_setpoint}")
         self.on_event(Event.STAGE_POSITION_CHANGED)
@@ -1622,7 +1621,12 @@ class GlobalSettingsFrame:
 
             print(markers)
         
-        self.alignbutton = ttk.Button(self.frame, text="Align :)", command=do_align)
+        self.alignbutton = ttk.Button(
+            self.frame, 
+            text="Align :)", 
+            command=do_align, 
+            state="disabled" if event_dispatcher.model is None else "normal",
+        )
         self.alignbutton.grid(row=2, column=1)
 
         # TODO: Fix this
@@ -1930,14 +1934,14 @@ def main():
     alignment_model = alignment_config.get("model_path", "best.pt")
     
     # Get alignment marker reference coordinates with defaults
-    right_marker_x = float(alignment_config.get("right_marker_x", 1634.0))
-    left_marker_x = float(alignment_config.get("left_marker_x", 0.0))
-    top_marker_y = float(alignment_config.get("top_marker_y", 117.5))
-    bottom_marker_y = float(alignment_config.get("bottom_marker_y", 1001.5))
+    right_marker_x = float(alignment_config.get("right_marker_x", 1820.0))
+    left_marker_x = float(alignment_config.get("left_marker_x", 280.0))
+    top_marker_y = float(alignment_config.get("top_marker_y", 269.0))
+    bottom_marker_y = float(alignment_config.get("bottom_marker_y", 1075.0))
     
     # Get scaling factors with defaults
-    x_scale_factor = float(alignment_config.get("x_scale_factor", -1040))
-    y_scale_factor = float(alignment_config.get("y_scale_factor", -580))
+    x_scale_factor = float(alignment_config.get("x_scale_factor", -1100))
+    y_scale_factor = float(alignment_config.get("y_scale_factor", 800))
     
     alignment_config = AlignmentConfig(
         enabled=alignment_enabled,

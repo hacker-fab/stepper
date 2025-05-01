@@ -84,8 +84,6 @@ class GrblStage(StageController):
         if "x" in microns:
             x_mm = microns["x"] / 1000.0
             msg += f" x{x_mm:.3f}"
-        # TODO: Yes the axes are swapped, this is because of Reasons:tm:
-
         if "y" in microns:
             y_mm = microns["y"] / 1000.0
             msg += f" y{y_mm:.3f}"
