@@ -1,3 +1,0 @@
-chown -R ubuntu:ubuntu /dev
-source venv/bin/activate
-~/Apps/julia/bin/julia -JJuliaSysimage.so --project=. main.jl
