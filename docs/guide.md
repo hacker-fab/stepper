@@ -69,30 +69,14 @@ x_scale_factor = -1100   # Scaling factor for x-axis movements
 y_scale_factor = 800     # Scaling factor for y-axis movements
 ```
 
-- **Reference Coordinates**:
-
-  - **right_marker_x**: The expected x-coordinate (in pixels) for alignment markers on the right side of the image.
-  - **left_marker_x**: The expected x-coordinate for markers on the left side.
-  - **top_marker_y**: The expected y-coordinate for markers at the top of the image.
-  - **bottom_marker_y**: The expected y-coordinate for markers at the bottom.
-
-  These coordinates represent the "ideal" positions where markers should be in the camera frame when the chip is perfectly aligned.
-
-- **Scaling Factors**:
-
-  - **x_scale_factor**: Converts the normalized x-coordinate differences (between detected markers and reference positions) into stage movement distances in micrometers (µm).
-  - **y_scale_factor**: Similar conversion factor for the y-axis.
-
 #### Calibrating Alignment Parameters
 
-To calibrate the alignment system for your specific setup:
+The coordinates represent the "ideal" positions where markers should be in the camera frame when the chip is perfectly aligned. To calibrate the alignment parameters, we can use our model to detect projected alignment markers on a clean area of a chip:
 
-1. **Reference Coordinates**: Place a perfectly aligned reference chip on the stage. Note the pixel coordinates of the alignment markers in the camera image and update the reference coordinate values accordingly.
+1. **Reference Coordinates**: Place a chip on the stage. Move the stage so that an unpatterned area of the chip is on view and ensure the stepper is in red focus mode. Enable real-time detection. Then select and project a pattern that has the alignment markers in the desired position. The GUI should output detection positions in the terminal. Note the pixel coordinates and update the reference coordinate values in the config accordingly.
 
 2. **Scaling Factors**: These values depend on your camera's field of view and the mechanical properties of your stage. To calibrate:
    - Move the stage by a known distance (e.g., 100 µm)
    - Measure how many pixels the markers moved in the camera image
    - Calculate the scaling factor as: `(stage movement in µm) / (marker movement in normalized coordinates)`
    - Adjust the sign (positive or negative) based on the relative directions of stage movement and camera coordinates
-
-Proper calibration of these parameters is crucial for accurate alignment.
