@@ -34,7 +34,7 @@ baud-rate = 115200
 # Enable or disable real-time detection of alignment markers
 enabled = false
 # Path to the YOLO model weights file
-model_path = "best.pt"
+model_path = "ckpts/best.pt"
 # Alignment marker reference coordinates (in pixels)
 right_marker_x = 1820.0  # x-coordinate for markers on the right side
 top_marker_y = 269.0     # y-coordinate for markers on the top
