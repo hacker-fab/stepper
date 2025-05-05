@@ -1,7 +1,10 @@
 # images
 *.jpg
+!assets/*.jpg
 *.png
+!assets/*.png
 *.jpeg
+!assets/*.jpeg
 *.mp4
 *.mp3
 
