@@ -1931,7 +1931,7 @@ def main():
 
     alignment_config = config["alignment"]
     alignment_enabled = alignment_config.get("enabled", False)
-    alignment_model = alignment_config.get("model_path", "best.pt")
+    alignment_model = alignment_config.get("model_path", "ckpts/best.pt")
     
     # Get alignment marker reference coordinates with defaults
     right_marker_x = float(alignment_config.get("right_marker_x", 1820.0))
