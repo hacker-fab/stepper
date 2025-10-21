@@ -1771,6 +1771,9 @@ class TilingFrame:
 
             x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
 
+            #load tile images
+            
+
             for x_idx in range(x_amount):
                 for y_idx in range(y_amount):
                     self.model.move_absolute(
@@ -1880,8 +1883,65 @@ class LithographerGui:
         # if RUN_WITH_STAGE:
         # serial_port.close()
 
+#This is my tiling testing area
+from PIL import Image
+import os
 
+#function that takes in an arbitrary sized image composed of 3840x2160 tiles
+#with shared alignment marks that are 200 pixels from the edge
+def split_image_with_overlap(image_path, 
+                                   tile_width=3840, 
+                                   tile_height=2160, 
+                                   overlap_x=200, 
+                                   overlap_y=200, 
+                                   output_dir="tiles"):
+    img = Image.open(image_path)
+    img_w, img_h = img.size
+    os.makedirs(output_dir, exist_ok=True)
+
+    stride_x = tile_width - overlap_x
+    stride_y = tile_height - overlap_y
+
+    # Compute all top-left coordinates
+    x_positions = []
+    y_positions = []
+
+    # Horizontal positions
+    x = 0
+    while True:
+        if x + tile_width >= img_w:
+            x = max(0, img_w - tile_width)
+            x_positions.append(x)
+            break
+        x_positions.append(x)
+        x += stride_x
+
+    # Vertical positions
+    y = 0
+    while True:
+        if y + tile_height >= img_h:
+            y = max(0, img_h - tile_height)
+            y_positions.append(y)
+            break
+        y_positions.append(y)
+        y += stride_y
+
+    tile_count = 0
+    for tile_id_y, top in enumerate(y_positions):
+        for tile_id_x, left in enumerate(x_positions):
+            right = left + tile_width
+            bottom = top + tile_height
+
+            box = (left, top, right, bottom)
+            tile = img.crop(box)
+            tile.save(os.path.join(output_dir, f"tile_{tile_id_y},{tile_id_x}.png"))
+            tile_count += 1
+
+    print(f"Saved {tile_count} tiles to {output_dir}")
+
+#Main for testing added functions for tiling before full integration
 def main():
+    #open the config file
     try:
         with open("config.toml", "r") as f:
             config = toml.load(f)
@@ -1890,81 +1950,98 @@ def main():
         shutil.copy("default.toml", "config.toml")
         with open("config.toml", "r") as f:
             config = toml.load(f)
-
-    # STAGE CONFIG
-
-    stage_config = config["stage"]
-    if stage_config["enabled"]:
-        serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
-        print(f"Using serial port {serial_port.name}")
-        stage = GrblStage(serial_port, stage_config["homing"])
-    else:
-        stage = StageController()
-
-    # CAMERA CONFIG
-
-    camera_config = config["camera"]
+    #split an image
+    split_image_with_overlap("red_layer_metal.png")
+    print(f"Finished With Main")
     
-    if camera_config["type"] == "webcam":
-        try:
-            index = int(camera_config["index"])
-        except Exception:
-            index = 0
-        camera = Webcam(index)
-    elif camera_config["type"] == "flir":
-        import camera.flir.flir_camera as flir
-        camera = flir.FlirCamera()
-    elif camera_config["type"] in ("basler", "pylon"):
-        from camera.pylon import BaslerPylon
-        camera = BaslerPylon()
-    elif camera_config["type"] == "none":
-        camera = None
-    else:
-        print(f"config.toml specifies invalid camera type {camera_config['type']}")
-        return 1
+    
 
-    camera_scale = float(camera_config.get("gui-scale", 1.0))
-    red_exposure = float(camera_config.get("red-exposure", DEFAULT_RED_EXPOSURE))
-    uv_exposure = float(camera_config.get("uv-exposure", DEFAULT_UV_EXPOSURE))
-    
-    # ALIGNMENT CONFIG
 
-    alignment_config = config["alignment"]
-    alignment_enabled = alignment_config.get("enabled", False)
-    alignment_model = alignment_config.get("model_path", "ckpts/best.pt")
-    
-    # Get alignment marker reference coordinates with defaults
-    right_marker_x = float(alignment_config.get("right_marker_x", 1820.0))
-    left_marker_x = float(alignment_config.get("left_marker_x", 280.0))
-    top_marker_y = float(alignment_config.get("top_marker_y", 269.0))
-    bottom_marker_y = float(alignment_config.get("bottom_marker_y", 1075.0))
-    
-    # Get scaling factors with defaults
-    x_scale_factor = float(alignment_config.get("x_scale_factor", -1100))
-    y_scale_factor = float(alignment_config.get("y_scale_factor", 800))
-    
-    alignment_config = AlignmentConfig(
-        enabled=alignment_enabled,
-        model_path=alignment_model,
-        right_marker_x=right_marker_x,
-        left_marker_x=left_marker_x,
-        top_marker_y=top_marker_y,
-        bottom_marker_y=bottom_marker_y,
-        x_scale_factor=x_scale_factor,
-        y_scale_factor=y_scale_factor,
-    )
-    
-    lithographer_config = LithographerConfig(
-        stage,
-        camera,
-        camera_scale,
-        red_exposure,
-        uv_exposure,
-        alignment_config,
-    )
+#this is the real main
+# def main():
+#     try:
+#         with open("config.toml", "r") as f:
+#             config = toml.load(f)
+#     except FileNotFoundError:
+#         print("config.toml does not exist, copying settings from default.toml")
+#         shutil.copy("default.toml", "config.toml")
+#         with open("config.toml", "r") as f:
+#             config = toml.load(f)
 
-    lithographer = LithographerGui(lithographer_config)
-    lithographer.root.mainloop()
+#     # STAGE CONFIG
+
+#     stage_config = config["stage"]
+#     if stage_config["enabled"]:
+#         serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
+#         print(f"Using serial port {serial_port.name}")
+#         stage = GrblStage(serial_port, stage_config["homing"])
+#     else:
+#         stage = StageController()
+
+#     # CAMERA CONFIG
+
+#     camera_config = config["camera"]
+    
+#     if camera_config["type"] == "webcam":
+#         try:
+#             index = int(camera_config["index"])
+#         except Exception:
+#             index = 0
+#         camera = Webcam(index)
+#     elif camera_config["type"] == "flir":
+#         import camera.flir.flir_camera as flir
+#         camera = flir.FlirCamera()
+#     elif camera_config["type"] in ("basler", "pylon"):
+#         from camera.pylon import BaslerPylon
+#         camera = BaslerPylon()
+#     elif camera_config["type"] == "none":
+#         camera = None
+#     else:
+#         print(f"config.toml specifies invalid camera type {camera_config['type']}")
+#         return 1
+
+#     camera_scale = float(camera_config.get("gui-scale", 1.0))
+#     red_exposure = float(camera_config.get("red-exposure", DEFAULT_RED_EXPOSURE))
+#     uv_exposure = float(camera_config.get("uv-exposure", DEFAULT_UV_EXPOSURE))
+    
+#     # ALIGNMENT CONFIG
+
+#     alignment_config = config["alignment"]
+#     alignment_enabled = alignment_config.get("enabled", False)
+#     alignment_model = alignment_config.get("model_path", "ckpts/best.pt")
+    
+#     # Get alignment marker reference coordinates with defaults
+#     right_marker_x = float(alignment_config.get("right_marker_x", 1820.0))
+#     left_marker_x = float(alignment_config.get("left_marker_x", 280.0))
+#     top_marker_y = float(alignment_config.get("top_marker_y", 269.0))
+#     bottom_marker_y = float(alignment_config.get("bottom_marker_y", 1075.0))
+    
+#     # Get scaling factors with defaults
+#     x_scale_factor = float(alignment_config.get("x_scale_factor", -1100))
+#     y_scale_factor = float(alignment_config.get("y_scale_factor", 800))
+    
+#     alignment_config = AlignmentConfig(
+#         enabled=alignment_enabled,
+#         model_path=alignment_model,
+#         right_marker_x=right_marker_x,
+#         left_marker_x=left_marker_x,
+#         top_marker_y=top_marker_y,
+#         bottom_marker_y=bottom_marker_y,
+#         x_scale_factor=x_scale_factor,
+#         y_scale_factor=y_scale_factor,
+#     )
+    
+#     lithographer_config = LithographerConfig(
+#         stage,
+#         camera,
+#         camera_scale,
+#         red_exposure,
+#         uv_exposure,
+#         alignment_config,
+#     )
+
+#     lithographer = LithographerGui(lithographer_config)
+#     lithographer.root.mainloop()
 
 
 if __name__ == "__main__":
