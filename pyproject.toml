@@ -10,4 +10,5 @@ dependencies = [
     "pypylon>=4.1.0",
     "pyserial>=3.5",
     "toml>=0.10.2",
+    "ultralytics>=8.3.218",
 ]
