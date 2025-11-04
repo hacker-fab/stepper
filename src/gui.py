@@ -1968,7 +1968,7 @@ class TilingFrame:
                 }
             )
             #Red autofocus
-            #self.model.autofocus(blue_only=False)
+            self.model.autofocus(blue_only=False)
 
             #align to previous alignment marks if not first tile
             #if(~(x_idx == 0 & y_idx == 0)):
@@ -1980,7 +1980,7 @@ class TilingFrame:
             self.model.move_relative({"z": -85.0})
             self.model.non_blocking_delay(0.5)
             self.model.enter_uv_mode(mode_switch_autofocus=False)
-            #self.model.autofocus(blue_only=True)
+            self.model.autofocus(blue_only=True)
 
             #expose the image
             self.model.begin_patterning()
@@ -1991,8 +1991,15 @@ class TilingFrame:
         def segment():
             #create tile directory and segment images
             split_image_with_overlap(model.pattern_image_path)
+            model.set_red_focus_source(RedFocusSource.PATTERN)
+            image_path = "tiles/tile_"+str(0)+","+str(0)+".png"
+            current_tile = Image.open(image_path)
+            model.set_pattern_image(current_tile, image_path)
+
 
         def on_begin():
+            model.set_red_focus_source(RedFocusSource.PATTERN)
+            
             x_amount = self.x_settings.amount_var
             x_offset = int(self.x_settings.offset_var.get())
             x_dir = 1 if x_amount > 0 else -1
@@ -2015,7 +2022,7 @@ class TilingFrame:
                       print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
                 else:
                     for x_idx in range(x_amount - 1, -1, -1):
-                      pattern_for_tile(self, model, x_start, -x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset)
+                      pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset)
                       print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
 
         def on_abort():
