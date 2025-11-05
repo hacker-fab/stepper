@@ -48,11 +48,12 @@
 
           return detections, display_image
 
-        def do_align_tiling():
+        def do_align_tiling(edge):
+            #edge = ['left', 'right', 'top']
             h, w, _ = model.camera_image.shape
 
             # Detect markers on the left, right, and top edges
-            markers, _ = detect_alignment_markers(model.model, model.camera_image, edge=['left', 'right', 'top'])
+            markers, _ = detect_alignment_markers_tiling(model.model, model.camera_image, edge)
             if len(markers) == 0:
                 print("No markers detected.")
                 return
