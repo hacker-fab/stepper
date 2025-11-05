@@ -1955,9 +1955,9 @@ class TilingFrame:
             print(f"Saved {tile_count} tiles to {output_dir}")
 
         #function that patterns a single tile
-        def pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset):
+        def pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset, y_idx_max, x_idx_max, tile_dir="tiles"):
             #change image
-            image_path = "tiles/tile_"+str(y_idx)+","+str(x_idx)+".png"
+            image_path = tile_dir+"/tile_"+str(y_idx)+","+str(x_idx)+".png"
             current_tile = Image.open(image_path)
             model.set_pattern_image(current_tile, image_path)
             #move to the next position
@@ -1969,24 +1969,35 @@ class TilingFrame:
             )
             #Red autofocus
             self.model.autofocus(blue_only=False)
-
+            
             #align to previous alignment marks if not first tile
-            #if(~(x_idx == 0 & y_idx == 0)):
-                #do_align_tiling()
+            # if(~(x_idx == 0 & y_idx == 0)):
+            #     if(x_idx !=0 & x_idx!=x_idx_max):
+            #         if(y_idx % 2 == 0):
+            #             do_align_tiling('left')
+            #         else:
+            #             do_align_tiling('right')
+            #     else:
+            #         do_align_tiling('top')
                 
             
 
             #Do automatic offset for UV then autofocus
-            self.model.move_relative({"z": -85.0})
+            self.model.move_relative({"z": -50.0})
             self.model.non_blocking_delay(0.5)
             self.model.enter_uv_mode(mode_switch_autofocus=False)
-            self.model.autofocus(blue_only=True)
+            #self.model.autofocus(blue_only=True)
 
             #expose the image
             self.model.begin_patterning()
-            self.model.enter_red_mode(mode_switch_autofocus=False)
 
             #TODO Add second exposure of the alignment markers
+
+            #Offset back to red mode
+            self.model.enter_red_mode(mode_switch_autofocus=False)
+            self.model.move_relative({"z": 50.0})
+
+        
 
         def segment():
             #create tile directory and segment images
@@ -2018,13 +2029,14 @@ class TilingFrame:
             for y_idx in range(y_amount):
                 if(y_idx %2 == 0):
                   for x_idx in range(x_amount):
-                      pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset)
+                      pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
                       print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
                 else:
                     for x_idx in range(x_amount - 1, -1, -1):
-                      pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset)
+                      pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
                       print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
 
+        #TODO IMPLEMENT ABORT
         def on_abort():
             pass
 
