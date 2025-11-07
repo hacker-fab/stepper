@@ -18,9 +18,9 @@ from typing import Callable, List, Optional
 import cv2
 import numpy as np
 import serial
+import math
 from PIL import Image, ImageOps
 from ultralytics import YOLO
-
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
 from hardware import ImageProcessSettings, Lithographer, ProcessedImage
@@ -29,6 +29,7 @@ from lib.img import image_to_tk_image
 from projector import TkProjector
 from stage_control.grbl_stage import GrblStage
 from stage_control.stage_controller import StageController
+
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
@@ -615,7 +616,8 @@ class EventDispatcher:
             #self.move_relative({"z": -85.0})
             pass
 
-        self.set_shown_image(ShownImage.UV_FOCUS)
+        # self.set_shown_image(ShownImage.UV_FOCUS)
+        self.set_shown_image(ShownImage.CLEAR) # enter uv mode: don't project uv
 
         if mode_switch_autofocus and self.autofocus_on_mode_switch:
             self.non_blocking_delay(2.0)
@@ -891,7 +893,7 @@ class CameraFrame:
         self.label.configure(image=gui_img)  # type:ignore
         self.gui_img = gui_img
 
-
+'''
 class StagePositionFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
@@ -1021,7 +1023,326 @@ class StagePositionFrame:
 
     def step_sizes(self) -> tuple[int, int, int]:
         return tuple(intput.get() for intput in self.step_size_intputs)
+'''
 
+class StagePositionFrame:
+    def __init__(self, parent, event_dispatcher):
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Position display at top
+        self.position_frame = ttk.LabelFrame(self.frame, text="Current Position (µm)")
+        self.position_frame.grid(row=0, column=0, columnspan=2, pady=5, sticky="ew")
+        
+        # Track all interactive widgets for locking
+        self.xy_widgets = []
+        self.z_widgets = []
+        self.all_widgets = []
+        
+        # self.position_labels = []
+        self.position_inputs = []
+        for i, coord in enumerate(["X", "Y", "Z"]):
+            label = ttk.Label(self.position_frame, text=f"{coord}:")
+            label.grid(row=0, column=i, padx=5) # X: 0.0 label
+            # self.position_labels.append(label)
+
+            # Entry widget for position
+            position_input = IntEntry(parent=self.position_frame, default=0)
+            position_input.widget.grid(row=1, column=i, padx=(0, 5))
+            position_input.widget.config(width=10)
+            self.position_inputs.append(position_input)
+            
+            # Add to appropriate widget list for locking
+            if i < 2:  # X and Y
+                self.xy_widgets.append(position_input.widget)
+            else:  # Z
+                self.z_widgets.append(position_input.widget)
+        
+        # Add "Set Position" button
+        self.set_position_button = ttk.Button(
+            self.position_frame, 
+            text="Set Stage Position", 
+            command=self._on_set_position
+        )
+        self.set_position_button.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(5, 0))
+        self.all_widgets.append(self.set_position_button)
+        
+        # Control panel container
+        control_frame = ttk.Frame(self.frame)
+        control_frame.grid(row=1, column=0, columnspan=2)
+        
+        # XY circular control (left)
+        xy_frame = ttk.Frame(control_frame)
+        xy_frame.grid(row=0, column=0, padx=10)
+        self.create_xy_control(xy_frame)
+        
+        # Z vertical control (right)
+        z_frame = ttk.Frame(control_frame)
+        z_frame.grid(row=0, column=1, padx=10)
+        self.create_z_control(z_frame)
+        
+        # Shortcuts at bottom
+        self.shortcut_frame = ttk.LabelFrame(self.frame, text="Shortcuts")
+        self.shortcut_frame.grid(row=2, column=0, columnspan=2, pady=5, sticky="ew")
+        
+        def on_chip_origin():
+            event_dispatcher.move_absolute({"x": -14500.0, "y": -13500.0, "z": -13844.0})
+        
+        def on_chip_unload():
+            event_dispatcher.move_absolute({"x": -14500.0, "y": -14500.0, "z": -14500.0})
+        
+        btn_state = "normal" if event_dispatcher.hardware.stage.has_homing() else "disabled"
+        self.chip_origin_button = ttk.Button(self.shortcut_frame, text="Chip origin", 
+                                            command=on_chip_origin, state=btn_state)
+        self.chip_origin_button.grid(row=0, column=0, padx=5)
+        
+        self.chip_unload_button = ttk.Button(self.shortcut_frame, text="Load/unload", 
+                                            command=on_chip_unload, state=btn_state)
+        self.chip_unload_button.grid(row=0, column=1, padx=5)
+        
+        # Listen to events
+        event_dispatcher.add_event_listener("MOVEMENT_LOCK_CHANGED", self._on_lock_change)
+        event_dispatcher.add_event_listener("STAGE_POSITION_CHANGED", self._on_position_change)
+    
+    def _on_set_position(self):
+        """Handle the Set Position button click"""
+        x = self.position_inputs[0].get()
+        y = self.position_inputs[1].get()
+        z = self.position_inputs[2].get()
+        self.event_dispatcher.move_absolute({"x": x, "y": y, "z": z})
+
+    def create_xy_control(self, parent):
+        """Create circular XY control with 4 quadrants and 4 layers each"""
+        canvas_size = 300
+        center = canvas_size // 2
+        
+        self.xy_canvas = tkinter.Canvas(parent, width=canvas_size, height=canvas_size, 
+                                   bg='#34495e', highlightthickness=0)
+        self.xy_canvas.pack()
+        
+        # Step sizes for each layer (inner to outer)
+        step_sizes = [10, 50, 100, 250]
+        
+        # Radii for the 4 layers (inner to outer)
+        radii = [40, 75, 110, 145]
+        
+        # Colors for each layer (lighter as you go out)
+        colors = ['#52796f', '#5a9a8b', '#7ab8a8', '#95c9be']
+        
+        # Draw concentric circles for layers
+        for i, radius in enumerate(radii[::-1]):
+            self.xy_canvas.create_oval(
+                center - radius, center - radius,
+                center + radius, center + radius,
+                fill=colors[i], outline='#2c3e50', width=2
+            )
+        
+        # Draw cross lines to divide into quadrants
+        cx, cy = center, center
+        half_L = canvas_size / 2
+
+        for angle_deg, color in [(-45, "#2c3e50"), (45, "#2c3e50")]:
+            angle_rad = math.radians(angle_deg)
+
+            # Adjust for Tkinter’s downward Y-axis
+            x0 = cx - half_L * math.sin(angle_rad)
+            y0 = cy - half_L * math.cos(angle_rad)
+            x1 = cx + half_L * math.sin(angle_rad)
+            y1 = cy + half_L * math.cos(angle_rad)
+
+            self.xy_canvas.create_line(x0, y0, x1, y1, fill=color, width=3)
+        
+        
+        # Labels for directions
+        label_offset = 160
+        labels = [
+            (center, 10, "+Y", '#85c1e9'),
+            (center, canvas_size - 10, "-Y", '#85c1e9'),
+            (canvas_size - 10, center, "+X", '#f4d03f'),
+            (10, center, "-X", '#f4d03f'),
+        ]
+        
+        for x, y, text, color in labels:
+            self.xy_canvas.create_text(x, y, text=text, fill=color, 
+                                      font=('Arial', 12, 'bold'))
+        
+        # Add step size labels on each layer
+        for i, (radius, step) in enumerate(zip(radii, step_sizes)):
+            # Show on top quadrant
+            y_pos = center - radius + 20
+            self.xy_canvas.create_text(center, y_pos, text=str(step), 
+                                      fill='white', font=('Arial', 9, 'bold'))
+        
+        # Bind click events
+        self.xy_canvas.bind('<Button-1>', self._on_xy_click)
+        
+        # Store reference for locking
+        self.xy_widgets.append(self.xy_canvas)
+    
+    def _on_xy_click(self, event):
+        """Handle clicks on the XY canvas"""
+        canvas_size = 300
+        center = canvas_size // 2
+        
+        # Calculate distance from center and angle
+        dx = event.x - center
+        dy = event.y - center
+        distance = math.sqrt(dx**2 + dy**2)
+        
+        # Ignore clicks in the center circle
+        # if distance < 15:
+        #     return
+        
+        # Determine which layer (step size)
+        radii = [40, 75, 110, 145]
+        step_sizes = [10, 50, 100, 250]
+        
+        step_size = None
+        for i, radius in enumerate(radii):
+            if distance <= radius:
+                step_size = step_sizes[i]
+                break
+        
+        if step_size is None:
+            return  # Click outside all layers
+        
+        # Determine direction based on quadrant
+        # Positive Y is up (negative dy), Negative Y is down (positive dy)
+        # Positive X is right (positive dx), Negative X is left (negative dx)
+        
+        abs_dx = abs(dx)
+        abs_dy = abs(dy)
+        
+        # Determine which direction is dominant
+        if abs_dx > abs_dy:
+            # Horizontal movement (X direction)
+            if dx > 0:
+                # +X (right)
+                self.event_dispatcher.move_relative({"x": step_size})
+            else:
+                # -X (left)
+                self.event_dispatcher.move_relative({"x": -step_size})
+        else:
+            # Vertical movement (Y direction)
+            if dy < 0:
+                # +Y (up)
+                self.event_dispatcher.move_relative({"y": step_size})
+            else:
+                # -Y (down)
+                self.event_dispatcher.move_relative({"y": -step_size})
+    
+    def create_z_control(self, parent):
+        """Create vertical Z control bar with 8 sections"""
+        bar_width = 80
+        section_height = 35
+        total_height = section_height * 8
+        
+        self.z_canvas = tkinter.Canvas(parent, width=bar_width, height=total_height,
+                                 bg='#34495e', highlightthickness=0)
+        self.z_canvas.pack()
+        
+        # Step sizes for Z (top 4 are +Z, bottom 4 are -Z)
+        step_sizes = [10, 50, 100, 250]
+        
+        # Colors (gradient from light to dark for +Z, then dark to light for -Z)
+        colors_plus = ['#a8dadc', '#87bdbf', '#66a0a3', '#458486']
+        colors_minus = ['#458486', '#66a0a3', '#87bdbf', '#a8dadc']
+        
+        # Create sections
+        for i in range(8):
+            y_start = i * section_height
+            y_end = (i + 1) * section_height
+            
+            if i < 4:
+                # Top half: +Z movement
+                color = colors_plus[i]
+                step = step_sizes[3 - i]
+                label = f"+Z\n{step}"
+                direction = "+"
+            else:
+                # Bottom half: -Z movement
+                color = colors_minus[i - 4]
+                step = step_sizes[i - 4]
+                label = f"-Z\n{step}"
+                direction = "-"
+            
+            # Draw rectangle
+            rect_id = self.z_canvas.create_rectangle(
+                0, y_start, bar_width, y_end,
+                fill=color, outline='#2c3e50', width=2
+            )
+            
+            # Draw label
+            text_id = self.z_canvas.create_text(
+                bar_width // 2, (y_start + y_end) // 2,
+                text=label, fill='#1a1a1a', font=('Arial', 10, 'bold')
+            )
+            
+            # Bind click events
+            for item_id in [rect_id, text_id]:
+                self.z_canvas.tag_bind(
+                    item_id, '<Button-1>',
+                    lambda e, d=direction, s=step: self._on_z_click(d, s)
+                )
+        
+        # Add label at top
+        ttk.Label(parent, text="Z Control", font=('Arial', 10, 'bold')).pack(pady=(0, 5))
+        
+        # Store reference for locking
+        self.z_widgets.append(self.z_canvas)
+    
+    def _on_z_click(self, direction, step_size):
+        """Handle clicks on Z control sections"""
+        if direction == "+":
+            self.event_dispatcher.move_relative({"z": step_size})
+        else:
+            self.event_dispatcher.move_relative({"z": -step_size})
+    
+    def _on_lock_change(self):
+        """Handle movement lock state changes"""
+        from enum import Enum
+        
+        # Assuming MovementLock enum exists in your code
+        lock = self.event_dispatcher.movement_lock
+        
+        # Map lock enum to state (you may need to adjust based on your actual enum)
+        if hasattr(lock, 'value'):
+            lock_value = lock.value if hasattr(lock, 'value') else str(lock)
+        else:
+            lock_value = str(lock)
+        
+        if 'UNLOCKED' in lock_value.upper():
+            # All movements allowed
+            for w in self.xy_widgets + self.z_widgets:
+                if isinstance(w, tkinter.Canvas):
+                    w.configure(state='normal')
+                else:
+                    w.configure(state='normal')
+        elif 'XY_LOCKED' in lock_value.upper():
+            # Only Z movement allowed
+            for w in self.xy_widgets:
+                if isinstance(w, tkinter.Canvas):
+                    w.configure(state='disabled')
+                else:
+                    w.configure(state='disabled')
+            for w in self.z_widgets:
+                if isinstance(w, tkinter.Canvas):
+                    w.configure(state='normal')
+                else:
+                    w.configure(state='normal')
+        else:  # LOCKED
+            # No movements allowed
+            for w in self.xy_widgets + self.z_widgets:
+                if isinstance(w, tkinter.Canvas):
+                    w.configure(state='disabled')
+                else:
+                    w.configure(state='disabled')
+    
+    def _on_position_change(self):
+        """Update position display when stage moves"""
+        pos = self.event_dispatcher.stage_setpoint
+        for i, coord in enumerate(["X", "Y", "Z"]):
+            self.position_labels[i].configure(text=f"{coord}: {pos[i]:.1f}")
 
 class ImageAdjustFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -1128,51 +1449,189 @@ class ImageAdjustFrame:
     def step_sizes(self) -> tuple[int, int, int]:
         return tuple(intput.get() for intput in self.step_size_intputs)
 
+class PredefinedImageSelector:
+    """A widget that shows a selection of predefined images instead of file dialog"""
+    
+    def __init__(self, parent, size, predefined_images, on_select=None):
+        self.parent = parent
+        self.size = size
+        self.predefined_images = predefined_images  # List of (name, path) tuples
+        self.on_select = on_select
+        self.current_image = None
+        self.current_path = ""
+        
+        # Create main frame
+        self.widget = ttk.Frame(parent)
+        
+        # Create thumbnail display
+        placeholder = Image.new("RGB", size, "gray")
+        self.photo = image_to_tk_image(placeholder)
+        self.label = ttk.Label(self.widget, image=self.photo, relief="solid", borderwidth=2)
+        self.label.grid(row=0, column=0, columnspan=2, pady=5)
+        
+        # Create dropdown for image selection
+        self.image_var = StringVar()
+        self.image_dropdown = ttk.Combobox(
+            self.widget, 
+            textvariable=self.image_var,
+            values=[name for name, _ in predefined_images],
+            state="readonly"
+        )
+        self.image_dropdown.grid(row=1, column=0, columnspan=2, sticky="ew", pady=2)
+        self.image_dropdown.bind("<<ComboboxSelected>>", self._on_selection_change)
+        
+        # Add a button to load the selected image
+        self.load_button = ttk.Button(self.widget, text="Load Selected", command=self._load_selected)
+        self.load_button.grid(row=2, column=0, columnspan=2, sticky="ew", pady=2)
+        
+        # Set default selection if images are available
+        if predefined_images:
+            self.image_dropdown.set(predefined_images[0][0])
+            self._load_image(predefined_images[0][1])
+    
+    def _on_selection_change(self, event=None):
+        """Called when dropdown selection changes"""
+        selected_name = self.image_var.get()
+        for name, path in self.predefined_images:
+            if name == selected_name:
+                self._load_image(path)
+                break
+    
+    def _load_selected(self):
+        """Called when Load Selected button is clicked"""
+        if self.on_select and self.current_image:
+            self.on_select(None)  # Call the callback
+    
+    def _load_image(self, path):
+        """Load and display an image from the given path"""
+        try:
+            img = Image.open(path)
+            self.current_image = img
+            self.current_path = path
+            
+            # Create thumbnail for display
+            thumb = img.copy()
+            thumb.thumbnail(self.size, Image.Resampling.LANCZOS)
+            self.photo = image_to_tk_image(thumb)
+            self.label.configure(image=self.photo)
+        except Exception as e:
+            print(f"Failed to load image {path}: {e}")
+            # Show placeholder on error
+            placeholder = Image.new("RGB", self.size, "red")
+            self.photo = image_to_tk_image(placeholder)
+            self.label.configure(image=self.photo)
+    
+    @property
+    def image(self):
+        """Return the current image"""
+        return self.current_image
+    
+    @property
+    def path(self):
+        """Return the current image path"""
+        return self.current_path
 
 class ImageSelectFrame:
-    def __init__(self, parent, button_text, import_command):
+    def __init__(self, parent, button_text, import_command, predefined_images=None):
         self.frame = ttk.Frame(parent)
-
-        self.thumb = Thumbnail(self.frame, THUMBNAIL_SIZE, on_import=import_command)
-        self.thumb.widget.grid(row=0, column=0)
+        
+        if predefined_images:
+            # Use predefined image selector
+            self.selector = PredefinedImageSelector(
+                self.frame, 
+                THUMBNAIL_SIZE, 
+                predefined_images,
+                on_select=import_command
+            )
+            self.selector.widget.grid(row=0, column=0)
+            
+            # For compatibility with existing code
+            self.thumb = self.selector
+        else:
+            # Use original thumbnail selector (file dialog)
+            self.thumb = Thumbnail(self.frame, THUMBNAIL_SIZE, on_import=import_command)
+            self.thumb.widget.grid(row=0, column=0)
 
         self.label = ttk.Label(self.frame, text=button_text)
         self.label.grid(row=1, column=0)
 
 
-class MultiImageSelectFrame:
+class PatternDisplayFrame: # read only pattern display in red and uv focusing mode
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        # instead of pattern_frame = ImageSelectFrame
+        # use pattern_display_frame (read-only)
+        self.pattern_display_frame = ttk.LabelFrame(self.frame, text="Current Pattern")
+        self.pattern_display_frame.grid(row=0, column=0, padx=5, pady=5)
 
-        def get_name(path):
-          return "" if path == "" else Path(path).name
+        placeholder = Image.new("RGB", THUMBNAIL_SIZE, "gray")
+        self.pattern_photo = image_to_tk_image(placeholder)
+        self.pattern_label = ttk.Label(self.pattern_display_frame, image=self.pattern_photo)
+        self.pattern_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        ttk.Label(self.pattern_display_frame, text="(Upload in Pattern Upload tab)", 
+                 font=("TkDefaultFont", 8), foreground="gray").grid(row=1, column=0)
+        
+        event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, self._update_pattern_display)
+        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, self._on_shown_image_changed)
 
-        self.pattern_frame = ImageSelectFrame(
-            self.frame,
-            "Pattern",
-            lambda t: event_dispatcher.set_pattern_image(self.pattern_image(), self.pattern_frame.thumb.path),
-        )
+    def _update_pattern_display(self):
+        """Update the read-only pattern display when pattern changes"""
+        if hasattr(self.event_dispatcher, 'pattern_image') and self.event_dispatcher.pattern_image:
+            # Create thumbnail for display
+            thumb = self.event_dispatcher.pattern_image.copy()
+            thumb.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+            self.pattern_photo = image_to_tk_image(thumb)
+            self.pattern_label.configure(image=self.pattern_photo)
+
+    def _on_shown_image_changed(self):
+        """Handle visual highlighting when shown image changes"""
+        # TODO: Add highlighting logic if needed
+        # For example, highlight the pattern preview when pattern is being shown
+        shown_image = self.event_dispatcher.shown_image
+        if shown_image == ShownImage.PATTERN:
+            # Could add border or background color change here
+            pass
+
+class UvFocusFrame: # crosses
+    def __init__(self, parent, event_dispatcher: EventDispatcher, show_uv_focus=False):
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        # UV focus frame - use predefined images - only shown in UV mode
+        uv_focus_predefined = [("Plus Mark", "src/uvFocusImage/plus.png")]
         self.uv_focus_frame = ImageSelectFrame(
             self.frame,
             "UV Focus",
-            lambda t: event_dispatcher.set_uv_focus_image(self.uv_focus_image()),
+            self._on_uv_focus_change,
+            # lambda t: event_dispatcher.set_uv_focus_image(self.uv_focus_image),
+            # import_command in ImageSelectFrame --> on_select in PredefinedImageSelector
+            predefined_images=uv_focus_predefined
         )
+        self.uv_focus_frame.frame.grid(row=1, column=0, padx=5, pady=5)
 
-        self.pattern_frame.frame.grid(row=0, column=0)
-        self.uv_focus_frame.frame.grid(row=1, column=0)
+        # event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, self._update_pattern_display)
+        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, self._on_shown_image_changed)
 
-        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self.highlight_button(event_dispatcher.shown_image))
+    def _on_uv_focus_change(self, _):
+        """Handle UV focus image selection and projection"""
+        if self.uv_focus_frame.thumb.image:
+            self.event_dispatcher.set_uv_focus_image(self.uv_focus_frame.thumb.image)
+            self.event_dispatcher.set_shown_image(ShownImage.UV_FOCUS)
 
-    def pattern_image(self):
-        return self.pattern_frame.thumb.image
+    def _on_shown_image_changed(self):
+        """Handle visual highlighting when shown image changes"""
+        # TODO: Add highlighting logic if needed
+        # For example, highlight the UV focus selector when UV focus is being shown
+        shown_image = self.event_dispatcher.shown_image
+        if shown_image == ShownImage.UV_FOCUS:
+            # Could add border or background color change here
+            pass
 
+    @property
     def uv_focus_image(self):
-        return self.uv_focus_frame.thumb.image
-
-    def highlight_button(self, which: ShownImage):
-        # TODO:
-        pass
-
+        """Get the currently selected UV focus image"""
+        return self.uv_focus_frame.thumb.image if hasattr(self.uv_focus_frame, 'thumb') else None
 
 class ChipFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -1469,44 +1928,70 @@ class PatterningFrame:
 class RedModeFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent, name="redmodeframe")
+        self.event_dispatcher = event_dispatcher
 
+        # Create left and right sections
+        self.left_frame = ttk.Frame(self.frame)
+        self.left_frame.grid(row=0, column=0)
+        
+        self.middle_frame = ttk.Frame(self.frame)
+        self.middle_frame.grid(row=0, column=1)
+
+        self.right_frame = ttk.Frame(self.frame)
+        self.right_frame.grid(row=0, column=2)
+
+        # center the frames
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_columnconfigure(1, weight=0)
+        self.frame.grid_columnconfigure(2, weight=1)
+        self.frame.grid_rowconfigure(0, weight=1)
+
+        # Stage position controls (left side)
+        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher)
+        self.stage_position_frame.frame.grid(row=0, column=0)
+        
+        # Pattern preview display (right side)
+        self.pattern_display = PatternDisplayFrame(self.right_frame, event_dispatcher)
+        self.pattern_display.frame.grid(row=0, column=0)
+
+        # Red focus image selection
         self.red_select_var = StringVar(value="focus")
         self.red_focus_rb = ttk.Radiobutton(
-            self.frame,
+            self.left_frame,
             variable=self.red_select_var,
             text="Red Focus",
             value=RedFocusSource.IMAGE.value,
         )
         self.solid_red_rb = ttk.Radiobutton(
-            self.frame,
+            self.left_frame,
             variable=self.red_select_var,
             text="Solid Red",
             value=RedFocusSource.SOLID.value,
         )
         self.pattern_rb = ttk.Radiobutton(
-            self.frame,
+            self.left_frame,
             variable=self.red_select_var,
             text="Same as Pattern",
             value=RedFocusSource.PATTERN.value,
         )
         self.inv_pattern_rb = ttk.Radiobutton(
-            self.frame,
+            self.left_frame,
             variable=self.red_select_var,
             text="Inverse of Pattern",
             value=RedFocusSource.INV_PATTERN.value,
         )
 
-        self.red_focus_rb.grid(row=0, column=0)
-        self.solid_red_rb.grid(row=1, column=0)
-        self.pattern_rb.grid(row=2, column=0)
-        self.inv_pattern_rb.grid(row=3, column=0)
+        self.solid_red_rb.grid(row=0, column=0)
+        self.pattern_rb.grid(row=1, column=0)
+        self.inv_pattern_rb.grid(row=2, column=0)
+        self.red_focus_rb.grid(row=3, column=0)
 
         self.red_focus_frame = ImageSelectFrame(
-            self.frame,
+            self.left_frame,
             "Red Focus",
             lambda t: event_dispatcher.set_red_focus_image(self.red_focus_image()),
         )
-        self.red_focus_frame.frame.grid(row=0, column=1, rowspan=4)
+        self.red_focus_frame.frame.grid(row=5, column=0)
 
         def on_radiobutton(*_):
             print(f"red select var {self.red_select_var.get()}")
@@ -1526,25 +2011,131 @@ class RedModeFrame:
 class UvModeFrame:
     def __init__(self, parent, event_dispatcher):
         self.frame = ttk.Frame(parent, name="uvmodeframe")
-        self.exposure_frame = ExposureFrame(self.frame, event_dispatcher)
-        self.exposure_frame.frame.grid(row=0, column=0)
-        self.patterning_frame = PatterningFrame(self.frame, event_dispatcher)
-        self.patterning_frame.frame.grid(row=0, column=1)
+        # Create left and right sections
+        self.left_frame = ttk.Frame(self.frame)
+        self.left_frame.grid(row=0, column=0, sticky="ns", padx=(0,10))
+        
+        self.middle_frame = ttk.Frame(self.frame)
+        self.middle_frame.grid(row=0, column=1, sticky="ns")
 
+        self.right_frame = ttk.Frame(self.frame)
+        self.right_frame.grid(row=0, column=2, sticky="ns")
+
+        # center the frames
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_columnconfigure(1, weight=0)
+        self.frame.grid_columnconfigure(2, weight=1)
+        self.frame.grid_rowconfigure(0, weight=1)
+
+        # Predefined UV focus image selection
+        self.uv_focus_frame = UvFocusFrame(self.left_frame, event_dispatcher)
+        self.uv_focus_frame.frame.grid(row=0, column=0, pady=(10,0))
+
+        # Stage position controls (middle)
+        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher)
+        self.stage_position_frame.frame.grid(row=0, column=0, sticky="n")
+        
+        # Pattern preview and UV focus selector (right side)
+        # self.pattern_display = PatternDisplayFrame(self.right_frame, event_dispatcher)
+        # self.pattern_display.frame.grid(row=0, column=0)
+        
+        # Exposure and patterning controls (right side, below images)
+        self.exposure_frame = ExposureFrame(self.right_frame, event_dispatcher)
+        self.exposure_frame.frame.grid(row=0, column=0)
+        self.patterning_frame = PatterningFrame(self.right_frame, event_dispatcher)
+        self.patterning_frame.frame.grid(row=1, column=0)
+
+class PatternUploadFrame:
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Create container frame for centering
+        container = ttk.Frame(self.frame)
+        container.grid(row=0, column=0)
+        
+        # Main pattern upload section
+        self.upload_frame = ttk.LabelFrame(container, text="Pattern Upload")
+        self.upload_frame.grid(row=0, column=0)
+        
+        # Pattern selector (using existing ImageSelectFrame functionality)
+        self.pattern_selector = ImageSelectFrame(
+            self.upload_frame,
+            "Select Pattern Image",
+            self._on_pattern_upload
+        )
+        self.pattern_selector.frame.grid(row=0, column=0)
+        
+        # Pattern info display
+        self.info_frame = ttk.LabelFrame(container, text="Pattern Information")
+        self.info_frame.grid(row=1, column=0)
+        
+        self.pattern_path_var = StringVar(value="No pattern loaded")
+        ttk.Label(self.info_frame, text="Current Pattern:").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.info_frame, textvariable=self.pattern_path_var, 
+                 foreground="blue").grid(row=0, column=1, sticky="w", padx=(10,0))
+        
+        # Pattern preview (larger than thumbnail)
+        self.preview_frame = ttk.LabelFrame(container, text="Pattern Preview")
+        self.preview_frame.grid(row=0, column=1, rowspan=2, padx=10)
+        
+        # Center the container
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_rowconfigure(0, weight=1)
+        
+        # Create larger preview image
+        preview_size = (320, 240)  # Larger than THUMBNAIL_SIZE
+        placeholder = Image.new("RGB", preview_size, "gray")
+        self.preview_photo = image_to_tk_image(placeholder)
+        self.preview_label = ttk.Label(self.preview_frame, image=self.preview_photo)
+        self.preview_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Upload instructions
+        instruction_text = ("Upload your pattern image using the selector above. "
+                          "This pattern will be used in UV mode for lithography.")
+        ttk.Label(self.upload_frame, text=instruction_text, 
+                 wraplength=300).grid(row=1, column=0, padx=5, pady=5)
+
+    def _on_pattern_upload(self, _):
+        """Handle pattern upload"""
+        if self.pattern_selector.thumb.image:
+            # Update the event dispatcher with the new pattern
+            self.event_dispatcher.set_pattern_image(
+                self.pattern_selector.thumb.image, 
+                self.pattern_selector.thumb.path
+            )
+            
+            # Update the info display
+            if self.pattern_selector.thumb.path:
+                filename = Path(self.pattern_selector.thumb.path).name
+                self.pattern_path_var.set(filename)
+            else:
+                self.pattern_path_var.set("Pattern uploaded")
+            
+            # Update preview image
+            if self.pattern_selector.thumb.image:
+                preview_img = self.pattern_selector.thumb.image.copy()
+                preview_img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+                self.preview_photo = image_to_tk_image(preview_img)
+                self.preview_label.configure(image=self.preview_photo)
 
 class ModeSelectFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.notebook = ttk.Notebook(parent)
 
+        # Add Pattern Upload tab first
+        self.pattern_upload_frame = PatternUploadFrame(self.notebook, event_dispatcher)
+        self.notebook.add(self.pattern_upload_frame.frame, text="Pattern Upload")
         self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.red_mode_frame.frame, text="Red Mode")
         self.uv_mode_frame = UvModeFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.uv_mode_frame.frame, text="UV Mode")
 
         def on_tab_change():
-            if self._current_tab() == "uv":
+            current_tab = self._current_tab()
+            if current_tab == "uv":
                 event_dispatcher.enter_uv_mode()
-            else:
+            elif current_tab == "red":
                 event_dispatcher.enter_red_mode()
 
         self.notebook.bind("<<NotebookTabChanged>>", lambda _: on_tab_change())
@@ -1556,7 +2147,13 @@ class ModeSelectFrame:
         # event_dispatcher.add_event_listener(Event.EnterUvMode, lambda: on_tab_event(Event.EnterUvMode))
 
     def _current_tab(self):
-      return "red" if "redmode" in self.notebook.select() else "uv"
+        selected = self.notebook.select()
+        if "patternupload" in selected.lower() or self.notebook.index("current") == 0:
+            return "pattern"
+        elif "redmode" in selected or self.notebook.index("current") == 1:
+            return "red" 
+        else:
+            return "uv"
 
 
 class GlobalSettingsFrame:
@@ -1798,6 +2395,106 @@ class TilingFrame:
         self.abort_tiling_button.grid(row=3, column=0)
 
 
+class ProjectorDisplayFrame:
+    """Frame to display what the projector is currently showing"""
+    
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Main label frame
+        self.display_frame = ttk.LabelFrame(self.frame, text="Projector Output")
+        self.display_frame.grid(row=0, column=0)
+        
+        # Create placeholder image
+        # Using a similar size to camera preview for consistency
+        self.display_size = THUMBNAIL_SIZE
+        placeholder = Image.new("RGB", self.display_size, "black")
+        self.photo = image_to_tk_image(placeholder)
+        
+        # Display label
+        self.label = ttk.Label(self.display_frame, image=self.photo, relief="solid", borderwidth=2)
+        self.label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Status label showing current mode
+        self.status_var = StringVar(value="Status: Clear")
+        self.status_label = ttk.Label(self.display_frame, textvariable=self.status_var)
+        self.status_label.grid(row=1, column=0, padx=5, pady=5)
+        
+        # Listen for projector changes
+        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, self._update_display)
+        event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, self._update_display)
+        event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, self._update_display)
+        event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, self._update_display)
+        
+        # Force initial update
+        self.event_dispatcher.root.after(100, self._update_display)
+        
+    def _update_display(self):
+        """Update the display when projector content changes"""
+        shown_image = self.event_dispatcher.shown_image
+        
+        # Update status text
+        status_map = {
+            ShownImage.CLEAR: "Status: Clear (No Output)",
+            ShownImage.PATTERN: "Status: Pattern (UV Exposure)",
+            ShownImage.FLATFIELD: "Status: Flatfield Correction",
+            ShownImage.RED_FOCUS: "Status: Red Focus Mode",
+            ShownImage.UV_FOCUS: "Status: UV Focus Pattern",
+        }
+        self.status_var.set(status_map.get(shown_image, "Status: Unknown"))
+        
+        # Get the appropriate processed image based on mode
+        # Note: When patterning, we check patterning_busy flag as well
+        img = None
+        if shown_image == ShownImage.RED_FOCUS:
+            img = self.event_dispatcher.red_focus.processed()
+        # pattern case above uv focus case: when set_patterning_busy(True) is called,
+        # shown_image is never changed to PATTERN during patterning - it stays as UV_FOCUS
+        elif shown_image == ShownImage.PATTERN or self.event_dispatcher.patterning_busy:
+            img = self.event_dispatcher.pattern.processed()
+        elif shown_image == ShownImage.UV_FOCUS:
+            img = self.event_dispatcher.uv_focus.processed()
+        elif shown_image == ShownImage.FLATFIELD:
+            # Flatfield might not be implemented, use pattern as fallback
+            img = self.event_dispatcher.pattern.processed()
+        
+        # Debug print to help troubleshoot
+        # if self.event_dispatcher.patterning_busy or shown_image == ShownImage.PATTERN:
+        #     if img is not None:
+        #         print(f"Patterning - Image size: {img.size}, mode: {img.mode}")
+        #     else:
+        #         print(f"Patterning - Image is None")
+        
+        # Update image
+        if img is None or (shown_image == ShownImage.CLEAR and not self.event_dispatcher.patterning_busy):
+            # Show black placeholder when clear
+            placeholder = Image.new("RGB", self.display_size, "black")
+            self.photo = image_to_tk_image(placeholder)
+        else:
+            # Resize the projector output to fit in display
+            try:
+                display_img = img.copy()
+                # Check if image is all black
+                import numpy as np
+                img_array = np.array(display_img)
+                is_black = np.all(img_array == 0)
+                # print(f"Image all black: {is_black}, min: {img_array.min()}, max: {img_array.max()}")
+                
+                display_img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
+                self.photo = image_to_tk_image(display_img)
+            except Exception as e:
+                print(f"Error displaying projector image: {e}")
+                import traceback
+                traceback.print_exc()
+                placeholder = Image.new("RGB", self.display_size, "red")
+                self.photo = image_to_tk_image(placeholder)
+        
+        self.label.configure(image=self.photo)
+        
+        # Schedule periodic updates to catch any missed changes
+        self.event_dispatcher.root.after(500, self._update_display)
+
 class LithographerGui:
     root: Tk
     event_dispatcher: EventDispatcher
@@ -1816,44 +2513,52 @@ class LithographerGui:
 
         self.shown_image = ShownImage.CLEAR
 
-        self.camera = CameraFrame(self.root, self.event_dispatcher, config.camera, config.camera_scale)
-        self.camera.frame.grid(row=0, column=0)
+        self.top_panel = ttk.Frame(self.root)
+        self.top_panel.grid(row=0, column=0)
+        
+        # Camera frame (top)
+        self.camera = CameraFrame(self.top_panel, self.event_dispatcher, config.camera, config.camera_scale)
+        self.camera.frame.grid(row=0, column=1)
 
-        self.middle_panel = ttk.Frame(self.root)
-        self.middle_panel.grid(row=2, column=0)
+        # Projector display (top)
+        self.projector_display = ProjectorDisplayFrame(self.top_panel, self.event_dispatcher)
+        self.projector_display.frame.grid(row=0, column=0, padx=5, pady=5, sticky='')
 
-        self.bottom_panel = ttk.Frame(self.root)
-        self.bottom_panel.grid(row=3, column=0)
-
-        # self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
-        # self.exposure_history_frame.frame.grid(row=0, column=4)
-
-        self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
-        self.chip_frame.frame.grid(row=0, column=0)
-
-        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.alignment.enabled)
-        self.global_settings_frame.frame.grid(row=0, column=2)
-
-        self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
-        self.stage_position_frame.frame.grid(row=0, column=1)
-
-        self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
-        self.image_adjust_frame.frame.grid(row=0, column=1)
-
-        self.mode_select_frame = ModeSelectFrame(self.middle_panel, self.event_dispatcher)
-        self.mode_select_frame.notebook.grid(row=0, column=2)
-
-        self.tiling_frame = TilingFrame(self.middle_panel, self.event_dispatcher)
-        self.tiling_frame.frame.grid(row=0, column=3)
-
-        self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
-        self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
-
+        # Progress bar
         self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
         self.pattern_progress.grid(row=1, column=0, sticky="ew")
 
-        self.multi_image_select_frame = MultiImageSelectFrame(self.middle_panel, self.event_dispatcher)
-        self.multi_image_select_frame.frame.grid(row=0, column=0)
+        # Main tab interface (replaces middle_panel)
+        self.mode_select_frame = ModeSelectFrame(self.root, self.event_dispatcher)
+        self.mode_select_frame.notebook.grid(row=2, column=0, sticky="nsew")
+
+        # Bottom panel (chip log and image adjustment and tiling)
+        self.bottom_panel = ttk.Frame(self.root)
+        self.bottom_panel.grid(row=3, column=0, sticky="ew")
+
+        # Chip management
+        self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
+        self.chip_frame.frame.grid(row=0, column=0)
+
+        # Image adjustment controls
+        self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
+        self.image_adjust_frame.frame.grid(row=0, column=1)
+
+        # Global settings
+        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.alignment.enabled)
+        self.global_settings_frame.frame.grid(row=0, column=2)
+
+        # Tiling controls
+        self.tiling_frame = TilingFrame(self.bottom_panel, self.event_dispatcher)
+        self.tiling_frame.frame.grid(row=0, column=3)
+
+        # Configure grid weights for proper expansion
+        # self.root.columnconfigure(0, weight=1)
+        # self.root.rowconfigure(2, weight=1)  # Let the tab area expand
+
+        # Legacy references for compatibility (if needed elsewhere in code)
+        self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
+        self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
 
         self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
         # self.debug.info("Debug info will appear here")
