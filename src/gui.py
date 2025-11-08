@@ -2459,13 +2459,6 @@ class ProjectorDisplayFrame:
             # Flatfield might not be implemented, use pattern as fallback
             img = self.event_dispatcher.pattern.processed()
         
-        # Debug print to help troubleshoot
-        # if self.event_dispatcher.patterning_busy or shown_image == ShownImage.PATTERN:
-        #     if img is not None:
-        #         print(f"Patterning - Image size: {img.size}, mode: {img.mode}")
-        #     else:
-        #         print(f"Patterning - Image is None")
-        
         # Update image
         if img is None or (shown_image == ShownImage.CLEAR and not self.event_dispatcher.patterning_busy):
             # Show black placeholder when clear
@@ -2494,6 +2487,155 @@ class ProjectorDisplayFrame:
         
         # Schedule periodic updates to catch any missed changes
         self.event_dispatcher.root.after(500, self._update_display)
+
+import os
+from pathlib import Path
+import re
+from PIL import Image
+import numpy as np
+
+class mapFrame:
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+
+        self.capture_button = ttk.Button(
+            self.frame, 
+            text="Capture Map", 
+            command=lambda: self.takeMapImage(5000, 4000, 500, 500) # hardcoded
+        )
+        self.capture_button.grid(row=0, column=0)
+
+    def takeMapImages(self, img_w, img_h, stride_x, stride_y, output_dir="maps"):
+        """
+        Take snapshots to cover an area of img_w * img_h with Z-shaped movement.
+        stride_x: Horizontal distance between snapshots (in microns)
+        stride_y: Vertical distance
+        """
+        
+        output_path = Path(output_dir)
+        output_path.mkdir(exist_ok=True)
+        
+        num_cols = int(img_w / stride_x) + 1
+        num_rows = int(img_h / stride_y) + 1
+        
+        print(f"Starting map capture: {num_rows} rows x {num_cols} cols\
+              = {num_rows * num_cols} images")
+        
+        # get starting position
+        start_x, start_y, start_z = self.event_dispatcher.stage_setpoint
+        
+        for row in range(num_rows):
+            current_y = start_y + row * stride_y
+            
+            # Move to start of row
+            if row > 0: # Skip first row since we are already there
+                self.event_dispatcher.move_absolute({
+                    "x": start_x,
+                    "y": current_y,
+                    "z": start_z
+                })
+                self.event_dispatcher.non_blocking_delay(0.5)
+            
+            # Iterate through columns in this row
+            for col in range(num_cols):
+                current_x = start_x + col * stride_x
+                if col > 0:
+                    self.event_dispatcher.move_absolute({
+                        "x": current_x,
+                        "y": current_y,
+                        "z": start_z
+                    })
+                    self.event_dispatcher.non_blocking_delay(0.5)
+                
+                # filename with row and col index
+                filename = output_path / f"{row:02d}{col:02d}.png"
+                
+                self.event_dispatcher.on_event(Event.SNAPSHOT, str(filename))
+                self.event_dispatcher.non_blocking_delay(0.3)
+                
+                print(f"Captured image {row:02d}{col:02d} at\
+                      X:{current_x:.1f} Y:{current_y:.1f}")
+        
+        # Return to starting position
+        self.event_dispatcher.move_absolute({
+            "x": start_x,
+            "y": start_y,
+            "z": start_z
+        })
+        
+        print(f"Map capture complete! {num_rows * num_cols}\
+              images saved to {output_dir}/")
+
+    def stitchMapImages(self, stride_x, stride_y, output_dir="maps",
+                        stitched_filename="stitched_map.png"):
+        """
+        Stitch together all captured map images into one large image.
+        Returns PIL.Image: The stitched image with stitched_filename,
+        or None if stitching failed
+        """
+        
+        output_path = Path(output_dir)
+        
+        if not output_path.exists():
+            print(f"Error: Directory {output_dir} does not exist")
+            return None
+        
+        # Find all image files with pattern XXYY.png
+        image_files = {} # dict of images: key = (row, col), value = file path
+        pattern = re.compile(r'(\d{2})(\d{2})\.png') # group1 = XX group2 = YY
+        
+        for file in output_path.glob('*.png'): # all files ends with .png
+            match = pattern.match(file.name)
+            if match:
+                row = int(match.group(1))
+                col = int(match.group(2))
+                image_files[(row, col)] = file
+        
+        if not image_files:
+            print(f"Error: No images found in {output_dir}")
+            return None
+        
+        print(f"Found {len(image_files)} images to stitch")
+        
+        rows = [coord[0] for coord in image_files.keys()]
+        cols = [coord[1] for coord in image_files.keys()]
+        num_rows = max(rows) + 1
+        num_cols = max(cols) + 1
+        
+        print(f"Grid size: {num_rows} rows x {num_cols} cols")
+
+        img_width, img_height = stride_x, stride_y
+                
+        # large blank canvas
+        stitched_width = num_cols * img_width
+        stitched_height = num_rows * img_height
+        stitched_image = Image.new('RGB', (stitched_width, stitched_height), color='black')
+        
+        print(f"Stitched image size: {stitched_width}x{stitched_height}")
+        
+        # Stitch images together
+        for row in range(num_rows):
+            for col in range(num_cols):
+                if (row, col) in image_files:
+                    # Load image
+                    img_path = image_files[(row, col)]
+                    img = Image.open(img_path)
+                    
+                    x_pos = col * img_width
+                    y_pos = row * img_height
+                    
+                    stitched_image.paste(img, (x_pos, y_pos))
+                    
+                    print(f"Stitched image {row:02d}{col:02d} at position ({x_pos}, {y_pos})")
+                else:
+                    print(f"Warning: Missing image at position {row:02d}{col:02d}")
+        
+        output_file = output_path / stitched_filename
+        stitched_image.save(output_file)
+        print(f"Stitched image saved to {output_file}")
+        
+        return stitched_image
 
 class LithographerGui:
     root: Tk
