@@ -2644,16 +2644,14 @@ class MapFrame:
         
         # Map dimensions in micrometers
         # TODO: Determine actual map dims
-        self.map_size_um = 3000.0  # 1000 x 1000 square
+        self.map_size_um = 10000.0  # square
         
         # Canvas size in pixels
-        # TODO: Determine actual canvas pixels
-        self.canvas_size = 400
+        self.canvas_size = 350
         
         # Pattern dimensions (in micrometers)
-        # TODO: Get actual pattern size
-        self.pattern_w = 50.0
-        self.pattern_h = 50.0
+        self.pattern_w = 1037
+        self.pattern_h = 583
         
         # Create canvas with plain background
         self.canvas = tkinter.Canvas(
@@ -2756,9 +2754,6 @@ class MapFrame:
             self._draw_pattern_marker(x_um, y_um)
         
         self._draw_current_position()
-    
-    def _on_chip_changed(self):
-        self._redraw_all()
     
     def _on_position_changed(self):
         self._redraw_all() # TODO: only update current_position?
