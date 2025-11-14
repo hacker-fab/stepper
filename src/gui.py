@@ -2494,7 +2494,7 @@ import re
 from PIL import Image
 import numpy as np
 
-class mapFrame:
+class tilingCheckFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
         self.event_dispatcher = event_dispatcher
@@ -2637,6 +2637,147 @@ class mapFrame:
         
         return stitched_image
 
+class MapFrame:
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        self.frame = ttk.LabelFrame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Map dimensions in micrometers
+        # TODO: Determine actual map dims
+        self.map_size_um = 3000.0  # 1000 x 1000 square
+        
+        # Canvas size in pixels
+        # TODO: Determine actual canvas pixels
+        self.canvas_size = 400
+        
+        # Pattern dimensions (in micrometers)
+        # TODO: Get actual pattern size
+        self.pattern_w = 50.0
+        self.pattern_h = 50.0
+        
+        # Create canvas with plain background
+        self.canvas = tkinter.Canvas(
+            self.frame, 
+            width=self.canvas_size, 
+            height=self.canvas_size,
+            bg='#34495e',
+            highlightthickness=2,
+            highlightbackground='#2c3e50'
+        )
+        self.canvas.grid(row=0, column=0, padx=5, pady=5)
+        
+        # coordinates of exposed patterns (list of tuples: (x, y))
+        self.pattern_markers = []
+        
+        event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, self._on_position_changed)
+        event_dispatcher.add_event_listener(Event.PATTERNING_FINISHED, self._on_pattern_exposed)
+        event_dispatcher.add_event_listener(Event.CHIP_CHANGED, self._on_chip_changed)
+        
+        self._redraw_all()
+    
+    def _um_to_pixels(self, um_x, um_y):
+        """
+        Convert micrometer coordinates to canvas pixel coordinates.
+        (0, 0) in micrometers is at the center of the canvas.
+        """
+        scale = self.canvas_size / self.map_size_um
+        
+        # Add half map size to shift origin to center
+        pixel_x = (um_x + self.map_size_um / 2) * scale
+        pixel_y = (um_y + self.map_size_um / 2) * scale
+        
+        return pixel_x, pixel_y
+    
+    def _um_size_to_pixels(self, um_width, um_height):
+        """Convert micrometer dimensions to pixel dimensions"""
+        scale = self.canvas_size / self.map_size_um
+        return um_width * scale, um_height * scale
+    
+    def _draw_pattern_marker(self, x_um, y_um):
+        """ Draw a blue rectangle given x and y """
+        x1_px, y1_px = self._um_to_pixels(x_um, y_um)
+        w_px, h_px = self._um_size_to_pixels(self.pattern_w, self.pattern_h)
+        
+        x2_px = x1_px + w_px
+        y2_px = y1_px + h_px
+        
+        marker = self.canvas.create_rectangle(
+            x1_px, y1_px, x2_px, y2_px,
+            fill='#3498db',  # Blue fill
+            outline='#2980b9',  # Darker blue outline
+            width=1
+        )
+
+        return marker
+            
+    def _draw_current_position(self):
+        """ Draw the red rectangle for current position. """
+        x_um, y_um, z_um = self.event_dispatcher.stage_setpoint
+        
+        # Convert top-left corner to pixel coordinates
+        x1_px, y1_px = self._um_to_pixels(x_um, y_um)
+        
+        # Get pattern dimensions in pixels
+        w_px, h_px = self._um_size_to_pixels(self.pattern_w, self.pattern_h)
+        
+        # Calculate bottom-right corner
+        x2_px = x1_px + w_px
+        y2_px = y1_px + h_px
+        
+        marker = self.canvas.create_rectangle(
+                x1_px, y1_px, x2_px, y2_px,
+                fill='',  # No fill
+                outline='#e74c3c',  # Red outline
+                width=2
+            )
+        
+        return marker # marker ID
+
+    def _load_patterns_from_chip(self):
+        """ Load all exposed pattern coordinates from the chip
+        into the self.pattern_markers list """
+
+        self.pattern_markers.clear()
+        
+        chip = self.event_dispatcher.chip
+        for layer in chip.layers:
+            for exposure in layer.exposures:
+                if not exposure.aborted:  # Only include successful exposures
+                    x, y, z = exposure.coords
+                    self.pattern_markers.append((x, y))
+
+    def _redraw_all(self):
+        """Redraw all exposed patterns from the chip"""
+        # Clear existing pattern markers
+        self.canvas.delete("all")
+        
+        # Draw all exposures from all layers
+        for x_um, y_um in self.pattern_markers:
+            self._draw_pattern_marker(x_um, y_um)
+        
+        self._draw_current_position()
+    
+    def _on_chip_changed(self):
+        self._redraw_all()
+    
+    def _on_position_changed(self):
+        self._redraw_all() # TODO: only update current_position?
+    
+    def _on_pattern_exposed(self):
+        """ Get the most recent exposure from current layer """
+        chip = self.event_dispatcher.chip
+        if chip.layers and chip.layers[-1].exposures:
+            latest_exposure = chip.layers[-1].exposures[-1]
+            if not latest_exposure.aborted:
+                x, y, z = latest_exposure.coords
+                self.pattern_markers.append((x, y))
+                self._redraw_all()
+
+    def _on_chip_changed(self):
+        """Handle chip changes (load, new chip, etc.) - reload and redraw"""
+        self._load_patterns_from_chip()
+        self._redraw_all()
+
 class LithographerGui:
     root: Tk
     event_dispatcher: EventDispatcher
@@ -2664,7 +2805,11 @@ class LithographerGui:
 
         # Projector display (top)
         self.projector_display = ProjectorDisplayFrame(self.top_panel, self.event_dispatcher)
-        self.projector_display.frame.grid(row=0, column=0, padx=5, pady=5, sticky='')
+        self.projector_display.frame.grid(row=0, column=2, padx=5, pady=5, sticky='')
+
+        # Map (top)
+        self.map = MapFrame(self.top_panel, self.event_dispatcher)
+        self.map.frame.grid(row=0, column=0)
 
         # Progress bar
         self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
