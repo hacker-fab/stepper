@@ -1891,8 +1891,14 @@ class TilingFrame:
         self.model = model
 
         # TODO: Tune default offsets
-        self.x_settings = OffsetAmountFrame(self.frame, "X", 1050)
-        self.y_settings = OffsetAmountFrame(self.frame, "Y", 900)
+        #Defaults set based on DLP471TP and a 10x objective
+        #5.4 um Pixel Pitch
+        #Width 10.368 mm
+        #Height 5.832 mm
+        # Move in X = 10.368mm / 10 = 1037um
+        # Move in Y = 5.832 mm / 10 = 538.2 um ~ 539 um
+        self.x_settings = OffsetAmountFrame(self.frame, "X", 1037)
+        self.y_settings = OffsetAmountFrame(self.frame, "Y", 539)
 
         #Tiling verisons of alignment
         def detect_alignment_markers_tiling(yolo_model, image, draw_rectangle=False, edge=None, edge_fraction=0.25):
