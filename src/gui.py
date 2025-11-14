@@ -1991,8 +1991,14 @@ class TilingFrame:
                 dy /= count_y
 
             # Move accordingly (if no top markers, dy=0)
-            model.move_relative({'x': dx, 'y': dy})
-            print(f"Alignment correction: dx={dx:.5f}, dy={dy:.5f} using {len(markers)} markers.")
+            #If a small amount of alignment is needed move the image otherwise move the stage
+            #TODO calibrate the stage move threshold
+            if(dx or dy < 10):
+                #move the image instead of the stage
+                model.set_image_position(dx, dy, t=0)
+            else:
+              model.move_relative({'x': dx, 'y': dy})
+              print(f"Alignment correction: dx={dx:.5f}, dy={dy:.5f} using {len(markers)} markers.")
 
         #function that takes in an arbitrary sized image composed of 3840x2160 tiles
         #with shared alignment marks that are 200 pixels from the edge
