@@ -526,8 +526,8 @@ class EventDispatcher:
     def movement_lock(self):
         if self.patterning_busy or self.autofocus_busy:
             return MovementLock.LOCKED
-        elif (self.shown_image == ShownImage.UV_FOCUS or self.shown_image == ShownImage.PATTERN):
-            return MovementLock.XY_LOCKED
+        # elif (self.shown_image == ShownImage.UV_FOCUS or self.shown_image == ShownImage.PATTERN):
+        #     return MovementLock.XY_LOCKED
         else:
             return MovementLock.UNLOCKED
 
@@ -813,10 +813,10 @@ class CameraFrame:
         self.gui_camera_scale = camera_scale
 
         self.focus_score_label = ttk.Label(self.frame, text="Focus Score: N/A")
-        self.focus_score_label.grid(row=0, column=1)
+        self.focus_score_label.grid(row=1, column=0)
 
         self.snapshot = SnapshotFrame(self.frame, c is not None, event_dispatcher)
-        self.snapshot.frame.grid(row=1, column=0)
+        self.snapshot.frame.grid(row=2, column=0)
 
         self.event_dispatcher = event_dispatcher
 
@@ -893,17 +893,22 @@ class CameraFrame:
         self.label.configure(image=gui_img)  # type:ignore
         self.gui_img = gui_img
 
-'''
 class StagePositionFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
+    def __init__(self, parent, event_dispatcher, uvmode):
         self.frame = ttk.Frame(parent)
-
+        self.event_dispatcher = event_dispatcher
+        
+        # Position display at top
+        self.position_frame = ttk.LabelFrame(self.frame, text="Current Position (µm)")
+        self.position_frame.grid(row=0, column=0, columnspan=2, pady=5, sticky="ew")
+        
         self.position_intputs = []
-        self.step_size_intputs = []
-
+        # Track all interactive widgets for locking
         self.xy_widgets = []
         self.z_widgets = []
 
+        self.zlock = False
+        
         # Absolute
 
         self.absolute_frame = ttk.LabelFrame(self.frame, text="Stage Position")
@@ -913,82 +918,88 @@ class StagePositionFrame:
             self.position_intputs.append(IntEntry(parent=self.absolute_frame, default=0))
             self.position_intputs[-1].widget.grid(row=0, column=i)
 
-        def callback_set():
+            if i in (0, 1):
+                self.xy_widgets.append(self.position_intputs[i].widget)
+            else:
+                self.z_widgets.append(self.position_intputs[i].widget)
+
+        def callback_set(): # command for the set position button
             x, y, z = self._position()
             event_dispatcher.move_absolute({"x": x, "y": y, "z": z})
 
         self.set_position_button = ttk.Button(self.absolute_frame, text="Set Stage Position", command=callback_set)
         self.set_position_button.grid(row=1, column=0, columnspan=3, sticky="ew")
 
-        # Relative
-
-        self.relative_frame = ttk.LabelFrame(self.frame, text="Adjustment")
-        self.relative_frame.grid(row=1, column=0)
-
-        for i, coord in ((0, "x"), (1, "y"), (2, "z")):
-            self.step_size_intputs.append(
-                IntEntry(
-                    parent=self.relative_frame,
-                    default=10,
-                    min_value=-1000,
-                    max_value=1000,
-                )
-            )
-            self.step_size_intputs[-1].widget.grid(row=3, column=i)
-
-            def callback_pos(index, c):
-                event_dispatcher.move_relative({c: self.step_sizes()[index]})
-
-            def callback_neg(index, c):
-                event_dispatcher.move_relative({c: -self.step_sizes()[index]})
-
-            coord_inc_button = ttk.Button(
-                self.relative_frame,
-                text=f"+{coord.upper()}",
-                command=partial(callback_pos, i, coord),
-            )
-            coord_dec_button = ttk.Button(
-                self.relative_frame,
-                text=f"-{coord.upper()}",
-                command=partial(callback_neg, i, coord),
-            )
-
-            coord_inc_button.grid(row=0, column=i)
-            coord_dec_button.grid(row=1, column=i)
-
-            if i in (0, 1):
-                self.xy_widgets.append(coord_inc_button)
-                self.xy_widgets.append(coord_dec_button)
-                self.xy_widgets.append(self.position_intputs[i].widget)
-                self.xy_widgets.append(self.step_size_intputs[i].widget)
-            else:
-                self.z_widgets.append(coord_inc_button)
-                self.z_widgets.append(coord_dec_button)
-                self.z_widgets.append(self.position_intputs[i].widget)
-                self.z_widgets.append(self.step_size_intputs[i].widget)
-
-        ttk.Label(
-            self.relative_frame, text="Step Size (microns)", anchor="center"
-        ).grid(row=2, column=0, columnspan=3, sticky="ew")
-
         self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
 
+        # self.position_inputs = []
+        # for i, coord in enumerate(["X", "Y", "Z"]):
+        #     label = ttk.Label(self.position_frame, text=f"{coord}:")
+        #     label.grid(row=0, column=i, padx=5) # X: 0.0 label
+
+        #     # Entry widget for move absolute
+        #     position_input = IntEntry(parent=self.position_frame, default=0)
+        #     position_input.widget.grid(row=1, column=i, padx=(0, 5))
+        #     position_input.widget.config(width=10)
+        #     self.position_inputs.append(position_input)
+            
+        #     # Add to appropriate widget list for locking
+        #     if i < 2:  # X and Y
+        #         self.xy_widgets.append(position_input.widget)
+        #     else:  # Z
+        #         self.z_widgets.append(position_input.widget)
+        
+        # # Add "Set Position" button
+        # self.set_position_button = ttk.Button(
+        #     self.position_frame, 
+        #     text="Set Stage Position", 
+        #     command=self._on_set_position
+        # )
+        # self.set_position_button.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(5, 0))
+        
+        # self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
+
+        # Relative
+
+        control_frame = ttk.Frame(self.frame)
+        control_frame.grid(row=1, column=0, columnspan=2)
+        
+        # XY circular control: hide in UV mode
+        if not uvmode:
+            xy_frame = ttk.Frame(control_frame)
+            xy_frame.grid(row=0, column=0, padx=10)
+            self.create_xy_control(xy_frame)
+            z_col = 1
+        else:
+            z_col = 0
+        
+        # Z vertical control
+        z_frame = ttk.Frame(control_frame)
+        z_frame.grid(row=0, column=z_col, padx=10)
+        self.create_z_control(z_frame)
+
+        self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
+        
         def on_lock_change():
             lock = event_dispatcher.movement_lock
+            print("lock: ", lock)
             match lock:
                 case MovementLock.UNLOCKED:
                     for w in self.all_widgets:
-                        w.configure(state="normal")
-                case MovementLock.XY_LOCKED:
-                    for w in self.xy_widgets:
-                        w.configure(state="disabled")
-                    for w in self.z_widgets:
-                        w.configure(state="normal")
-                    self.set_position_button.configure(state="normal")
+                        if hasattr(w, 'configure'):
+                            w.configure(state="normal")
+                    self.zlock = False
+                    for rect_id, orig_color in self.z_rectangles:
+                        self.z_canvas.itemconfig(rect_id, fill=orig_color)
                 case MovementLock.LOCKED:
                     for w in self.all_widgets:
-                        w.configure(state="disabled")
-
+                        if hasattr(w, 'configure'):
+                            w.configure(state="disabled")
+                    self.zlock = True
+                    grey_color = '#b9bbb6'
+                    for rect_id, _ in self.z_rectangles:
+                        self.z_canvas.itemconfig(rect_id, fill=grey_color)
+    
         event_dispatcher.add_event_listener(Event.MOVEMENT_LOCK_CHANGED, on_lock_change)
 
         def on_position_change():
@@ -998,89 +1009,6 @@ class StagePositionFrame:
 
         event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, on_position_change)
 
-        self.shortcut_frame = ttk.LabelFrame(self.frame, text="Shortcuts")
-        self.shortcut_frame.grid(row=2, column=0)
-
-        def on_chip_origin():
-            event_dispatcher.move_absolute({ "x": -14500.0, "y": -13500.0, "z": -13844.0 })
-        def on_chip_unload():
-            event_dispatcher.move_absolute({ "x": -14500.0, "y": -14500.0, "z": -14500.0 })
-
-
-        btn_state = "normal" if event_dispatcher.hardware.stage.has_homing() else "disabled"
-        self.chip_origin_button = ttk.Button(self.shortcut_frame, text="Chip origin", command=on_chip_origin, state=btn_state)
-        self.chip_origin_button.grid(row=0, column=0)
-        self.chip_unload_button = ttk.Button(self.shortcut_frame, text="Load/unload", command=on_chip_unload, state=btn_state)
-        self.chip_unload_button.grid(row=0, column=1)
-
-
-    def _position(self) -> tuple[int, int, int]:
-        return tuple(intput.get() for intput in self.position_intputs)
-
-    def _set_position(self, pos: tuple[int, int, int]):
-        for i in range(3):
-            self.position_intputs[i].set(pos[i])
-
-    def step_sizes(self) -> tuple[int, int, int]:
-        return tuple(intput.get() for intput in self.step_size_intputs)
-'''
-
-class StagePositionFrame:
-    def __init__(self, parent, event_dispatcher):
-        self.frame = ttk.Frame(parent)
-        self.event_dispatcher = event_dispatcher
-        
-        # Position display at top
-        self.position_frame = ttk.LabelFrame(self.frame, text="Current Position (µm)")
-        self.position_frame.grid(row=0, column=0, columnspan=2, pady=5, sticky="ew")
-        
-        # Track all interactive widgets for locking
-        self.xy_widgets = []
-        self.z_widgets = []
-        self.all_widgets = []
-        
-        # self.position_labels = []
-        self.position_inputs = []
-        for i, coord in enumerate(["X", "Y", "Z"]):
-            label = ttk.Label(self.position_frame, text=f"{coord}:")
-            label.grid(row=0, column=i, padx=5) # X: 0.0 label
-            # self.position_labels.append(label)
-
-            # Entry widget for position
-            position_input = IntEntry(parent=self.position_frame, default=0)
-            position_input.widget.grid(row=1, column=i, padx=(0, 5))
-            position_input.widget.config(width=10)
-            self.position_inputs.append(position_input)
-            
-            # Add to appropriate widget list for locking
-            if i < 2:  # X and Y
-                self.xy_widgets.append(position_input.widget)
-            else:  # Z
-                self.z_widgets.append(position_input.widget)
-        
-        # Add "Set Position" button
-        self.set_position_button = ttk.Button(
-            self.position_frame, 
-            text="Set Stage Position", 
-            command=self._on_set_position
-        )
-        self.set_position_button.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(5, 0))
-        self.all_widgets.append(self.set_position_button)
-        
-        # Control panel container
-        control_frame = ttk.Frame(self.frame)
-        control_frame.grid(row=1, column=0, columnspan=2)
-        
-        # XY circular control (left)
-        xy_frame = ttk.Frame(control_frame)
-        xy_frame.grid(row=0, column=0, padx=10)
-        self.create_xy_control(xy_frame)
-        
-        # Z vertical control (right)
-        z_frame = ttk.Frame(control_frame)
-        z_frame.grid(row=0, column=1, padx=10)
-        self.create_z_control(z_frame)
-        
         # Shortcuts at bottom
         self.shortcut_frame = ttk.LabelFrame(self.frame, text="Shortcuts")
         self.shortcut_frame.grid(row=2, column=0, columnspan=2, pady=5, sticky="ew")
@@ -1099,18 +1027,17 @@ class StagePositionFrame:
         self.chip_unload_button = ttk.Button(self.shortcut_frame, text="Load/unload", 
                                             command=on_chip_unload, state=btn_state)
         self.chip_unload_button.grid(row=0, column=1, padx=5)
-        
-        # Listen to events
-        event_dispatcher.add_event_listener("MOVEMENT_LOCK_CHANGED", self._on_lock_change)
-        event_dispatcher.add_event_listener("STAGE_POSITION_CHANGED", self._on_position_change)
     
-    def _on_set_position(self):
-        """Handle the Set Position button click"""
-        x = self.position_inputs[0].get()
-        y = self.position_inputs[1].get()
-        z = self.position_inputs[2].get()
-        self.event_dispatcher.move_absolute({"x": x, "y": y, "z": z})
+    # def _on_set_position(self):
+    #     """Handle the Set Position button click"""
+    #     x = self.position_inputs[0].get()
+    #     y = self.position_inputs[1].get()
+    #     z = self.position_inputs[2].get()
+    #     self.event_dispatcher.move_absolute({"x": x, "y": y, "z": z})
 
+    def _position(self) -> tuple[int, int, int]:
+        return tuple(intput.get() for intput in self.position_intputs)
+    
     def create_xy_control(self, parent):
         """Create circular XY control with 4 quadrants and 4 layers each"""
         canvas_size = 300
@@ -1152,7 +1079,6 @@ class StagePositionFrame:
 
             self.xy_canvas.create_line(x0, y0, x1, y1, fill=color, width=3)
         
-        
         # Labels for directions
         label_offset = 160
         labels = [
@@ -1188,10 +1114,6 @@ class StagePositionFrame:
         dx = event.x - center
         dy = event.y - center
         distance = math.sqrt(dx**2 + dy**2)
-        
-        # Ignore clicks in the center circle
-        # if distance < 15:
-        #     return
         
         # Determine which layer (step size)
         radii = [40, 75, 110, 145]
@@ -1232,7 +1154,6 @@ class StagePositionFrame:
                 self.event_dispatcher.move_relative({"y": -step_size})
     
     def create_z_control(self, parent):
-        """Create vertical Z control bar with 8 sections"""
         bar_width = 80
         section_height = 35
         total_height = section_height * 8
@@ -1248,6 +1169,9 @@ class StagePositionFrame:
         colors_plus = ['#a8dadc', '#87bdbf', '#66a0a3', '#458486']
         colors_minus = ['#458486', '#66a0a3', '#87bdbf', '#a8dadc']
         
+        # Store rectangle IDs and their original colors
+        self.z_rectangles = []  # List of (rect_id, original_color)
+
         # Create sections
         for i in range(8):
             y_start = i * section_height
@@ -1271,6 +1195,7 @@ class StagePositionFrame:
                 0, y_start, bar_width, y_end,
                 fill=color, outline='#2c3e50', width=2
             )
+            self.z_rectangles.append((rect_id, color))
             
             # Draw label
             text_id = self.z_canvas.create_text(
@@ -1287,62 +1212,14 @@ class StagePositionFrame:
         
         # Add label at top
         ttk.Label(parent, text="Z Control", font=('Arial', 10, 'bold')).pack(pady=(0, 5))
-        
-        # Store reference for locking
-        self.z_widgets.append(self.z_canvas)
-    
+
     def _on_z_click(self, direction, step_size):
         """Handle clicks on Z control sections"""
-        if direction == "+":
-            self.event_dispatcher.move_relative({"z": step_size})
-        else:
-            self.event_dispatcher.move_relative({"z": -step_size})
-    
-    def _on_lock_change(self):
-        """Handle movement lock state changes"""
-        from enum import Enum
-        
-        # Assuming MovementLock enum exists in your code
-        lock = self.event_dispatcher.movement_lock
-        
-        # Map lock enum to state (you may need to adjust based on your actual enum)
-        if hasattr(lock, 'value'):
-            lock_value = lock.value if hasattr(lock, 'value') else str(lock)
-        else:
-            lock_value = str(lock)
-        
-        if 'UNLOCKED' in lock_value.upper():
-            # All movements allowed
-            for w in self.xy_widgets + self.z_widgets:
-                if isinstance(w, tkinter.Canvas):
-                    w.configure(state='normal')
-                else:
-                    w.configure(state='normal')
-        elif 'XY_LOCKED' in lock_value.upper():
-            # Only Z movement allowed
-            for w in self.xy_widgets:
-                if isinstance(w, tkinter.Canvas):
-                    w.configure(state='disabled')
-                else:
-                    w.configure(state='disabled')
-            for w in self.z_widgets:
-                if isinstance(w, tkinter.Canvas):
-                    w.configure(state='normal')
-                else:
-                    w.configure(state='normal')
-        else:  # LOCKED
-            # No movements allowed
-            for w in self.xy_widgets + self.z_widgets:
-                if isinstance(w, tkinter.Canvas):
-                    w.configure(state='disabled')
-                else:
-                    w.configure(state='disabled')
-    
-    def _on_position_change(self):
-        """Update position display when stage moves"""
-        pos = self.event_dispatcher.stage_setpoint
-        for i, coord in enumerate(["X", "Y", "Z"]):
-            self.position_labels[i].configure(text=f"{coord}: {pos[i]:.1f}")
+        if not self.zlock:
+            if direction == "+":
+                self.event_dispatcher.move_relative({"z": step_size})
+            else:
+                self.event_dispatcher.move_relative({"z": -step_size})
 
 class ImageAdjustFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -1947,7 +1824,7 @@ class RedModeFrame:
         self.frame.grid_rowconfigure(0, weight=1)
 
         # Stage position controls (left side)
-        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher)
+        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher, False)
         self.stage_position_frame.frame.grid(row=0, column=0)
         
         # Pattern preview display (right side)
@@ -2032,7 +1909,7 @@ class UvModeFrame:
         self.uv_focus_frame.frame.grid(row=0, column=0, pady=(10,0))
 
         # Stage position controls (middle)
-        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher)
+        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher, True)
         self.stage_position_frame.frame.grid(row=0, column=0, sticky="n")
         
         # Pattern preview and UV focus selector (right side)
@@ -2127,9 +2004,9 @@ class ModeSelectFrame:
         self.pattern_upload_frame = PatternUploadFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.pattern_upload_frame.frame, text="Pattern Upload")
         self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher)
-        self.notebook.add(self.red_mode_frame.frame, text="Red Mode")
+        self.notebook.add(self.red_mode_frame.frame, text="Red Light Alignment Mode")
         self.uv_mode_frame = UvModeFrame(self.notebook, event_dispatcher)
-        self.notebook.add(self.uv_mode_frame.frame, text="UV Mode")
+        self.notebook.add(self.uv_mode_frame.frame, text="UV Exposure Mode")
 
         def on_tab_change():
             current_tab = self._current_tab()
@@ -2643,17 +2520,16 @@ class MapFrame:
         self.event_dispatcher = event_dispatcher
         
         # Map dimensions in micrometers
-        # TODO: Determine actual map dims
-        self.map_size_um = 10000.0  # square
+        self.map_size_um = 10000.0  # 1 cm * 1 cm
         
         # Canvas size in pixels
         self.canvas_size = 350
         
-        # Pattern dimensions (in micrometers)
+        # Pattern dimensions: from DLP projector datasheet
         self.pattern_w = 1037
         self.pattern_h = 583
         
-        # Create canvas with plain background
+        # canvas with plain background
         self.canvas = tkinter.Canvas(
             self.frame, 
             width=self.canvas_size, 
@@ -2698,6 +2574,10 @@ class MapFrame:
         
         x2_px = x1_px + w_px
         y2_px = y1_px + h_px
+
+        # shift from bottom down to bottom up
+        y1_px = self.canvas_size - y1_px
+        y2_px = self.canvas_size - y2_px
         
         marker = self.canvas.create_rectangle(
             x1_px, y1_px, x2_px, y2_px,
@@ -2721,6 +2601,9 @@ class MapFrame:
         # Calculate bottom-right corner
         x2_px = x1_px + w_px
         y2_px = y1_px + h_px
+
+        y1_px = self.canvas_size - y1_px
+        y2_px = self.canvas_size - y2_px        
         
         marker = self.canvas.create_rectangle(
                 x1_px, y1_px, x2_px, y2_px,
