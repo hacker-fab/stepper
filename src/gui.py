@@ -32,14 +32,15 @@ from stage_control.stage_controller import StageController
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
+#The values set here are not uses and instead come from the config file
 DEFAULT_RED_EXPOSURE: float = 4167.0
-DEFAULT_UV_EXPOSURE: float = 35000.0
+DEFAULT_UV_EXPOSURE: float = 25000.0
 
 def compute_focus_score(camera_image, blue_only, save=False):
     camera_image = camera_image.copy()
     camera_image[:, :, 1] = 0  # green should never be used for focus
-    #if blue_only:
-    #   camera_image[:, :, 0] = 0  # disable red
+    if blue_only:
+      camera_image[:, :, 0] = 0  # disable red
     img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
@@ -1890,6 +1891,8 @@ class TilingFrame:
         self.frame = ttk.LabelFrame(parent, text="Tiling")
         self.model = model
 
+        self.red_to_uv_offset = -40
+
         # TODO: Tune default offsets
         #Defaults set based on DLP471TP and a 10x objective
         #5.4 um Pixel Pitch
@@ -2087,10 +2090,10 @@ class TilingFrame:
             
 
             #Do automatic offset for UV then autofocus
-            self.model.move_relative({"z": -35.0})
+            self.model.move_relative({"z": self.red_to_uv_offset})
             self.model.non_blocking_delay(0.5)
             self.model.enter_uv_mode(mode_switch_autofocus=False)
-            #self.model.autofocus(blue_only=True)
+            self.model.autofocus(blue_only=True)
 
             #expose the image
             self.model.begin_patterning()
@@ -2099,7 +2102,7 @@ class TilingFrame:
 
             #Offset back to red mode
             self.model.enter_red_mode(mode_switch_autofocus=False)
-            self.model.move_relative({"z": 50.0})
+            self.model.move_relative({"z": -1 * self.red_to_uv_offset})
 
 
             
