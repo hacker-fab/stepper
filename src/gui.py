@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import serial
 import math
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageTk
 from ultralytics import YOLO
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
@@ -932,33 +932,6 @@ class StagePositionFrame:
 
         self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
 
-        # self.position_inputs = []
-        # for i, coord in enumerate(["X", "Y", "Z"]):
-        #     label = ttk.Label(self.position_frame, text=f"{coord}:")
-        #     label.grid(row=0, column=i, padx=5) # X: 0.0 label
-
-        #     # Entry widget for move absolute
-        #     position_input = IntEntry(parent=self.position_frame, default=0)
-        #     position_input.widget.grid(row=1, column=i, padx=(0, 5))
-        #     position_input.widget.config(width=10)
-        #     self.position_inputs.append(position_input)
-            
-        #     # Add to appropriate widget list for locking
-        #     if i < 2:  # X and Y
-        #         self.xy_widgets.append(position_input.widget)
-        #     else:  # Z
-        #         self.z_widgets.append(position_input.widget)
-        
-        # # Add "Set Position" button
-        # self.set_position_button = ttk.Button(
-        #     self.position_frame, 
-        #     text="Set Stage Position", 
-        #     command=self._on_set_position
-        # )
-        # self.set_position_button.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(5, 0))
-        
-        # self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
-
         # Relative
 
         control_frame = ttk.Frame(self.frame)
@@ -982,7 +955,6 @@ class StagePositionFrame:
         
         def on_lock_change():
             lock = event_dispatcher.movement_lock
-            print("lock: ", lock)
             match lock:
                 case MovementLock.UNLOCKED:
                     for w in self.all_widgets:
@@ -1827,6 +1799,7 @@ class RedModeFrame:
         self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher, False)
         self.stage_position_frame.frame.grid(row=0, column=0)
 
+        # test tiling check button & preview
         self.tilting_check_frame  = TilingCheckFrame(self.middle_frame, event_dispatcher)
         self.tilting_check_frame.frame.grid(row=0, column = 1)
         
@@ -2368,12 +2341,6 @@ class ProjectorDisplayFrame:
         # Schedule periodic updates to catch any missed changes
         self.event_dispatcher.root.after(500, self._update_display)
 
-import os
-from pathlib import Path
-import re
-from PIL import Image, ImageTk
-import numpy as np
-
 class TilingCheckFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
@@ -2396,41 +2363,44 @@ class TilingCheckFrame:
 
     def capture_and_stitch(self):
         stride_x, stride_y = 800, 450
-        output_dir = "maps"
         # Disable button during capture
         self.capture_button.config(state='disabled', text="Capturing...")
         self.frame.update()
         
-        try:
-            self.takeMapImages(self.img_w, self.img_h, stride_x, stride_y, output_dir)
-            self.capture_button.config(text="Stitching...")
-            self.frame.update()
+        stitched_image = self.takeAndStitchMapImages(self.img_w, self.img_h, stride_x, stride_y)
+        if stitched_image:
+            self.display_image(stitched_image, stride_x, stride_y)
+            print("Stitching complete!")
+        else:
+            print("Failed to stitch images")
             
-            stitched_image = self.stitchMapImages(stride_x, stride_y, output_dir)
-            
-            if stitched_image:
-                self.display_image(stitched_image)
-            else:
-                print("Failed to stitch images")
-                
-        finally:
-            self.capture_button.config(state='normal', text="Capture & Stitch Chip Imges")
+        self.capture_button.config(state='normal', text="Capture & Stitch Chip Imges")
 
-    def display_image(self, pil_image):
-        photo = ImageTk.PhotoImage(pil_image)
-        # img_width, img_height = pil_image.size
+    def display_image(self, pil_image, stride_x, stride_y):
+        display_img = pil_image.copy()
+        display_img = display_img.resize((stride_x//2, stride_y//2), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(display_img)
         self.preview_label.config(image=photo)
         self.preview_label.image = photo
 
-    def takeMapImages(self, img_w, img_h, stride_x, stride_y, output_dir="maps"):
+    def capture_current_image(self):
+        # Get the camera view from the event dispatcher
+        if hasattr(self.event_dispatcher, 'camera_image') and self.event_dispatcher.camera_image is not None:
+            camera_image = self.event_dispatcher.camera_image
+            pil_image = Image.fromarray(camera_image)
+            return pil_image
+        else:
+            print("No camera image available")
+            return None
+    
+    def takeAndStitchMapImages(self, img_w, img_h, stride_x, stride_y):
         """
         Take snapshots to cover an area of img_w * img_h with Z-shaped movement.
+        Crop all snapshots to stride_x * stride_y
+        Paste them to the blank canvas
         stride_x: Horizontal distance between snapshots (in microns)
         stride_y: Vertical distance
         """
-        
-        output_path = Path(output_dir)
-        output_path.mkdir(exist_ok=True)
         
         num_cols = img_w // stride_x
         num_rows = img_h // stride_y
@@ -2442,6 +2412,11 @@ class TilingCheckFrame:
         
         print(f"Starting map capture: {num_rows} rows x {num_cols} cols\
               = {num_rows * num_cols} images")
+        
+        # large blank canvas
+        stitched_width = num_cols * stride_x
+        stitched_height = num_rows * stride_y
+        stitched_image = Image.new('RGB', (stitched_width, stitched_height), color='black')
         
         # get starting position: center the chip
         orig_x, orig_y, orig_z = self.event_dispatcher.stage_setpoint
@@ -2472,14 +2447,21 @@ class TilingCheckFrame:
                     })
                     self.event_dispatcher.non_blocking_delay(0.5)
                 
-                # filename with row and col index
-                filename = output_path / f"{row:02d}{col:02d}.png"
+                captured_image = self.capture_current_image()
+                # crop
+                orig_width, orig_height = captured_image.size
+                left = (orig_width - stride_x) // 2
+                top = (orig_height - stride_y) // 2
+                right = left + stride_x
+                bottom = top + stride_y
+                cropped_img = captured_image.crop((left, top, right, bottom))
+                # paste
+                x_pos = col * stride_x
+                y_pos = row * stride_y
+                stitched_image.paste(cropped_img, (x_pos, y_pos))
                 
-                self.event_dispatcher.on_event(Event.SNAPSHOT, str(filename))
                 self.event_dispatcher.non_blocking_delay(0.3)
-                
-                print(f"Captured image {row:02d}{col:02d} at\
-                      X:{current_x:.1f} Y:{current_y:.1f}")
+                self.frame.update()
         
         # Return to starting position
         self.event_dispatcher.move_absolute({
@@ -2487,81 +2469,7 @@ class TilingCheckFrame:
             "y": orig_y,
             "z": orig_z
         })
-        
-        print(f"Map capture complete! {num_rows * num_cols}\
-              images saved to {output_dir}/")
 
-    def stitchMapImages(self, stride_x, stride_y, output_dir="maps",
-                        stitched_filename="stitched_map.png"):
-        """
-        Crop all snapshots to stride_x * stride_y
-        Stitch them together
-        Returns the stitched PIL.Image or None if failed
-        """
-        
-        output_path = Path(output_dir)
-        
-        if not output_path.exists():
-            print(f"Error: Directory {output_dir} does not exist")
-            return None
-        
-        # Find all image files with pattern XXYY.png
-        image_files = {} # dict of images: key = (row, col), value = file path
-        pattern = re.compile(r'(\d{2})(\d{2})\.png') # group1 = XX group2 = YY
-        
-        for file in output_path.glob('*.png'): # all files ends with .png
-            match = pattern.match(file.name)
-            if match:
-                row = int(match.group(1))
-                col = int(match.group(2))
-                image_files[(row, col)] = file
-        
-        if not image_files:
-            print(f"Error: No images found in {output_dir}")
-            return None
-        
-        print(f"Found {len(image_files)} images to stitch")
-        
-        rows = [coord[0] for coord in image_files.keys()]
-        cols = [coord[1] for coord in image_files.keys()]
-        num_rows = max(rows) + 1
-        num_cols = max(cols) + 1
-        
-        print(f"Grid size: {num_rows} rows x {num_cols} cols")
-                
-        # large blank canvas
-        stitched_width = num_cols * stride_x
-        stitched_height = num_rows * stride_y
-        stitched_image = Image.new('RGB', (stitched_width, stitched_height), color='black')
-        
-        print(f"Stitched image size: {stitched_width}x{stitched_height}")
-        
-        # Stitch images
-        for row in range(num_rows):
-            for col in range(num_cols):
-                if (row, col) in image_files:
-                    img_path = image_files[(row, col)]
-                    img = Image.open(img_path)
-                    orig_width, orig_height = img.size
-
-                    left = (orig_width - stride_x) // 2
-                    top = (orig_height - stride_y) // 2
-                    right = left + stride_x
-                    bottom = top + stride_y
-                    cropped_img = img.crop((left, top, right, bottom))
-                    
-                    x_pos = col * stride_x
-                    y_pos = row * stride_y
-                    stitched_image.paste(cropped_img, (x_pos, y_pos))
-                    
-                    print(f"Stitched image {row:02d}{col:02d} at position ({x_pos}, {y_pos})")
-                else:
-                    print(f"Warning: Missing image at position {row:02d}{col:02d}")
-        
-        output_file = output_path / stitched_filename
-        stitched_image.save(output_file)
-        print(f"Stitched image saved to {output_file}")
-        
         return stitched_image
 
 class MapFrame:
