@@ -2136,7 +2136,7 @@ class TilingFrame:
             #load tile images
           
             #Move in Snake pattern with left to right on even rows and right to left on odd rows
-            #This starts with the bottom left in the order of tiles due to the projector being flipped
+            #This starts with the bottom right in the order of tiles due to the projector being flipped
             for y_idx in range(y_amount - 1, -1, -1):
                 if(y_idx %2 == 0):
                   for x_idx in range(x_amount - 1, -1, -1):
