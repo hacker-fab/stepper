@@ -33,7 +33,7 @@ from stage_control.stage_controller import StageController
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 DEFAULT_RED_EXPOSURE: float = 4167.0
-DEFAULT_UV_EXPOSURE: float = 25000.0
+DEFAULT_UV_EXPOSURE: float = 35000.0
 
 def compute_focus_score(camera_image, blue_only, save=False):
     camera_image = camera_image.copy()
@@ -1897,8 +1897,8 @@ class TilingFrame:
         #Height 5.832 mm
         # Move in X = 10.368mm / 10 = 1037um
         # Move in Y = 5.832 mm / 10 = 538.2 um ~ 539 um
-        self.x_settings = OffsetAmountFrame(self.frame, "X", 1037)
-        self.y_settings = OffsetAmountFrame(self.frame, "Y", 539)
+        self.x_settings = OffsetAmountFrame(self.frame, "X", 1037) #Move amount between exposures in X
+        self.y_settings = OffsetAmountFrame(self.frame, "Y", 539)  #Move amount between exposures in y
 
         #Tiling verisons of alignment
         def detect_alignment_markers_tiling(yolo_model, image, draw_rectangle=False, edge=None, edge_fraction=0.25):
@@ -2087,7 +2087,7 @@ class TilingFrame:
             
 
             #Do automatic offset for UV then autofocus
-            self.model.move_relative({"z": -50.0})
+            self.model.move_relative({"z": -35.0})
             self.model.non_blocking_delay(0.5)
             self.model.enter_uv_mode(mode_switch_autofocus=False)
             #self.model.autofocus(blue_only=True)
