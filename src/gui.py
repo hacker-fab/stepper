@@ -2136,13 +2136,14 @@ class TilingFrame:
             #load tile images
           
             #Move in Snake pattern with left to right on even rows and right to left on odd rows
-            for y_idx in range(y_amount):
+            #This starts with the bottom left in the order of tiles due to the projector being flipped
+            for y_idx in range(y_amount - 1, -1, -1):
                 if(y_idx %2 == 0):
-                  for x_idx in range(x_amount):
+                  for x_idx in range(x_amount - 1, -1, -1):
                       pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
                       print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
                 else:
-                    for x_idx in range(x_amount - 1, -1, -1):
+                    for x_idx in range(x_amount):
                       pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
                       print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
 
