@@ -1900,6 +1900,7 @@ class TilingFrame:
         #Height 5.832 mm
         # Move in X = 10.368mm / 10 = 1037um
         # Move in Y = 5.832 mm / 10 = 538.2 um ~ 539 um
+        #Subtraction amounts are there to tune the offset for the alignment markers
         self.x_settings = OffsetAmountFrame(self.frame, "X", 1037-54) #Move amount between exposures in X
         self.y_settings = OffsetAmountFrame(self.frame, "Y", 539-27)  #Move amount between exposures in y
 
