@@ -2113,7 +2113,7 @@ class TilingFrame:
             #create tile directory and segment images
             split_image_with_overlap(model.pattern_image_path)
             model.set_red_focus_source(RedFocusSource.PATTERN)
-            image_path = "tiles/tile_"+str(self.y_settings.offset_var - 1)+","+str(self.y_settings.offset_var -1)+".png"
+            image_path = "tiles/tile_"+str(0)+","+str(0)+".png"
             current_tile = Image.open(image_path)
             model.set_pattern_image(current_tile, image_path)
 
@@ -2136,15 +2136,14 @@ class TilingFrame:
             #load tile images
           
             #Move in Snake pattern with left to right on even rows and right to left on odd rows
-            #This starts with the bottom left in the order of tiles due to the projector being flipped
-            for y_idx in range(y_amount - 1, -1, -1):
+            for y_idx in range(y_amount):
                 if(y_idx %2 == 0):
-                  for x_idx in range(x_amount - 1, -1, -1):
-                      pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
+                  for x_idx in range(x_amount):
+                      pattern_for_tile(self, model, x_start, -x_dir, x_idx, x_offset, y_start, -y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
                       print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
                 else:
-                    for x_idx in range(x_amount):
-                      pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
+                    for x_idx in range(x_amount - 1, -1, -1):
+                      pattern_for_tile(self, model, x_start, -x_dir, x_idx, x_offset, y_start, -y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
                       print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
 
         #TODO IMPLEMENT ABORT
