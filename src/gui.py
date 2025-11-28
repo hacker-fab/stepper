@@ -2239,98 +2239,6 @@ class TilingFrame:
         self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
         self.abort_tiling_button.grid(row=3, column=0)
 
-# class ProjectorDisplayFrame:
-#     """Frame to display what the projector is currently showing"""
-    
-#     def __init__(self, parent, event_dispatcher: EventDispatcher):
-#         self.frame = ttk.Frame(parent)
-#         self.event_dispatcher = event_dispatcher
-        
-#         # Main label frame
-#         self.display_frame = ttk.LabelFrame(self.frame, text="Projector Output")
-#         self.display_frame.grid(row=0, column=0)
-        
-#         # Create placeholder image
-#         # Using a similar size to camera preview for consistency
-#         self.display_size = THUMBNAIL_SIZE
-#         placeholder = Image.new("RGB", self.display_size, "black")
-#         self.photo = image_to_tk_image(placeholder)
-        
-#         # Display label
-#         self.label = ttk.Label(self.display_frame, image=self.photo, relief="solid", borderwidth=2)
-#         self.label.grid(row=0, column=0, padx=5, pady=5)
-        
-#         # Status label showing current mode
-#         self.status_var = StringVar(value="Status: Clear")
-#         self.status_label = ttk.Label(self.display_frame, textvariable=self.status_var)
-#         self.status_label.grid(row=1, column=0, padx=5, pady=5)
-        
-#         # Listen for projector changes
-#         event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, self._update_display)
-#         event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, self._update_display)
-#         event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, self._update_display)
-#         event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, self._update_display)
-        
-#         # Force initial update
-#         # self.event_dispatcher.root.after(100, self._update_display)
-        
-#     def _update_display(self):
-#         """Update the display when projector content changes"""
-#         shown_image = self.event_dispatcher.shown_image
-        
-#         # Update status text
-#         status_map = {
-#             ShownImage.CLEAR: "Status: Clear (No Output)",
-#             ShownImage.PATTERN: "Status: Pattern (UV Exposure)",
-#             ShownImage.FLATFIELD: "Status: Flatfield Correction",
-#             ShownImage.RED_FOCUS: "Status: Red Focus Mode",
-#             ShownImage.UV_FOCUS: "Status: UV Focus Pattern",
-#         }
-#         self.status_var.set(status_map.get(shown_image, "Status: Unknown"))
-        
-#         # Get the appropriate processed image based on mode
-#         # Note: When patterning, we check patterning_busy flag as well
-#         img = None
-#         if shown_image == ShownImage.RED_FOCUS:
-#             img = self.event_dispatcher.red_focus.processed()
-#         # pattern case above uv focus case: when set_patterning_busy(True) is called,
-#         # shown_image is never changed to PATTERN during patterning - it stays as UV_FOCUS
-#         elif shown_image == ShownImage.PATTERN or self.event_dispatcher.patterning_busy:
-#             img = self.event_dispatcher.pattern.processed()
-#         elif shown_image == ShownImage.UV_FOCUS:
-#             img = self.event_dispatcher.uv_focus.processed()
-#         elif shown_image == ShownImage.FLATFIELD:
-#             # Flatfield might not be implemented, use pattern as fallback
-#             img = self.event_dispatcher.pattern.processed()
-        
-#         # Update image
-#         if img is None or (shown_image == ShownImage.CLEAR and not self.event_dispatcher.patterning_busy):
-#             # Show black placeholder when clear
-#             placeholder = Image.new("RGB", self.display_size, "black")
-#             self.photo = image_to_tk_image(placeholder)
-#         else:
-#             # Resize the projector output to fit in display
-#             try:
-#                 display_img = img.copy()
-#                 # Check if image is all black
-#                 import numpy as np
-#                 img_array = np.array(display_img)
-#                 is_black = np.all(img_array == 0)
-#                 # print(f"Image all black: {is_black}, min: {img_array.min()}, max: {img_array.max()}")
-                
-#                 display_img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
-#                 self.photo = image_to_tk_image(display_img)
-#             except Exception as e:
-#                 print(f"Error displaying projector image: {e}")
-#                 import traceback
-#                 traceback.print_exc()
-#                 placeholder = Image.new("RGB", self.display_size, "red")
-#                 self.photo = image_to_tk_image(placeholder)
-        
-#         self.label.configure(image=self.photo)
-        
-#         # Schedule periodic updates to catch any missed changes
-#         self.event_dispatcher.root.after(500, self._update_display)
 
 class ProjectorDisplayFrame:
     """Frame to display what the projector is currently showing"""
@@ -2344,7 +2252,8 @@ class ProjectorDisplayFrame:
         self.display_frame.grid(row=0, column=0)
         
         # Create placeholder image
-        self.display_size = THUMBNAIL_SIZE
+        # Using a similar size to camera preview for consistency
+        self.display_size = THUMBNAIL_SIZE # tuple 160, 90
         placeholder = Image.new("RGB", self.display_size, "black")
         self.photo = image_to_tk_image(placeholder)
         
@@ -2357,79 +2266,18 @@ class ProjectorDisplayFrame:
         self.status_label = ttk.Label(self.display_frame, textvariable=self.status_var)
         self.status_label.grid(row=1, column=0, padx=5, pady=5)
         
-        # Cache the last shown image to avoid redundant updates
-        self.last_shown_image = None
-        self.last_patterning_busy = False
-        self.cached_images = {}  # Cache processed thumbnails
-        
-        # Listen for projector changes - these will trigger updates only when needed
+        # Listen for projector changes
         event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, self._update_display)
-        event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, self._on_pattern_changed)
-        event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, self._on_image_adjust_changed)
-        event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, self._on_patterning_changed)
+        event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, self._update_display)
+        event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, self._update_display)
+        event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, self._update_display)
         
         # Force initial update
-        self.event_dispatcher.root.after(100, self._update_display)
-    
-    def _get_cache_key(self):
-        """Generate a cache key based on current state"""
-        return (
-            self.event_dispatcher.shown_image,
-            self.event_dispatcher.patterning_busy,
-            id(self.event_dispatcher.pattern_image),  # Use object id to detect image changes
-            self.event_dispatcher.image_adjust_position,
-        )
-    
-    def _on_pattern_changed(self):
-        """Called when pattern image changes - invalidate cache and update"""
-        cache_key = ('pattern', id(self.event_dispatcher.pattern_image))
-        if cache_key in self.cached_images:
-            del self.cached_images[cache_key]
-        self._update_display()
-    
-    def _on_image_adjust_changed(self):
-        """Called when image adjustment changes - invalidate relevant caches and update"""
-        # Clear all cached processed images since adjustment affects all of them
-        self.cached_images.clear()
-        self._update_display()
-    
-    def _on_patterning_changed(self):
-        """Called when patterning state changes"""
-        # When patterning starts, show the pattern once
-        # When patterning ends, update to show clear
-        self._update_display()
-    
-    def _create_thumbnail(self, img, cache_key=None):
-        """Create and cache a thumbnail from an image"""
-        if cache_key and cache_key in self.cached_images:
-            return self.cached_images[cache_key]
+        # self.event_dispatcher.root.after(100, self._update_display)
         
-        try:
-            display_img = img.copy()
-            display_img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
-            photo = image_to_tk_image(display_img)
-            
-            if cache_key:
-                self.cached_images[cache_key] = photo
-            
-            return photo
-        except Exception as e:
-            print(f"Error creating thumbnail: {e}")
-            placeholder = Image.new("RGB", self.display_size, "red")
-            return image_to_tk_image(placeholder)
-    
     def _update_display(self):
         """Update the display when projector content changes"""
         shown_image = self.event_dispatcher.shown_image
-        patterning_busy = self.event_dispatcher.patterning_busy
-        
-        # Skip redundant updates - only update if something actually changed
-        if (shown_image == self.last_shown_image and 
-            patterning_busy == self.last_patterning_busy):
-            return
-        
-        self.last_shown_image = shown_image
-        self.last_patterning_busy = patterning_busy
         
         # Update status text
         status_map = {
@@ -2439,45 +2287,31 @@ class ProjectorDisplayFrame:
             ShownImage.RED_FOCUS: "Status: Red Focus Mode",
             ShownImage.UV_FOCUS: "Status: UV Focus Pattern",
         }
+        self.status_var.set(status_map.get(shown_image, "Status: Unknown"))
         
-        # Special status during patterning
-        if patterning_busy:
-            self.status_var.set("Status: PATTERNING IN PROGRESS")
-        else:
-            self.status_var.set(status_map.get(shown_image, "Status: Unknown"))
-        
-        # Determine which image to show
+        # Get the appropriate processed image based on mode
+        # Note: When patterning, we check patterning_busy flag as well
         img = None
-        cache_key = None
-        
-        if patterning_busy:
-            # During patterning, show the pattern being exposed
-            img = self.event_dispatcher.pattern.processed()
-            cache_key = ('pattern', id(self.event_dispatcher.pattern_image))
-        elif shown_image == ShownImage.RED_FOCUS:
+        if shown_image == ShownImage.RED_FOCUS:
             img = self.event_dispatcher.red_focus.processed()
-            cache_key = ('red_focus', id(self.event_dispatcher.red_focus_image))
-        elif shown_image == ShownImage.PATTERN:
+        # pattern case above uv focus case: when set_patterning_busy(True) is called,
+        # shown_image is never changed to PATTERN during patterning - it stays as UV_FOCUS
+        elif shown_image == ShownImage.PATTERN or self.event_dispatcher.patterning_busy:
             img = self.event_dispatcher.pattern.processed()
-            cache_key = ('pattern', id(self.event_dispatcher.pattern_image))
         elif shown_image == ShownImage.UV_FOCUS:
             img = self.event_dispatcher.uv_focus.processed()
-            cache_key = ('uv_focus', id(self.event_dispatcher.uv_focus_image))
         elif shown_image == ShownImage.FLATFIELD:
             # Flatfield might not be implemented, use pattern as fallback
             img = self.event_dispatcher.pattern.processed()
-            cache_key = ('pattern', id(self.event_dispatcher.pattern_image))
         
-        # Update image display
-        if img is None or shown_image == ShownImage.CLEAR:
+        # Update image
+        if img is None or (shown_image == ShownImage.CLEAR and not self.event_dispatcher.patterning_busy):
             # Show black placeholder when clear
-            if 'clear' not in self.cached_images:
-                placeholder = Image.new("RGB", self.display_size, "black")
-                self.cached_images['clear'] = image_to_tk_image(placeholder)
-            self.photo = self.cached_images['clear']
+            placeholder = Image.new("RGB", self.display_size, "black")
+            self.photo = image_to_tk_image(placeholder)
         else:
-            # Create thumbnail with caching
-            self.photo = self._create_thumbnail(img, cache_key)
+            img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
+            self.photo = image_to_tk_image(img)
         
         self.label.configure(image=self.photo)
 
