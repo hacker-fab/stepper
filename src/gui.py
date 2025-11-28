@@ -1010,18 +1010,18 @@ class StagePositionFrame:
     
     def create_xy_control(self, parent):
         """Create circular XY control with 4 quadrants and 4 layers each"""
-        canvas_size = 300
+        canvas_size = 255
         center = canvas_size // 2
         
         self.xy_canvas = tkinter.Canvas(parent, width=canvas_size, height=canvas_size, 
-                                   bg='#34495e', highlightthickness=0)
+                                   bg='#e4e4e3', highlightthickness=0)
         self.xy_canvas.pack()
         
         # Step sizes for each layer (inner to outer)
         step_sizes = [10, 50, 100, 250]
         
         # Radii for the 4 layers (inner to outer)
-        radii = [40, 75, 110, 145]
+        radii = [31, 62, 94, 125]
         
         # Colors for each layer (lighter as you go out)
         colors = ['#52796f', '#5a9a8b', '#7ab8a8', '#95c9be']
@@ -1086,7 +1086,7 @@ class StagePositionFrame:
         distance = math.sqrt(dx**2 + dy**2)
         
         # Determine which layer (step size)
-        radii = [40, 75, 110, 145]
+        radii = [31, 62, 94, 125]
         step_sizes = [10, 50, 100, 250]
         
         step_size = None
@@ -1118,8 +1118,8 @@ class StagePositionFrame:
                 self.event_dispatcher.move_relative({"y": -step_size})
     
     def create_z_control(self, parent):
-        bar_width = 80
-        section_height = 35
+        bar_width = 60
+        section_height = 30
         total_height = section_height * 8
         
         self.z_canvas = tkinter.Canvas(parent, width=bar_width, height=total_height,
@@ -1792,8 +1792,8 @@ class RedModeFrame:
         self.stage_position_frame.frame.grid(row=0, column=0)
 
         # test tiling check button & preview
-        self.tilting_check_frame  = TilingCheckFrame(self.middle_frame, event_dispatcher)
-        self.tilting_check_frame.frame.grid(row=0, column = 1)
+        self.tiling_check_frame  = TilingCheckFrame(self.middle_frame, event_dispatcher)
+        self.tiling_check_frame.frame.grid(row=0, column = 1)
         
         # Pattern preview display (right side)
         self.pattern_display = PatternDisplayFrame(self.right_frame, event_dispatcher)
@@ -1999,7 +1999,6 @@ class ModeSelectFrame:
             return "red" 
         else:
             return "uv"
-
 
 class GlobalSettingsFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher, enable_detection: bool = False):
@@ -2253,7 +2252,7 @@ class ProjectorDisplayFrame:
         
         # Create placeholder image
         # Using a similar size to camera preview for consistency
-        self.display_size = THUMBNAIL_SIZE # tuple 160, 90
+        self.display_size = (320, 180)
         placeholder = Image.new("RGB", self.display_size, "black")
         self.photo = image_to_tk_image(placeholder)
         
@@ -2319,8 +2318,8 @@ class TilingCheckFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
         self.event_dispatcher = event_dispatcher
-        self.img_w = 1600 # output from tiling 
-        self.img_h = 900
+        self.img = event_dispatcher.pattern_image
+        self.img_w, self.img_h = 2000, 1125 # self.img.size
 
         self.capture_button = ttk.Button(
             self.frame, 
@@ -2369,11 +2368,10 @@ class TilingCheckFrame:
     
     def takeAndStitchMapImages(self, img_w, img_h, stride_x, stride_y):
         """
-        Take snapshots to cover an area of img_w * img_h with Z-shaped movement.
-        Crop all snapshots to stride_x * stride_y
+        Take snapshots to cover an area of img_w * img_h, move in snake pattern
+        Move in stride_x and y
+        Crop all snapshots to stride_x * stride_y in the center
         Paste them to the blank canvas
-        stride_x: Horizontal distance between snapshots (in microns)
-        stride_y: Vertical distance
         """
         
         num_cols = img_w // stride_x
@@ -2399,27 +2397,36 @@ class TilingCheckFrame:
         start_x = orig_x - delta_x
         start_y = orig_y - delta_y
 
+        # move in snake pattern with left to right on even rows
+        # and right to left on odd rows
         for row in range(num_rows):
             current_y = start_y + row * stride_y
             
-            # Move to start of row
+            if row % 2 == 0:
+                col_range = range(num_cols)
+                first_x = start_x
+            else:
+                col_range = range(num_cols - 1, -1, -1)
+                first_x = start_x + (num_cols - 1) * stride_x
+
+            # move to the next row
             self.event_dispatcher.move_absolute({
-                "x": start_x, # first col
+                "x": first_x,
                 "y": current_y,
                 "z": orig_z
             })
-            self.event_dispatcher.non_blocking_delay(0.5)
+            self.event_dispatcher.non_blocking_delay(2)
             
-            # Iterate through columns in this row
-            for col in range(num_cols):
+            # columns in this row
+            for idx, col in enumerate(col_range):
                 current_x = start_x + col * stride_x
-                if col > 0:
+                if idx > 0: # idx = 0 first one don't need to move
                     self.event_dispatcher.move_absolute({
                         "x": current_x,
                         "y": current_y,
                         "z": orig_z
                     })
-                    self.event_dispatcher.non_blocking_delay(0.5)
+                    self.event_dispatcher.non_blocking_delay(2)
                 
                 captured_image = self.capture_current_image()
                 # crop
@@ -2434,7 +2441,7 @@ class TilingCheckFrame:
                 y_pos = row * stride_y
                 stitched_image.paste(cropped_img, (x_pos, y_pos))
                 
-                self.event_dispatcher.non_blocking_delay(0.3)
+                self.event_dispatcher.non_blocking_delay(0.5)
                 self.frame.update()
         
         # Return to starting position
@@ -2466,9 +2473,7 @@ class MapFrame:
             self.frame, 
             width=self.canvas_size, 
             height=self.canvas_size,
-            bg='#34495e',
-            highlightthickness=2,
-            highlightbackground='#2c3e50'
+            bg='#3F9490',
         )
         self.canvas.grid(row=0, column=0, padx=5, pady=5)
         
@@ -2513,9 +2518,8 @@ class MapFrame:
         
         marker = self.canvas.create_rectangle(
             x1_px, y1_px, x2_px, y2_px,
-            fill='#3498db',  # Blue fill
-            outline='#2980b9',  # Darker blue outline
-            width=1
+            fill='#7BB7B7',
+            width=0
         )
 
         return marker
@@ -2540,7 +2544,7 @@ class MapFrame:
         marker = self.canvas.create_rectangle(
                 x1_px, y1_px, x2_px, y2_px,
                 fill='',  # No fill
-                outline='#e74c3c',  # Red outline
+                outline='#E86E7F',  # Red outline
                 width=2
             )
         
@@ -2607,19 +2611,24 @@ class LithographerGui:
         self.shown_image = ShownImage.CLEAR
 
         self.top_panel = ttk.Frame(self.root)
-        self.top_panel.grid(row=0, column=0)
-        
-        # Camera frame (top)
-        self.camera = CameraFrame(self.top_panel, self.event_dispatcher, config.camera, config.camera_scale)
-        self.camera.frame.grid(row=0, column=1)
-
-        # Projector display (top)
-        self.projector_display = ProjectorDisplayFrame(self.top_panel, self.event_dispatcher)
-        self.projector_display.frame.grid(row=0, column=2, padx=5, pady=5, sticky='')
+        self.top_panel.grid(row=0, column=0, sticky='ew')
 
         # Map (top)
         self.map = MapFrame(self.top_panel, self.event_dispatcher)
-        self.map.frame.grid(row=0, column=0)
+        self.map.frame.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Camera frame (top)
+        self.camera = CameraFrame(self.top_panel, self.event_dispatcher, config.camera, config.camera_scale)
+        self.camera.frame.grid(row=0, column=1, padx=5, pady=5)
+
+        # Projector display (top)
+        self.projector_display = ProjectorDisplayFrame(self.top_panel, self.event_dispatcher)
+        self.projector_display.frame.grid(row=0, column=2, padx=5, pady=5)
+
+        # center the frames
+        self.top_panel.grid_columnconfigure(0, weight=1)
+        self.top_panel.grid_columnconfigure(1, weight=1)
+        self.top_panel.grid_columnconfigure(2, weight=1)
 
         # Progress bar
         self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
