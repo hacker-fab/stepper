@@ -1077,7 +1077,7 @@ class StagePositionFrame:
     
     def _on_xy_click(self, event):
         """Handle clicks on the XY canvas"""
-        canvas_size = 300
+        canvas_size = 255
         center = canvas_size // 2
         
         # Calculate distance from center and angle
@@ -2318,8 +2318,6 @@ class TilingCheckFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
         self.event_dispatcher = event_dispatcher
-        self.img = event_dispatcher.pattern_image
-        self.img_w, self.img_h = 2000, 1125 # self.img.size
 
         self.capture_button = ttk.Button(
             self.frame, 
@@ -2335,6 +2333,10 @@ class TilingCheckFrame:
         self.frame.columnconfigure(0, weight=1)
 
     def capture_and_stitch(self):
+        self.img = self.event_dispatcher.pattern_image
+        self.img_w, self.img_h = self.img.size #2000, 1125 # self.img.size
+        print(self.img_w, self.img_h)
+        
         stride_x, stride_y = 800, 450
         # Disable button during capture
         self.capture_button.config(state='disabled', text="Capturing...")
@@ -2426,7 +2428,7 @@ class TilingCheckFrame:
                         "y": current_y,
                         "z": orig_z
                     })
-                    self.event_dispatcher.non_blocking_delay(2)
+                    self.event_dispatcher.non_blocking_delay(2.5)
                 
                 captured_image = self.capture_current_image()
                 # crop
@@ -2450,6 +2452,16 @@ class TilingCheckFrame:
             "y": orig_y,
             "z": orig_z
         })
+
+        # Overlay the pattern image at center with 30% transparency
+        pattern_img = self.event_dispatcher.pattern_image.copy().convert('RGBA')
+        pattern_img.putalpha(int(255 * 0.2))
+        pattern_w, pattern_h = pattern_img.size
+        center_x = (stitched_width - pattern_w) // 2
+        center_y = (stitched_height - pattern_h) // 2
+        stitched_image = stitched_image.convert('RGBA')
+        stitched_image.paste(pattern_img, (center_x, center_y), pattern_img)
+        stitched_image = stitched_image.convert('RGB')
 
         return stitched_image
 
