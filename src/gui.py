@@ -1014,7 +1014,7 @@ class StagePositionFrame:
         center = canvas_size // 2
         
         self.xy_canvas = tkinter.Canvas(parent, width=canvas_size, height=canvas_size, 
-                                   bg='#e4e4e3', highlightthickness=0)
+                                   bg='#f0f0f0', highlightthickness=0)
         self.xy_canvas.pack()
         
         # Step sizes for each layer (inner to outer)
