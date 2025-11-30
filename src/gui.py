@@ -2334,26 +2334,32 @@ class TilingCheckFrame:
 
     def capture_and_stitch(self):
         self.img = self.event_dispatcher.pattern_image
-        self.img_w, self.img_h = self.img.size #2000, 1125 # self.img.size
-        print(self.img_w, self.img_h)
+        self.img_w, self.img_h = self.img.size # 3840*2, 2160*2 # in pixels 
+        print("self.img_w, self.img_h: ", self.img_w, self.img_h)
+
+        self.tile_width, self.tile_height = 3840, 2160 # in pixels, defined in TilingFrame
         
-        stride_x, stride_y = 800, 450
+        # the distance that the stage will move in um
+        stride_x, stride_y = 798, 448 # 1037 / 1.3 and 583 / 1.3
+        # crop image pixels
+        # each snapshot captured is 1920 x 1080 pixels
+        crop_x, crop_y = 1477, 831 # 1920 / 1.3 and 1080 / 1.3
         # Disable button during capture
         self.capture_button.config(state='disabled', text="Capturing...")
         self.frame.update()
         
-        stitched_image = self.takeAndStitchMapImages(self.img_w, self.img_h, stride_x, stride_y)
+        stitched_image = self.takeAndStitchMapImages(stride_x, stride_y, crop_x, crop_y)
         if stitched_image:
-            self.display_image(stitched_image, stride_x, stride_y)
+            self.display_image(stitched_image, crop_x, crop_y)
             print("Stitching complete!")
         else:
             print("Failed to stitch images")
             
         self.capture_button.config(state='normal', text="Capture & Stitch Chip Imges")
 
-    def display_image(self, pil_image, stride_x, stride_y):
+    def display_image(self, pil_image, crop_x, crop_y):
         display_img = pil_image.copy()
-        display_img = display_img.resize((stride_x//2, stride_y//2), Image.Resampling.LANCZOS)
+        display_img = display_img.resize((crop_x//4, crop_y//4), Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(display_img)
         self.preview_label.config(image=photo)
         self.preview_label.image = photo
@@ -2368,36 +2374,36 @@ class TilingCheckFrame:
             print("No camera image available")
             return None
     
-    def takeAndStitchMapImages(self, img_w, img_h, stride_x, stride_y):
+    def takeAndStitchMapImages(self, stride_x, stride_y, crop_x, crop_y):
         """
-        Take snapshots to cover an area of img_w * img_h, move in snake pattern
-        Move in stride_x and y
-        Crop all snapshots to stride_x * stride_y in the center
+        Take snapshots num_cols * num_rows times, move in snake pattern
+        Move in stride_x and y um in distance
+        Crop all snapshots to crop_x, crop_y pixels in the center
         Paste them to the blank canvas
+        Overlay the pattern image in the center
         """
-        
-        num_cols = img_w // stride_x
-        num_rows = img_h // stride_y
-
-        if num_cols * stride_x < img_w:
+        # calculate how many times the stage will move: num cols & rows
+        total_x_um = self.img_w * 1037 / 3840
+        total_y_um = self.img_h * 583 / 2160
+        num_cols = int(total_x_um // stride_x)
+        num_rows = int(total_y_um // stride_y)
+        if num_cols * stride_x < total_x_um:
             num_cols += 1
-        if num_rows * stride_y < img_h:
+        if num_rows * stride_y < total_y_um:
             num_rows += 1
-        
-        print(f"Starting map capture: {num_rows} rows x {num_cols} cols\
-              = {num_rows * num_cols} images")
+        print("num_cols, num_rows: ", num_cols, num_rows)
         
         # large blank canvas
-        stitched_width = num_cols * stride_x
-        stitched_height = num_rows * stride_y
+        stitched_width = num_cols * crop_x
+        stitched_height = num_rows * crop_y
         stitched_image = Image.new('RGB', (stitched_width, stitched_height), color='black')
         
         # get starting position: center the chip
         orig_x, orig_y, orig_z = self.event_dispatcher.stage_setpoint
-        delta_x = (num_cols * stride_x - img_w) / 2
-        delta_y = (num_rows * stride_y - img_h) / 2
-        start_x = orig_x - delta_x
-        start_y = orig_y - delta_y
+        delta_x_um = (num_cols * stride_x - total_x_um) / 2
+        delta_y_um = (num_rows * stride_y - total_y_um) / 2
+        start_x = orig_x - delta_x_um
+        start_y = orig_y - delta_y_um
 
         # move in snake pattern with left to right on even rows
         # and right to left on odd rows
@@ -2433,14 +2439,15 @@ class TilingCheckFrame:
                 captured_image = self.capture_current_image()
                 # crop
                 orig_width, orig_height = captured_image.size
-                left = (orig_width - stride_x) // 2
-                top = (orig_height - stride_y) // 2
-                right = left + stride_x
-                bottom = top + stride_y
+                # each snapshot captured is 1920 x 1080 pixels
+                left = (orig_width - crop_x) // 2
+                top = (orig_height - crop_y) // 2
+                right = left + crop_x
+                bottom = top + crop_y
                 cropped_img = captured_image.crop((left, top, right, bottom))
                 # paste
-                x_pos = col * stride_x
-                y_pos = row * stride_y
+                x_pos = col * crop_x
+                y_pos = (num_rows - 1 - row) * crop_y
                 stitched_image.paste(cropped_img, (x_pos, y_pos))
                 
                 self.event_dispatcher.non_blocking_delay(0.5)
@@ -2453,12 +2460,14 @@ class TilingCheckFrame:
             "z": orig_z
         })
 
-        # Overlay the pattern image at center with 30% transparency
-        pattern_img = self.event_dispatcher.pattern_image.copy().convert('RGBA')
-        pattern_img.putalpha(int(255 * 0.2))
-        pattern_w, pattern_h = pattern_img.size
-        center_x = (stitched_width - pattern_w) // 2
-        center_y = (stitched_height - pattern_h) // 2
+        # Overlay the pattern image at center with 50% transparency
+        pattern_img = self.img.copy().convert('RGBA') # pattern image
+        # resize pattern image to match the snapshot's pixel
+        # each snapshot has half of each tile's w and h
+        pattern_img = pattern_img.resize((self.img_w//2, self.img_h//2), Image.Resampling.LANCZOS)
+        pattern_img.putalpha(int(255 * 0.5))
+        center_x = (stitched_width - self.img_w//2) // 2
+        center_y = (stitched_height - self.img_h//2) // 2
         stitched_image = stitched_image.convert('RGBA')
         stitched_image.paste(pattern_img, (center_x, center_y), pattern_img)
         stitched_image = stitched_image.convert('RGB')
