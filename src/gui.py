@@ -2309,8 +2309,9 @@ class ProjectorDisplayFrame:
             placeholder = Image.new("RGB", self.display_size, "black")
             self.photo = image_to_tk_image(placeholder)
         else:
-            img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
-            self.photo = image_to_tk_image(img)
+            display_img = img.copy()
+            display_img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
+            self.photo = image_to_tk_image(display_img)
         
         self.label.configure(image=self.photo)
 
