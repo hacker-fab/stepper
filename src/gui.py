@@ -1754,6 +1754,9 @@ class TilingFrame:
 
         self.red_to_uv_offset = -40
 
+        self.overall_pattern_size_w = 0
+        self.overall_pattern_size_h = 0
+
         #Defaults set based on DLP471TP and a 10x objective
         #5.4 um Pixel Pitch
         #Width 10.368 mm
@@ -1875,6 +1878,8 @@ class TilingFrame:
                                           output_dir="tiles"):
             img = Image.open(image_path)
             img_w, img_h = img.size
+            self.overall_pattern_size_w = img_w
+            self.overall_pattern_size_h = img_h
             os.makedirs(output_dir, exist_ok=True)
 
             stride_x = tile_width - overlap_x
