@@ -1747,143 +1747,6 @@ class OffsetAmountFrame:
         self.amount_spinbox = ttk.Spinbox(self.frame, from_=-20, to=20, textvariable=self.amount_var, width=3)
         self.amount_spinbox.grid(row=0, column=3)
 
-
-# class TilingFrame:
-#     def __init__(self, parent, model: EventDispatcher):
-#         self.frame = ttk.LabelFrame(parent, text="Tiling")
-#         self.model = model
-
-#         # TODO: Tune default offsets
-#         self.x_settings = OffsetAmountFrame(self.frame, "X", 1050)
-#         self.x_settings.frame.grid(row=0, column=0)
-#         self.y_settings = OffsetAmountFrame(self.frame, "Y", 900)
-#         self.y_settings.frame.grid(row=1, column=0)
-
-#         def on_begin():
-#             x_amount = int(self.x_settings.amount_var.get())
-#             x_offset = int(self.x_settings.offset_var.get())
-#             x_dir = 1 if x_amount > 0 else -1
-#             x_amount = abs(x_amount)
-
-#             y_amount = int(self.y_settings.amount_var.get())
-#             y_offset = int(self.y_settings.offset_var.get())
-#             y_dir = 1 if y_amount > 0 else -1
-#             y_amount = abs(y_amount)
-
-#             x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
-
-#             #load tile images
-            
-
-#             for x_idx in range(x_amount):
-#                 for y_idx in range(y_amount):
-#                     self.model.move_absolute(
-#                         {
-#                             "x": x_start + x_dir * x_idx * x_offset,
-#                             "y": y_start + y_dir * y_idx * y_offset,
-#                         }
-#                     )
-#                     self.model.autofocus(blue_only=False)
-
-#                     self.model.move_relative({"z": -85.0})
-#                     self.model.non_blocking_delay(0.5)
-#                     self.model.enter_uv_mode(mode_switch_autofocus=False)
-#                     self.model.autofocus(blue_only=True)
-
-#                     self.model.begin_patterning()
-#                     self.model.enter_red_mode(mode_switch_autofocus=False)
-
-#         def on_abort():
-#             pass
-
-#         self.begin_tiling_button = ttk.Button(self.frame, text="Begin Tiling", command=on_begin, state="enabled")
-#         self.begin_tiling_button.grid(row=2, column=0)
-#         self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
-#         self.abort_tiling_button.grid(row=3, column=0)
-
-
-class LithographerGui:
-    root: Tk
-    event_dispatcher: EventDispatcher
-
-    def __init__(self, config: LithographerConfig):
-        self.root = Tk()
-        self.event_dispatcher = EventDispatcher(
-            config.stage, 
-            TkProjector(self.root), 
-            self.root, 
-            config.camera,
-            config.red_exposure,
-            config.uv_exposure,
-        )
-        self.event_dispatcher.initialize_alignment(config)
-
-        self.shown_image = ShownImage.CLEAR
-
-        self.camera = CameraFrame(self.root, self.event_dispatcher, config.camera, config.camera_scale)
-        self.camera.frame.grid(row=0, column=0)
-
-        self.middle_panel = ttk.Frame(self.root)
-        self.middle_panel.grid(row=2, column=0)
-
-        self.bottom_panel = ttk.Frame(self.root)
-        self.bottom_panel.grid(row=3, column=0)
-
-        # self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
-        # self.exposure_history_frame.frame.grid(row=0, column=4)
-
-        self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
-        self.chip_frame.frame.grid(row=0, column=0)
-
-        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.alignment.enabled)
-        self.global_settings_frame.frame.grid(row=0, column=2)
-
-        self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
-        self.stage_position_frame.frame.grid(row=0, column=1)
-
-        self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
-        self.image_adjust_frame.frame.grid(row=0, column=1)
-
-        self.mode_select_frame = ModeSelectFrame(self.middle_panel, self.event_dispatcher)
-        self.mode_select_frame.notebook.grid(row=0, column=2)
-
-        self.tiling_frame = TilingFrame(self.middle_panel, self.event_dispatcher)
-        self.tiling_frame.frame.grid(row=0, column=3)
-
-        self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
-        self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
-
-        self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
-        self.pattern_progress.grid(row=1, column=0, sticky="ew")
-
-        self.multi_image_select_frame = MultiImageSelectFrame(self.middle_panel, self.event_dispatcher)
-        self.multi_image_select_frame.frame.grid(row=0, column=0)
-
-        self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
-        # self.debug.info("Debug info will appear here")
-
-        # Things that have to after the main loop begins
-        def on_start():
-            self.camera.start()
-            self.event_dispatcher.enter_red_mode(mode_switch_autofocus=False) # ensure exposure settings are correctly set
-            if self.event_dispatcher.hardware.stage.has_homing():
-                self.event_dispatcher.home_stage()
-                #self.event_dispatcher.move_relative({"x": 5000.0, "y": 3500.0, "z": 1900.0})
-            messagebox.showinfo(
-                message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
-            )
-
-        self.root.after(0, on_start)
-    
-
-    def cleanup(self):
-        print("Patterning GUI closed.")
-        print("TODO: Cleanup")
-        self.root.destroy()
-        self.camera.cleanup()
-        # if RUN_WITH_STAGE:
-        # serial_port.close()
-
 class TilingFrame:
     def __init__(self, parent, model: EventDispatcher):
         self.frame = ttk.LabelFrame(parent, text="Tiling")
@@ -2157,6 +2020,89 @@ class TilingFrame:
         self.begin_tiling_button.grid(row=1, column=0)
         self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
         self.abort_tiling_button.grid(row=2, column=0)
+
+
+class LithographerGui:
+    root: Tk
+    event_dispatcher: EventDispatcher
+
+    def __init__(self, config: LithographerConfig):
+        self.root = Tk()
+        self.event_dispatcher = EventDispatcher(
+            config.stage, 
+            TkProjector(self.root), 
+            self.root, 
+            config.camera,
+            config.red_exposure,
+            config.uv_exposure,
+        )
+        self.event_dispatcher.initialize_alignment(config)
+
+        self.shown_image = ShownImage.CLEAR
+
+        self.camera = CameraFrame(self.root, self.event_dispatcher, config.camera, config.camera_scale)
+        self.camera.frame.grid(row=0, column=0)
+
+        self.middle_panel = ttk.Frame(self.root)
+        self.middle_panel.grid(row=2, column=0)
+
+        self.bottom_panel = ttk.Frame(self.root)
+        self.bottom_panel.grid(row=3, column=0)
+
+        # self.exposure_history_frame = ExposureHistoryFrame(self.bottom_panel, self.event_dispatcher)
+        # self.exposure_history_frame.frame.grid(row=0, column=4)
+
+        self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
+        self.chip_frame.frame.grid(row=0, column=0)
+
+        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.alignment.enabled)
+        self.global_settings_frame.frame.grid(row=0, column=2)
+
+        self.stage_position_frame = StagePositionFrame(self.middle_panel, self.event_dispatcher)
+        self.stage_position_frame.frame.grid(row=0, column=1)
+
+        self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
+        self.image_adjust_frame.frame.grid(row=0, column=1)
+
+        self.mode_select_frame = ModeSelectFrame(self.middle_panel, self.event_dispatcher)
+        self.mode_select_frame.notebook.grid(row=0, column=2)
+
+        self.tiling_frame = TilingFrame(self.middle_panel, self.event_dispatcher)
+        self.tiling_frame.frame.grid(row=0, column=3)
+
+        self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
+        self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
+
+        self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
+        self.pattern_progress.grid(row=1, column=0, sticky="ew")
+
+        self.multi_image_select_frame = MultiImageSelectFrame(self.middle_panel, self.event_dispatcher)
+        self.multi_image_select_frame.frame.grid(row=0, column=0)
+
+        self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
+        # self.debug.info("Debug info will appear here")
+
+        # Things that have to after the main loop begins
+        def on_start():
+            self.camera.start()
+            self.event_dispatcher.enter_red_mode(mode_switch_autofocus=False) # ensure exposure settings are correctly set
+            if self.event_dispatcher.hardware.stage.has_homing():
+                self.event_dispatcher.home_stage()
+                #self.event_dispatcher.move_relative({"x": 5000.0, "y": 3500.0, "z": 1900.0})
+            messagebox.showinfo(
+                message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
+            )
+
+        self.root.after(0, on_start)
+    
+
+    def cleanup(self):
+        print("Patterning GUI closed.")
+        print("TODO: Cleanup")
+        self.root.destroy()
+        self.camera.cleanup()
+        # if RUN_WITH_STAGE:
+        # serial_port.close()
 
 
 def main():
