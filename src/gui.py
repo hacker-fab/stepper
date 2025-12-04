@@ -1884,8 +1884,6 @@ class LithographerGui:
         # if RUN_WITH_STAGE:
         # serial_port.close()
 
-#This is my tiling testing area
-
 class TilingFrame:
     def __init__(self, parent, model: EventDispatcher):
         self.frame = ttk.LabelFrame(parent, text="Tiling")
@@ -1893,7 +1891,6 @@ class TilingFrame:
 
         self.red_to_uv_offset = -40
 
-        # TODO: Tune default offsets
         #Defaults set based on DLP471TP and a 10x objective
         #5.4 um Pixel Pitch
         #Width 10.368 mm
@@ -1995,7 +1992,8 @@ class TilingFrame:
                 dy /= count_y
 
             # Move accordingly (if no top markers, dy=0)
-            #If a small amount of alignment is needed move the image otherwise move the stage
+            #If a small amount of alignment is needed move the image otherwise move the stage since we have far more percision in moving the image than the stage
+            #The con of this is that large movements of the image result in cropping of the image
             #TODO calibrate the stage move threshold
             if(dx or dy < 10):
                 #move the image instead of the stage
@@ -2068,13 +2066,15 @@ class TilingFrame:
             image_path = tile_dir+"/tile_"+str(y_idx)+","+str(x_idx)+".png"
             current_tile = Image.open(image_path)
             model.set_pattern_image(current_tile, image_path)
-            #move to the next position
-            self.model.move_absolute(
-                {
-                    "x": x_start + x_dir * x_idx * x_offset,
-                    "y": y_start + y_dir * y_idx * y_offset,
-                }
-            )
+            #move to the next position if not the first tile
+            #the first tile is exposed where the operator(user of the stepper) places it
+            if(~(x_idx == 0 & y_idx == 0)):
+                self.model.move_absolute(
+                    {
+                        "x": x_start + x_dir * x_idx * x_offset,
+                        "y": y_start + y_dir * y_idx * y_offset,
+                    }
+                )
             #Red autofocus
             self.model.autofocus(blue_only=False)
             
@@ -2100,19 +2100,19 @@ class TilingFrame:
             self.model.begin_patterning()
 
             #TODO Add second exposure of the alignment markers
+            # I tried doing this with a non blocking delay but didnt have success
+            # I think that loading a pattern of the alignment marks that is hardcoded into the software might be the best bet
 
             #Offset back to red mode
             self.model.enter_red_mode(mode_switch_autofocus=False)
             self.model.move_relative({"z": -1 * self.red_to_uv_offset})
 
 
-            
-
-        
 
         def segment():
             #create tile directory and segment images
             split_image_with_overlap(model.pattern_image_path)
+            #load the first tile for operator placement
             model.set_red_focus_source(RedFocusSource.PATTERN)
             image_path = "tiles/tile_"+str(0)+","+str(0)+".png"
             current_tile = Image.open(image_path)
@@ -2133,8 +2133,6 @@ class TilingFrame:
             y_amount = abs(y_amount)
 
             x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
-
-            #load tile images
           
             #Move in Snake pattern with left to right on even rows and right to left on odd rows
             for y_idx in range(y_amount):
