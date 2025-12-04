@@ -32,7 +32,7 @@ from stage_control.stage_controller import StageController
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
-#The values set here are not uses and instead come from the config file
+#The values set here are not used and instead come from the config file
 DEFAULT_RED_EXPOSURE: float = 4167.0
 DEFAULT_UV_EXPOSURE: float = 25000.0
 
