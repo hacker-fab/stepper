@@ -2204,6 +2204,8 @@ class TilingFrame:
 
         self.red_to_uv_offset = -40
 
+        self.overall_mask = None
+
         self.overall_pattern_size_w = 0
         self.overall_pattern_size_h = 0
 
@@ -2429,6 +2431,7 @@ class TilingFrame:
 
         def segment():
             #create tile directory and segment images
+            self.overall_mask = model.pattern_image_path
             split_image_with_overlap(model.pattern_image_path)
             #load the first tile for operator placement
             model.set_red_focus_source(RedFocusSource.PATTERN)
