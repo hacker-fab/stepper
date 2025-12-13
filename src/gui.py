@@ -2545,11 +2545,9 @@ class ProjectorDisplayFrame:
         self.label.configure(image=self.photo)
 
 class TilingCheckFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher, img_w, img_h):
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
         self.event_dispatcher = event_dispatcher
-        self.img_w = img_w
-        self.img_h = img_h
 
         self.capture_button = ttk.Button(
             self.frame, 
@@ -2565,8 +2563,8 @@ class TilingCheckFrame:
         self.frame.columnconfigure(0, weight=1)
 
     def capture_and_stitch(self):
-        # self.img = self.event_dispatcher.pattern_image
-        # self.img_w, self.img_h = self.img.size # 3840*2, 2160*2 # in pixels 
+        self.img = self.event_dispatcher.pattern_image
+        self.img_w, self.img_h = self.img.size # 3840*2, 2160*2 # in pixels 
         print("self.img_w, self.img_h: ", self.img_w, self.img_h)
 
         self.tile_width, self.tile_height = 3840, 2160 # in pixels, defined in TilingFrame
