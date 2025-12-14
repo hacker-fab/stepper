@@ -1772,7 +1772,7 @@ class RedModeFrame:
         self.frame = ttk.Frame(parent, name="redmodeframe")
         self.event_dispatcher = event_dispatcher
 
-        # Create left and right sections
+        # Create left middle right sections
         self.left_frame = ttk.Frame(self.frame)
         self.left_frame.grid(row=0, column=0)
         
@@ -1793,8 +1793,8 @@ class RedModeFrame:
         self.stage_position_frame.frame.grid(row=0, column=0)
 
         # test tiling check button & preview
-        self.tiling_check_frame  = TilingCheckFrame(self.middle_frame, event_dispatcher)
-        self.tiling_check_frame.frame.grid(row=0, column = 1)
+        # self.tiling_check_frame  = TilingCheckFrame(self.middle_frame, event_dispatcher)
+        # self.tiling_check_frame.frame.grid(row=0, column = 1)
         
         # Pattern preview display (right side)
         self.pattern_display = PatternDisplayFrame(self.right_frame, event_dispatcher)
@@ -2548,9 +2548,10 @@ class ProjectorDisplayFrame:
         self.label.configure(image=self.photo)
 
 class TilingCheckFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
+    def __init__(self, parent, event_dispatcher: EventDispatcher, img):
         self.frame = ttk.Frame(parent)
         self.event_dispatcher = event_dispatcher
+        self.img = img
 
         self.capture_button = ttk.Button(
             self.frame, 
@@ -2566,7 +2567,6 @@ class TilingCheckFrame:
         self.frame.columnconfigure(0, weight=1)
 
     def capture_and_stitch(self):
-        self.img = self.event_dispatcher.pattern_image
         self.img_w, self.img_h = self.img.size # 3840*2, 2160*2 # in pixels 
         print("self.img_w, self.img_h: ", self.img_w, self.img_h)
 
