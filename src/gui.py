@@ -2466,9 +2466,9 @@ class TilingFrame:
         self.segment_images_button = ttk.Button(self.frame, text="Segement Images", command=segment, state="enabled")
         self.segment_images_button.grid(row=0, column=0)
         self.begin_tiling_button = ttk.Button(self.frame, text="Begin Tiling", command=on_begin, state="enabled")
-        self.begin_tiling_button.grid(row=1, column=0)
+        self.begin_tiling_button.grid(row=2, column=0)
         self.tiling_check_button = TilingCheckFrame(self.frame, model, self.overall_mask)
-        self.tiling_check_button.grid(row = 2, column =0)
+        self.tiling_check_button.frame.grid(row=1, column = 0)
         self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
         self.abort_tiling_button.grid(row=3, column=0)
 
