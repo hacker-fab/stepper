@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import serial
 import math
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageOps
 from ultralytics import YOLO
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
@@ -33,15 +33,14 @@ from stage_control.stage_controller import StageController
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
-#The values set here are not used and instead come from the config file
 DEFAULT_RED_EXPOSURE: float = 4167.0
 DEFAULT_UV_EXPOSURE: float = 25000.0
 
 def compute_focus_score(camera_image, blue_only, save=False):
     camera_image = camera_image.copy()
     camera_image[:, :, 1] = 0  # green should never be used for focus
-    if blue_only:
-      camera_image[:, :, 0] = 0  # disable red
+    #if blue_only:
+    #   camera_image[:, :, 0] = 0  # disable red
     img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
     img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
     mean = np.sum(img) / (img.shape[0] * img.shape[1])
@@ -527,8 +526,8 @@ class EventDispatcher:
     def movement_lock(self):
         if self.patterning_busy or self.autofocus_busy:
             return MovementLock.LOCKED
-        # elif (self.shown_image == ShownImage.UV_FOCUS or self.shown_image == ShownImage.PATTERN):
-        #     return MovementLock.XY_LOCKED
+        elif (self.shown_image == ShownImage.UV_FOCUS or self.shown_image == ShownImage.PATTERN):
+            return MovementLock.XY_LOCKED
         else:
             return MovementLock.UNLOCKED
 
@@ -814,10 +813,10 @@ class CameraFrame:
         self.gui_camera_scale = camera_scale
 
         self.focus_score_label = ttk.Label(self.frame, text="Focus Score: N/A")
-        self.focus_score_label.grid(row=1, column=0)
+        self.focus_score_label.grid(row=0, column=1)
 
         self.snapshot = SnapshotFrame(self.frame, c is not None, event_dispatcher)
-        self.snapshot.frame.grid(row=2, column=0)
+        self.snapshot.frame.grid(row=1, column=0)
 
         self.event_dispatcher = event_dispatcher
 
@@ -894,22 +893,17 @@ class CameraFrame:
         self.label.configure(image=gui_img)  # type:ignore
         self.gui_img = gui_img
 
+'''
 class StagePositionFrame:
-    def __init__(self, parent, event_dispatcher, uvmode):
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
-        self.event_dispatcher = event_dispatcher
-        
-        # Position display at top
-        self.position_frame = ttk.LabelFrame(self.frame, text="Current Position (µm)")
-        self.position_frame.grid(row=0, column=0, columnspan=2, pady=5, sticky="ew")
-        
+
         self.position_intputs = []
-        # Track all interactive widgets for locking
+        self.step_size_intputs = []
+
         self.xy_widgets = []
         self.z_widgets = []
 
-        self.zlock = False
-        
         # Absolute
 
         self.absolute_frame = ttk.LabelFrame(self.frame, text="Stage Position")
@@ -919,58 +913,82 @@ class StagePositionFrame:
             self.position_intputs.append(IntEntry(parent=self.absolute_frame, default=0))
             self.position_intputs[-1].widget.grid(row=0, column=i)
 
-            if i in (0, 1):
-                self.xy_widgets.append(self.position_intputs[i].widget)
-            else:
-                self.z_widgets.append(self.position_intputs[i].widget)
-
-        def callback_set(): # command for the set position button
+        def callback_set():
             x, y, z = self._position()
             event_dispatcher.move_absolute({"x": x, "y": y, "z": z})
 
         self.set_position_button = ttk.Button(self.absolute_frame, text="Set Stage Position", command=callback_set)
         self.set_position_button.grid(row=1, column=0, columnspan=3, sticky="ew")
 
-        self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
-
         # Relative
 
-        control_frame = ttk.Frame(self.frame)
-        control_frame.grid(row=1, column=0, columnspan=2)
-        
-        # XY circular control: hide in UV mode
-        if not uvmode:
-            xy_frame = ttk.Frame(control_frame)
-            xy_frame.grid(row=0, column=0, padx=10)
-            self.create_xy_control(xy_frame)
-            z_col = 1
-        else:
-            z_col = 0
-        
-        # Z vertical control
-        z_frame = ttk.Frame(control_frame)
-        z_frame.grid(row=0, column=z_col, padx=10)
-        self.create_z_control(z_frame)
-        
+        self.relative_frame = ttk.LabelFrame(self.frame, text="Adjustment")
+        self.relative_frame.grid(row=1, column=0)
+
+        for i, coord in ((0, "x"), (1, "y"), (2, "z")):
+            self.step_size_intputs.append(
+                IntEntry(
+                    parent=self.relative_frame,
+                    default=10,
+                    min_value=-1000,
+                    max_value=1000,
+                )
+            )
+            self.step_size_intputs[-1].widget.grid(row=3, column=i)
+
+            def callback_pos(index, c):
+                event_dispatcher.move_relative({c: self.step_sizes()[index]})
+
+            def callback_neg(index, c):
+                event_dispatcher.move_relative({c: -self.step_sizes()[index]})
+
+            coord_inc_button = ttk.Button(
+                self.relative_frame,
+                text=f"+{coord.upper()}",
+                command=partial(callback_pos, i, coord),
+            )
+            coord_dec_button = ttk.Button(
+                self.relative_frame,
+                text=f"-{coord.upper()}",
+                command=partial(callback_neg, i, coord),
+            )
+
+            coord_inc_button.grid(row=0, column=i)
+            coord_dec_button.grid(row=1, column=i)
+
+            if i in (0, 1):
+                self.xy_widgets.append(coord_inc_button)
+                self.xy_widgets.append(coord_dec_button)
+                self.xy_widgets.append(self.position_intputs[i].widget)
+                self.xy_widgets.append(self.step_size_intputs[i].widget)
+            else:
+                self.z_widgets.append(coord_inc_button)
+                self.z_widgets.append(coord_dec_button)
+                self.z_widgets.append(self.position_intputs[i].widget)
+                self.z_widgets.append(self.step_size_intputs[i].widget)
+
+        ttk.Label(
+            self.relative_frame, text="Step Size (microns)", anchor="center"
+        ).grid(row=2, column=0, columnspan=3, sticky="ew")
+
+        self.all_widgets = self.xy_widgets + self.z_widgets + [self.set_position_button]
+
         def on_lock_change():
             lock = event_dispatcher.movement_lock
             match lock:
                 case MovementLock.UNLOCKED:
                     for w in self.all_widgets:
-                        if hasattr(w, 'configure'):
-                            w.configure(state="normal")
-                    self.zlock = False
-                    for rect_id, orig_color in self.z_rectangles:
-                        self.z_canvas.itemconfig(rect_id, fill=orig_color)
+                        w.configure(state="normal")
+                case MovementLock.XY_LOCKED:
+                    for w in self.xy_widgets:
+                        w.configure(state="disabled")
+                    for w in self.z_widgets:
+                        w.configure(state="normal")
+                    self.set_position_button.configure(state="normal")
                 case MovementLock.LOCKED:
                     for w in self.all_widgets:
-                        if hasattr(w, 'configure'):
-                            w.configure(state="disabled")
-                    self.zlock = True
-                    grey_color = '#b9bbb6'
-                    for rect_id, _ in self.z_rectangles:
-                        self.z_canvas.itemconfig(rect_id, fill=grey_color)
-    
+                        w.configure(state="disabled")
+
         event_dispatcher.add_event_listener(Event.MOVEMENT_LOCK_CHANGED, on_lock_change)
 
         def on_position_change():
@@ -980,6 +998,67 @@ class StagePositionFrame:
 
         event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, on_position_change)
 
+        self.shortcut_frame = ttk.LabelFrame(self.frame, text="Shortcuts")
+        self.shortcut_frame.grid(row=2, column=0)
+
+        def on_chip_origin():
+            event_dispatcher.move_absolute({ "x": -14500.0, "y": -13500.0, "z": -13844.0 })
+        def on_chip_unload():
+            event_dispatcher.move_absolute({ "x": -14500.0, "y": -14500.0, "z": -14500.0 })
+
+
+        btn_state = "normal" if event_dispatcher.hardware.stage.has_homing() else "disabled"
+        self.chip_origin_button = ttk.Button(self.shortcut_frame, text="Chip origin", command=on_chip_origin, state=btn_state)
+        self.chip_origin_button.grid(row=0, column=0)
+        self.chip_unload_button = ttk.Button(self.shortcut_frame, text="Load/unload", command=on_chip_unload, state=btn_state)
+        self.chip_unload_button.grid(row=0, column=1)
+
+
+    def _position(self) -> tuple[int, int, int]:
+        return tuple(intput.get() for intput in self.position_intputs)
+
+    def _set_position(self, pos: tuple[int, int, int]):
+        for i in range(3):
+            self.position_intputs[i].set(pos[i])
+
+    def step_sizes(self) -> tuple[int, int, int]:
+        return tuple(intput.get() for intput in self.step_size_intputs)
+'''
+
+class StagePositionFrame:
+    def __init__(self, parent, event_dispatcher):
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Position display at top
+        self.position_frame = ttk.LabelFrame(self.frame, text="Current Position (µm)")
+        self.position_frame.grid(row=0, column=0, columnspan=2, pady=5, sticky="ew")
+        
+        # Track all interactive widgets for locking
+        self.xy_widgets = []
+        self.z_widgets = []
+        self.all_widgets = []
+        
+        self.position_labels = []
+        for i, coord in enumerate(["X", "Y", "Z"]):
+            label = ttk.Label(self.position_frame, text=f"{coord}: 0.0", width=15)
+            label.grid(row=0, column=i, padx=5)
+            self.position_labels.append(label)
+        
+        # Control panel container
+        control_frame = ttk.Frame(self.frame)
+        control_frame.grid(row=1, column=0, columnspan=2)
+        
+        # XY circular control (left)
+        xy_frame = ttk.Frame(control_frame)
+        xy_frame.grid(row=0, column=0, padx=10)
+        self.create_xy_control(xy_frame)
+        
+        # Z vertical control (right)
+        z_frame = ttk.Frame(control_frame)
+        z_frame.grid(row=0, column=1, padx=10)
+        self.create_z_control(z_frame)
+        
         # Shortcuts at bottom
         self.shortcut_frame = ttk.LabelFrame(self.frame, text="Shortcuts")
         self.shortcut_frame.grid(row=2, column=0, columnspan=2, pady=5, sticky="ew")
@@ -998,31 +1077,25 @@ class StagePositionFrame:
         self.chip_unload_button = ttk.Button(self.shortcut_frame, text="Load/unload", 
                                             command=on_chip_unload, state=btn_state)
         self.chip_unload_button.grid(row=0, column=1, padx=5)
-    
-    # def _on_set_position(self):
-    #     """Handle the Set Position button click"""
-    #     x = self.position_inputs[0].get()
-    #     y = self.position_inputs[1].get()
-    #     z = self.position_inputs[2].get()
-    #     self.event_dispatcher.move_absolute({"x": x, "y": y, "z": z})
-
-    def _position(self) -> tuple[int, int, int]:
-        return tuple(intput.get() for intput in self.position_intputs)
+        
+        # Listen to events
+        event_dispatcher.add_event_listener("MOVEMENT_LOCK_CHANGED", self._on_lock_change)
+        event_dispatcher.add_event_listener("STAGE_POSITION_CHANGED", self._on_position_change)
     
     def create_xy_control(self, parent):
         """Create circular XY control with 4 quadrants and 4 layers each"""
-        canvas_size = 255
+        canvas_size = 300
         center = canvas_size // 2
         
         self.xy_canvas = tkinter.Canvas(parent, width=canvas_size, height=canvas_size, 
-                                   bg='#f0f0f0', highlightthickness=0)
+                                   bg='#34495e', highlightthickness=0)
         self.xy_canvas.pack()
         
         # Step sizes for each layer (inner to outer)
         step_sizes = [10, 50, 100, 250]
         
         # Radii for the 4 layers (inner to outer)
-        radii = [31, 62, 94, 125]
+        radii = [40, 75, 110, 145]
         
         # Colors for each layer (lighter as you go out)
         colors = ['#52796f', '#5a9a8b', '#7ab8a8', '#95c9be']
@@ -1050,6 +1123,7 @@ class StagePositionFrame:
 
             self.xy_canvas.create_line(x0, y0, x1, y1, fill=color, width=3)
         
+        
         # Labels for directions
         label_offset = 160
         labels = [
@@ -1066,7 +1140,7 @@ class StagePositionFrame:
         # Add step size labels on each layer
         for i, (radius, step) in enumerate(zip(radii, step_sizes)):
             # Show on top quadrant
-            y_pos = center - radius + 20
+            y_pos = center - radius - 10
             self.xy_canvas.create_text(center, y_pos, text=str(step), 
                                       fill='white', font=('Arial', 9, 'bold'))
         
@@ -1078,7 +1152,7 @@ class StagePositionFrame:
     
     def _on_xy_click(self, event):
         """Handle clicks on the XY canvas"""
-        canvas_size = 255
+        canvas_size = 300
         center = canvas_size // 2
         
         # Calculate distance from center and angle
@@ -1086,8 +1160,12 @@ class StagePositionFrame:
         dy = event.y - center
         distance = math.sqrt(dx**2 + dy**2)
         
+        # Ignore clicks in the center circle
+        if distance < 15:
+            return
+        
         # Determine which layer (step size)
-        radii = [31, 62, 94, 125]
+        radii = [40, 75, 110, 145]
         step_sizes = [10, 50, 100, 250]
         
         step_size = None
@@ -1108,19 +1186,26 @@ class StagePositionFrame:
         
         # Determine which direction is dominant
         if abs_dx > abs_dy:
+            # Horizontal movement (X direction)
             if dx > 0:
+                # +X (right)
                 self.event_dispatcher.move_relative({"x": step_size})
             else:
+                # -X (left)
                 self.event_dispatcher.move_relative({"x": -step_size})
         else:
+            # Vertical movement (Y direction)
             if dy < 0:
+                # +Y (up)
                 self.event_dispatcher.move_relative({"y": step_size})
             else:
+                # -Y (down)
                 self.event_dispatcher.move_relative({"y": -step_size})
     
     def create_z_control(self, parent):
-        bar_width = 60
-        section_height = 30
+        """Create vertical Z control bar with 8 sections"""
+        bar_width = 80
+        section_height = 35
         total_height = section_height * 8
         
         self.z_canvas = tkinter.Canvas(parent, width=bar_width, height=total_height,
@@ -1134,9 +1219,6 @@ class StagePositionFrame:
         colors_plus = ['#a8dadc', '#87bdbf', '#66a0a3', '#458486']
         colors_minus = ['#458486', '#66a0a3', '#87bdbf', '#a8dadc']
         
-        # Store rectangle IDs and their original colors
-        self.z_rectangles = []  # List of (rect_id, original_color)
-
         # Create sections
         for i in range(8):
             y_start = i * section_height
@@ -1145,7 +1227,7 @@ class StagePositionFrame:
             if i < 4:
                 # Top half: +Z movement
                 color = colors_plus[i]
-                step = step_sizes[3 - i]
+                step = step_sizes[i]
                 label = f"+Z\n{step}"
                 direction = "+"
             else:
@@ -1160,7 +1242,6 @@ class StagePositionFrame:
                 0, y_start, bar_width, y_end,
                 fill=color, outline='#2c3e50', width=2
             )
-            self.z_rectangles.append((rect_id, color))
             
             # Draw label
             text_id = self.z_canvas.create_text(
@@ -1177,14 +1258,62 @@ class StagePositionFrame:
         
         # Add label at top
         ttk.Label(parent, text="Z Control", font=('Arial', 10, 'bold')).pack(pady=(0, 5))
-
+        
+        # Store reference for locking
+        self.z_widgets.append(self.z_canvas)
+    
     def _on_z_click(self, direction, step_size):
         """Handle clicks on Z control sections"""
-        if not self.zlock:
-            if direction == "+":
-                self.event_dispatcher.move_relative({"z": step_size})
-            else:
-                self.event_dispatcher.move_relative({"z": -step_size})
+        if direction == "+":
+            self.event_dispatcher.move_relative({"z": step_size})
+        else:
+            self.event_dispatcher.move_relative({"z": -step_size})
+    
+    def _on_lock_change(self):
+        """Handle movement lock state changes"""
+        from enum import Enum
+        
+        # Assuming MovementLock enum exists in your code
+        lock = self.event_dispatcher.movement_lock
+        
+        # Map lock enum to state (you may need to adjust based on your actual enum)
+        if hasattr(lock, 'value'):
+            lock_value = lock.value if hasattr(lock, 'value') else str(lock)
+        else:
+            lock_value = str(lock)
+        
+        if 'UNLOCKED' in lock_value.upper():
+            # All movements allowed
+            for w in self.xy_widgets + self.z_widgets:
+                if isinstance(w, tkinter.Canvas):
+                    w.configure(state='normal')
+                else:
+                    w.configure(state='normal')
+        elif 'XY_LOCKED' in lock_value.upper():
+            # Only Z movement allowed
+            for w in self.xy_widgets:
+                if isinstance(w, tkinter.Canvas):
+                    w.configure(state='disabled')
+                else:
+                    w.configure(state='disabled')
+            for w in self.z_widgets:
+                if isinstance(w, tkinter.Canvas):
+                    w.configure(state='normal')
+                else:
+                    w.configure(state='normal')
+        else:  # LOCKED
+            # No movements allowed
+            for w in self.xy_widgets + self.z_widgets:
+                if isinstance(w, tkinter.Canvas):
+                    w.configure(state='disabled')
+                else:
+                    w.configure(state='disabled')
+    
+    def _on_position_change(self):
+        """Update position display when stage moves"""
+        pos = self.event_dispatcher.stage_setpoint
+        for i, coord in enumerate(["X", "Y", "Z"]):
+            self.position_labels[i].configure(text=f"{coord}: {pos[i]:.1f}")
 
 class ImageAdjustFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -1772,7 +1901,7 @@ class RedModeFrame:
         self.frame = ttk.Frame(parent, name="redmodeframe")
         self.event_dispatcher = event_dispatcher
 
-        # Create left middle right sections
+        # Create left and right sections
         self.left_frame = ttk.Frame(self.frame)
         self.left_frame.grid(row=0, column=0)
         
@@ -1788,19 +1917,15 @@ class RedModeFrame:
         self.frame.grid_columnconfigure(2, weight=1)
         self.frame.grid_rowconfigure(0, weight=1)
 
-        # Stage position controls (middle)
-        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher, False)
+        # Stage position controls (left side)
+        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher)
         self.stage_position_frame.frame.grid(row=0, column=0)
-
-        # test tiling check button & preview
-        # self.tiling_check_frame  = TilingCheckFrame(self.middle_frame, event_dispatcher)
-        # self.tiling_check_frame.frame.grid(row=0, column = 1)
         
         # Pattern preview display (right side)
         self.pattern_display = PatternDisplayFrame(self.right_frame, event_dispatcher)
         self.pattern_display.frame.grid(row=0, column=0)
 
-        # Red focus image selection (left)
+        # Red focus image selection
         self.red_select_var = StringVar(value="focus")
         self.red_focus_rb = ttk.Radiobutton(
             self.left_frame,
@@ -1878,7 +2003,7 @@ class UvModeFrame:
         self.uv_focus_frame.frame.grid(row=0, column=0, pady=(10,0))
 
         # Stage position controls (middle)
-        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher, True)
+        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher)
         self.stage_position_frame.frame.grid(row=0, column=0, sticky="n")
         
         # Pattern preview and UV focus selector (right side)
@@ -1973,9 +2098,9 @@ class ModeSelectFrame:
         self.pattern_upload_frame = PatternUploadFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.pattern_upload_frame.frame, text="Pattern Upload")
         self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher)
-        self.notebook.add(self.red_mode_frame.frame, text="Red Light Alignment Mode")
+        self.notebook.add(self.red_mode_frame.frame, text="Red Mode")
         self.uv_mode_frame = UvModeFrame(self.notebook, event_dispatcher)
-        self.notebook.add(self.uv_mode_frame.frame, text="UV Exposure Mode")
+        self.notebook.add(self.uv_mode_frame.frame, text="UV Mode")
 
         def on_tab_change():
             current_tab = self._current_tab()
@@ -2000,6 +2125,7 @@ class ModeSelectFrame:
             return "red" 
         else:
             return "uv"
+
 
 class GlobalSettingsFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher, enable_detection: bool = False):
@@ -2188,283 +2314,52 @@ class OffsetAmountFrame:
         self.amount_spinbox = ttk.Spinbox(self.frame, from_=-20, to=20, textvariable=self.amount_var, width=3)
         self.amount_spinbox.grid(row=0, column=3)
 
+
 class TilingFrame:
     def __init__(self, parent, model: EventDispatcher):
         self.frame = ttk.LabelFrame(parent, text="Tiling")
         self.model = model
 
-        self.red_to_uv_offset = -40
-
-        self.overall_pattern_size_w = 0
-        self.overall_pattern_size_h = 0
-
-        #Defaults set based on DLP471TP and a 10x objective
-        #5.4 um Pixel Pitch
-        #Width 10.368 mm
-        #Height 5.832 mm
-        # Move in X = 10.368mm / 10 = 1037um
-        # Move in Y = 5.832 mm / 10 = 538.2 um ~ 539 um
-        #Subtraction amounts are there to tune the offset for the alignment markers
-        self.x_settings = OffsetAmountFrame(self.frame, "X", 1037-54) #Move amount between exposures in X
-        self.y_settings = OffsetAmountFrame(self.frame, "Y", 539-27)  #Move amount between exposures in y
-
-        #Tiling verisons of alignment
-        def detect_alignment_markers_tiling(yolo_model, image, draw_rectangle=False, edge=None, edge_fraction=0.25):
-            #Detects alignment markers and optionally filters detections by image edge(s).
-            #yolo_model: YOLO model
-            #image: image to detect on 
-            #draw_rectangle: If True, draw rectangles
-            #edge: 'left', 'right', 'top', or a list like ['left', 'right'] where markers are expected
-                                                    #none means that markers are expect on all edges
-            #edge_fraction: Fraction of width/height considered as edge region
-            
-            detections = []
-            display_image = image.copy()
-            try:
-                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                original_height, original_width = image_rgb.shape[:2]
-                resized = cv2.resize(image_rgb, (640, 640))
-                results = yolo_model(resized)
-                boxes = results[0].boxes
-
-                if isinstance(edge, str):
-                    edge = [edge]  # allow single string or list
-
-                for box in boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    x1 = int(x1 * original_width / 640)
-                    x2 = int(x2 * original_width / 640)
-                    y1 = int(y1 * original_height / 640)
-                    y2 = int(y2 * original_height / 640)
-                    x_center = (x1 + x2) / 2
-                    y_center = (y1 + y2) / 2
-
-                    # If edge filtering is enabled
-                    if edge is not None:
-                        if 'left' in edge and x_center > original_width * edge_fraction:
-                            continue
-                        if 'right' in edge and x_center < original_width * (1 - edge_fraction):
-                            continue
-                        if 'top' in edge and y_center > original_height * edge_fraction:
-                            continue
-
-                    detections.append(((x1, y1), (x2, y2)))
-                    if draw_rectangle:
-                        cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
-
-                print(f"Detected {len(detections)} marker(s)")
-            except Exception as e:
-                print(f"Detection failed: {e}")
-
-            return detections, display_image
-
-        def do_align_tiling(edge):
-            #edge = ['left', 'right', 'top']
-            h, w, _ = model.camera_image.shape
-
-            # Detect markers on the left, right, and top edges
-            markers, _ = detect_alignment_markers_tiling(model.model, model.camera_image, edge)
-            if len(markers) == 0:
-                print("No markers detected.")
-                return
-
-            alignment = model.config.alignment
-            dx, dy = 0.0, 0.0
-            count_x, count_y = 0, 0
-
-            for m in markers:
-                xy0, xy1 = m
-                x0, y0 = xy0
-                x1, y1 = xy1
-                x = (x0 + x1) / 2 / w
-                y = (y0 + y1) / 2 / h
-
-                # Horizontal alignment (left/right markers)
-                if x < 0.5:
-                    dx += alignment.x_scale_factor * (alignment.left_marker_x / w - x)
-                    count_x += 1
-                elif x > 0.5:
-                    dx += alignment.x_scale_factor * (alignment.right_marker_x / w - x)
-                    count_x += 1
-
-                # Vertical alignment (top markers only)
-                if y < 0.3:  # top region
-                    dy += alignment.y_scale_factor * (alignment.top_marker_y / h - y)
-                    count_y += 1
-
-            # Average corrections based on detected edges
-            if count_x > 0:
-                dx /= count_x
-            if count_y > 0:
-                dy /= count_y
-
-            # Move accordingly (if no top markers, dy=0)
-            #If a small amount of alignment is needed move the image otherwise move the stage since we have far more percision in moving the image than the stage
-            #The con of this is that large movements of the image result in cropping of the image
-            #TODO calibrate the stage move threshold
-            if(dx or dy < 10):
-                #move the image instead of the stage
-                model.set_image_position(dx, dy, t=0)
-            else:
-              model.move_relative({'x': dx, 'y': dy})
-              print(f"Alignment correction: dx={dx:.5f}, dy={dy:.5f} using {len(markers)} markers.")
-
-        #function that takes in an arbitrary sized image composed of 3840x2160 tiles
-        #with shared alignment marks that are 200 pixels from the edge
-        def split_image_with_overlap(image_path, 
-                                          tile_width=3840, 
-                                          tile_height=2160, 
-                                          overlap_x=200, 
-                                          overlap_y=200, 
-                                          output_dir="tiles"):
-            img = Image.open(image_path)
-            img_w, img_h = img.size
-            self.overall_pattern_size_w = img_w
-            self.overall_pattern_size_h = img_h
-            os.makedirs(output_dir, exist_ok=True)
-
-            stride_x = tile_width - overlap_x
-            stride_y = tile_height - overlap_y
-
-            # Compute all top-left coordinates
-            x_positions = []
-            y_positions = []
-
-            # Horizontal positions
-            x = 0
-            while True:
-                if x + tile_width >= img_w:
-                    x = max(0, img_w - tile_width)
-                    x_positions.append(x)
-                    break
-                x_positions.append(x)
-                x += stride_x
-
-            # Vertical positions
-            y = 0
-            while True:
-                if y + tile_height >= img_h:
-                    y = max(0, img_h - tile_height)
-                    y_positions.append(y)
-                    break
-                y_positions.append(y)
-                y += stride_y
-
-            tile_count = 0
-            #Set amount of tiles for later use when exposing
-            self.x_settings.amount_var = len(x_positions)
-            self.y_settings.amount_var = len(y_positions)
-            #Crop and Save the tile images
-            for tile_id_y, top in enumerate(y_positions):
-                for tile_id_x, left in enumerate(x_positions):
-                    right = left + tile_width
-                    bottom = top + tile_height
-
-                    box = (left, top, right, bottom)
-                    tile = img.crop(box)
-                    tile.save(os.path.join(output_dir, f"tile_{tile_id_y},{tile_id_x}.png"))
-                    tile_count += 1
-
-            print("X amount = "+str(self.x_settings.amount_var))
-            print("Y amount = "+str(self.y_settings.amount_var))
-            print(f"Saved {tile_count} tiles to {output_dir}")
-
-        #function that patterns a single tile
-        def pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset, y_idx_max, x_idx_max, tile_dir="tiles"):
-            #change image
-            image_path = tile_dir+"/tile_"+str(y_idx)+","+str(x_idx)+".png"
-            current_tile = Image.open(image_path)
-            model.set_pattern_image(current_tile, image_path)
-            #move to the next position if not the first tile
-            #the first tile is exposed where the operator(user of the stepper) places it
-            if(~(x_idx == 0 & y_idx == 0)):
-                self.model.move_absolute(
-                    {
-                        "x": x_start + x_dir * x_idx * x_offset,
-                        "y": y_start + y_dir * y_idx * y_offset,
-                    }
-                )
-            #Red autofocus
-            self.model.autofocus(blue_only=False)
-            
-            #align to previous alignment marks if not first tile
-            if(~(x_idx == 0 & y_idx == 0)):
-                if(x_idx !=0 & x_idx!=x_idx_max):
-                    if(y_idx % 2 == 0):
-                        do_align_tiling('left')
-                    else:
-                        do_align_tiling('right')
-                else:
-                    do_align_tiling('top')
-                
-            
-
-            #Do automatic offset for UV then autofocus
-            self.model.move_relative({"z": self.red_to_uv_offset})
-            self.model.non_blocking_delay(0.5)
-            self.model.enter_uv_mode(mode_switch_autofocus=False)
-            self.model.autofocus(blue_only=True)
-
-            #expose the image
-            self.model.begin_patterning()
-
-            #TODO Add second exposure of the alignment markers
-            # I tried doing this with a non blocking delay but didnt have success
-            # I think that loading a pattern of the alignment marks that is hardcoded into the software might be the best bet
-
-            #Offset back to red mode
-            self.model.enter_red_mode(mode_switch_autofocus=False)
-            self.model.move_relative({"z": -1 * self.red_to_uv_offset})
-
-
-
-        def segment():
-            #create tile directory and segment images
-            split_image_with_overlap(model.pattern_image_path)
-            #load the first tile for operator placement
-            model.set_red_focus_source(RedFocusSource.PATTERN)
-            image_path = "tiles/tile_"+str(0)+","+str(0)+".png"
-            current_tile = Image.open(image_path)
-            model.set_pattern_image(current_tile, image_path)
-
+        # TODO: Tune default offsets
+        self.x_settings = OffsetAmountFrame(self.frame, "X", 1050)
+        self.x_settings.frame.grid(row=0, column=0)
+        self.y_settings = OffsetAmountFrame(self.frame, "Y", 900)
+        self.y_settings.frame.grid(row=1, column=0)
 
         def on_begin():
-            model.set_red_focus_source(RedFocusSource.PATTERN)
-            
-            x_amount = self.x_settings.amount_var
+            x_amount = int(self.x_settings.amount_var.get())
             x_offset = int(self.x_settings.offset_var.get())
             x_dir = 1 if x_amount > 0 else -1
             x_amount = abs(x_amount)
 
-            y_amount = self.y_settings.amount_var
+            y_amount = int(self.y_settings.amount_var.get())
             y_offset = int(self.y_settings.offset_var.get())
             y_dir = 1 if y_amount > 0 else -1
             y_amount = abs(y_amount)
 
             x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
-          
-            #Move in Snake pattern with left to right on even rows and right to left on odd rows
-            for y_idx in range(y_amount):
-                if(y_idx %2 == 0):
-                  for x_idx in range(x_amount):
-                      pattern_for_tile(self, model, x_start, -x_dir, x_idx, x_offset, y_start, -y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
-                      print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
-                else:
-                    for x_idx in range(x_amount - 1, -1, -1):
-                      pattern_for_tile(self, model, x_start, -x_dir, x_idx, x_offset, y_start, -y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
-                      print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
 
-        #TODO IMPLEMENT ABORT
+            for x_idx in range(x_amount):
+                for y_idx in range(y_amount):
+                    self.model.move_absolute(
+                        {
+                            "x": x_start + x_dir * x_idx * x_offset,
+                            "y": y_start + y_dir * y_idx * y_offset,
+                        }
+                    )
+                    self.model.autofocus(blue_only=False)
+
+                    self.model.move_relative({"z": -85.0})
+                    self.model.non_blocking_delay(0.5)
+                    self.model.enter_uv_mode(mode_switch_autofocus=False)
+                    self.model.autofocus(blue_only=True)
+
+                    self.model.begin_patterning()
+                    self.model.enter_red_mode(mode_switch_autofocus=False)
+
         def on_abort():
             pass
 
-        #Segment Images must be done before begining tiling
-        #TODO enforce above
-        #Tiling check must be done before segment images if needed
-        self.tiling_check_button = TilingCheckFrame(self.frame, model)
-        self.tiling_check_button.frame.grid(row=0, column = 0)
-        self.segment_images_button = ttk.Button(self.frame, text="Segement Images", command=segment, state="enabled")
-        self.segment_images_button.grid(row=1, column=0)
         self.begin_tiling_button = ttk.Button(self.frame, text="Begin Tiling", command=on_begin, state="enabled")
         self.begin_tiling_button.grid(row=2, column=0)
         self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
@@ -2484,7 +2379,7 @@ class ProjectorDisplayFrame:
         
         # Create placeholder image
         # Using a similar size to camera preview for consistency
-        self.display_size = (320, 180)
+        self.display_size = THUMBNAIL_SIZE
         placeholder = Image.new("RGB", self.display_size, "black")
         self.photo = image_to_tk_image(placeholder)
         
@@ -2504,7 +2399,7 @@ class ProjectorDisplayFrame:
         event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, self._update_display)
         
         # Force initial update
-        # self.event_dispatcher.root.after(100, self._update_display)
+        self.event_dispatcher.root.after(100, self._update_display)
         
     def _update_display(self):
         """Update the display when projector content changes"""
@@ -2535,316 +2430,41 @@ class ProjectorDisplayFrame:
             # Flatfield might not be implemented, use pattern as fallback
             img = self.event_dispatcher.pattern.processed()
         
+        # Debug print to help troubleshoot
+        # if self.event_dispatcher.patterning_busy or shown_image == ShownImage.PATTERN:
+        #     if img is not None:
+        #         print(f"Patterning - Image size: {img.size}, mode: {img.mode}")
+        #     else:
+        #         print(f"Patterning - Image is None")
+        
         # Update image
         if img is None or (shown_image == ShownImage.CLEAR and not self.event_dispatcher.patterning_busy):
             # Show black placeholder when clear
             placeholder = Image.new("RGB", self.display_size, "black")
             self.photo = image_to_tk_image(placeholder)
         else:
-            display_img = img.copy()
-            display_img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
-            self.photo = image_to_tk_image(display_img)
+            # Resize the projector output to fit in display
+            try:
+                display_img = img.copy()
+                # Check if image is all black
+                import numpy as np
+                img_array = np.array(display_img)
+                is_black = np.all(img_array == 0)
+                # print(f"Image all black: {is_black}, min: {img_array.min()}, max: {img_array.max()}")
+                
+                display_img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
+                self.photo = image_to_tk_image(display_img)
+            except Exception as e:
+                print(f"Error displaying projector image: {e}")
+                import traceback
+                traceback.print_exc()
+                placeholder = Image.new("RGB", self.display_size, "red")
+                self.photo = image_to_tk_image(placeholder)
         
         self.label.configure(image=self.photo)
-
-class TilingCheckFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
-        self.frame = ttk.Frame(parent)
-        self.event_dispatcher = event_dispatcher
-
-        self.capture_button = ttk.Button(
-            self.frame, 
-            text="Capture & Stitch Chip Imges", 
-            command=self.capture_and_stitch
-        )
-        self.capture_button.grid(row=0, column=0)
-
-        self.preview_label = ttk.Label(self.frame)
-        self.preview_label.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
         
-        self.frame.rowconfigure(1, weight=1)
-        self.frame.columnconfigure(0, weight=1)
-
-    def capture_and_stitch(self):
-        self.img = self.event_dispatcher.pattern_image
-        self.img_w, self.img_h = self.img.size # 3840*2, 2160*2 # in pixels 
-        print("self.img_w, self.img_h: ", self.img_w, self.img_h)
-
-        self.tile_width, self.tile_height = 3840, 2160 # in pixels, defined in TilingFrame
-        
-        # the distance that the stage will move in um
-        stride_x, stride_y = 798, 448 # 1037 / 1.3 and 583 / 1.3
-        # crop image pixels
-        # each snapshot captured is 1920 x 1080 pixels
-        crop_x, crop_y = 1477, 831 # 1920 / 1.3 and 1080 / 1.3
-        # Disable button during capture
-        self.capture_button.config(state='disabled', text="Capturing...")
-        self.frame.update()
-        
-        stitched_image = self.takeAndStitchMapImages(stride_x, stride_y, crop_x, crop_y)
-        if stitched_image:
-            self.display_image(stitched_image, crop_x, crop_y)
-            print("Stitching complete!")
-        else:
-            print("Failed to stitch images")
-            
-        self.capture_button.config(state='normal', text="Capture & Stitch Chip Imges")
-
-    def display_image(self, pil_image, crop_x, crop_y):
-        display_img = pil_image.copy()
-        display_img = display_img.resize((crop_x//4, crop_y//4), Image.Resampling.LANCZOS)
-        photo = ImageTk.PhotoImage(display_img)
-        self.preview_label.config(image=photo)
-        self.preview_label.image = photo
-
-    def capture_current_image(self):
-        # Get the camera view from the event dispatcher
-        if hasattr(self.event_dispatcher, 'camera_image') and self.event_dispatcher.camera_image is not None:
-            camera_image = self.event_dispatcher.camera_image
-            pil_image = Image.fromarray(camera_image)
-            return pil_image
-        else:
-            print("No camera image available")
-            return None
-    
-    def takeAndStitchMapImages(self, stride_x, stride_y, crop_x, crop_y):
-        """
-        Take snapshots num_cols * num_rows times, move in snake pattern
-        Move in stride_x and y um in distance
-        Crop all snapshots to crop_x, crop_y pixels in the center
-        Paste them to the blank canvas
-        Overlay the pattern image in the center
-        """
-        # calculate how many times the stage will move: num cols & rows
-        total_x_um = self.img_w * 1037 / 3840
-        total_y_um = self.img_h * 583 / 2160
-        num_cols = int(total_x_um // stride_x)
-        num_rows = int(total_y_um // stride_y)
-        if num_cols * stride_x < total_x_um:
-            num_cols += 1
-        if num_rows * stride_y < total_y_um:
-            num_rows += 1
-        print("num_cols, num_rows: ", num_cols, num_rows)
-        
-        # large blank canvas
-        stitched_width = num_cols * crop_x
-        stitched_height = num_rows * crop_y
-        stitched_image = Image.new('RGB', (stitched_width, stitched_height), color='black')
-        
-        # get starting position: center the chip
-        orig_x, orig_y, orig_z = self.event_dispatcher.stage_setpoint
-        delta_x_um = (num_cols * stride_x - total_x_um) / 2
-        delta_y_um = (num_rows * stride_y - total_y_um) / 2
-        start_x = orig_x - delta_x_um
-        start_y = orig_y - delta_y_um
-
-        # move in snake pattern with left to right on even rows
-        # and right to left on odd rows
-        for row in range(num_rows):
-            current_y = start_y + row * stride_y
-            
-            if row % 2 == 0:
-                col_range = range(num_cols)
-                first_x = start_x
-            else:
-                col_range = range(num_cols - 1, -1, -1)
-                first_x = start_x + (num_cols - 1) * stride_x
-
-            # move to the next row
-            self.event_dispatcher.move_absolute({
-                "x": first_x,
-                "y": current_y,
-                "z": orig_z
-            })
-            self.event_dispatcher.non_blocking_delay(2)
-            
-            # columns in this row
-            for idx, col in enumerate(col_range):
-                current_x = start_x + col * stride_x
-                if idx > 0: # idx = 0 first one don't need to move
-                    self.event_dispatcher.move_absolute({
-                        "x": current_x,
-                        "y": current_y,
-                        "z": orig_z
-                    })
-                    self.event_dispatcher.non_blocking_delay(2.5)
-                
-                captured_image = self.capture_current_image()
-                # crop
-                orig_width, orig_height = captured_image.size
-                # each snapshot captured is 1920 x 1080 pixels
-                left = (orig_width - crop_x) // 2
-                top = (orig_height - crop_y) // 2
-                right = left + crop_x
-                bottom = top + crop_y
-                cropped_img = captured_image.crop((left, top, right, bottom))
-                # paste
-                x_pos = col * crop_x
-                y_pos = (num_rows - 1 - row) * crop_y
-                stitched_image.paste(cropped_img, (x_pos, y_pos))
-                
-                self.event_dispatcher.non_blocking_delay(0.5)
-                self.frame.update()
-        
-        # Return to starting position
-        self.event_dispatcher.move_absolute({
-            "x": orig_x,
-            "y": orig_y,
-            "z": orig_z
-        })
-
-        # Overlay the pattern image at center with 50% transparency
-        pattern_img = self.img.copy().convert('RGBA') # pattern image
-        # resize pattern image to match the snapshot's pixel
-        # each snapshot has half of each tile's w and h
-        pattern_img = pattern_img.resize((self.img_w//2, self.img_h//2), Image.Resampling.LANCZOS)
-        pattern_img.putalpha(int(255 * 0.5))
-        center_x = (stitched_width - self.img_w//2) // 2
-        center_y = (stitched_height - self.img_h//2) // 2
-        stitched_image = stitched_image.convert('RGBA')
-        stitched_image.paste(pattern_img, (center_x, center_y), pattern_img)
-        stitched_image = stitched_image.convert('RGB')
-
-        return stitched_image
-
-class MapFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
-        self.frame = ttk.LabelFrame(parent)
-        self.event_dispatcher = event_dispatcher
-        
-        # Map dimensions in micrometers
-        self.map_size_um = 10000.0  # 1 cm * 1 cm
-        
-        # Canvas size in pixels
-        self.canvas_size = 350
-        
-        # Pattern dimensions: from DLP projector datasheet
-        self.pattern_w = 1037
-        self.pattern_h = 583
-        
-        # canvas with plain background
-        self.canvas = tkinter.Canvas(
-            self.frame, 
-            width=self.canvas_size, 
-            height=self.canvas_size,
-            bg='#3F9490',
-        )
-        self.canvas.grid(row=0, column=0, padx=5, pady=5)
-        
-        # coordinates of exposed patterns (list of tuples: (x, y))
-        self.pattern_markers = []
-        
-        event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, self._on_position_changed)
-        event_dispatcher.add_event_listener(Event.PATTERNING_FINISHED, self._on_pattern_exposed)
-        event_dispatcher.add_event_listener(Event.CHIP_CHANGED, self._on_chip_changed)
-        
-        self._redraw_all()
-    
-    def _um_to_pixels(self, um_x, um_y):
-        """
-        Convert micrometer coordinates to canvas pixel coordinates.
-        (0, 0) in micrometers is at the center of the canvas.
-        """
-        scale = self.canvas_size / self.map_size_um
-        
-        # Add half map size to shift origin to center
-        pixel_x = (um_x + self.map_size_um / 2) * scale
-        pixel_y = (um_y + self.map_size_um / 2) * scale
-        
-        return pixel_x, pixel_y
-    
-    def _um_size_to_pixels(self, um_width, um_height):
-        """Convert micrometer dimensions to pixel dimensions"""
-        scale = self.canvas_size / self.map_size_um
-        return um_width * scale, um_height * scale
-    
-    def _draw_pattern_marker(self, x_um, y_um):
-        """ Draw a blue rectangle given x and y """
-        x1_px, y1_px = self._um_to_pixels(x_um, y_um)
-        w_px, h_px = self._um_size_to_pixels(self.pattern_w, self.pattern_h)
-        
-        x2_px = x1_px + w_px
-        y2_px = y1_px + h_px
-
-        # shift from bottom down to bottom up
-        y1_px = self.canvas_size - y1_px
-        y2_px = self.canvas_size - y2_px
-        
-        marker = self.canvas.create_rectangle(
-            x1_px, y1_px, x2_px, y2_px,
-            fill='#7BB7B7',
-            width=0
-        )
-
-        return marker
-            
-    def _draw_current_position(self):
-        """ Draw the red rectangle for current position. """
-        x_um, y_um, z_um = self.event_dispatcher.stage_setpoint
-        
-        # Convert top-left corner to pixel coordinates
-        x1_px, y1_px = self._um_to_pixels(x_um, y_um)
-        
-        # Get pattern dimensions in pixels
-        w_px, h_px = self._um_size_to_pixels(self.pattern_w, self.pattern_h)
-        
-        # Calculate bottom-right corner
-        x2_px = x1_px + w_px
-        y2_px = y1_px + h_px
-
-        y1_px = self.canvas_size - y1_px
-        y2_px = self.canvas_size - y2_px        
-        
-        marker = self.canvas.create_rectangle(
-                x1_px, y1_px, x2_px, y2_px,
-                fill='',  # No fill
-                outline='#E86E7F',  # Red outline
-                width=2
-            )
-        
-        return marker # marker ID
-
-    def _load_patterns_from_chip(self):
-        """ Load all exposed pattern coordinates from the chip
-        into the self.pattern_markers list """
-
-        self.pattern_markers.clear()
-        
-        chip = self.event_dispatcher.chip
-        for layer in chip.layers:
-            for exposure in layer.exposures:
-                if not exposure.aborted:  # Only include successful exposures
-                    x, y, z = exposure.coords
-                    self.pattern_markers.append((x, y))
-
-    def _redraw_all(self):
-        """Redraw all exposed patterns from the chip"""
-        # Clear existing pattern markers
-        self.canvas.delete("all")
-        
-        # Draw all exposures from all layers
-        for x_um, y_um in self.pattern_markers:
-            self._draw_pattern_marker(x_um, y_um)
-        
-        self._draw_current_position()
-    
-    def _on_position_changed(self):
-        self._redraw_all() # TODO: only update current_position?
-    
-    def _on_pattern_exposed(self):
-        """ Get the most recent exposure from current layer """
-        chip = self.event_dispatcher.chip
-        if chip.layers and chip.layers[-1].exposures:
-            latest_exposure = chip.layers[-1].exposures[-1]
-            if not latest_exposure.aborted:
-                x, y, z = latest_exposure.coords
-                self.pattern_markers.append((x, y))
-                self._redraw_all()
-
-    def _on_chip_changed(self):
-        """Handle chip changes (load, new chip, etc.) - reload and redraw"""
-        self._load_patterns_from_chip()
-        self._redraw_all()
+        # Schedule periodic updates to catch any missed changes
+        self.event_dispatcher.root.after(500, self._update_display)
 
 class LithographerGui:
     root: Tk
@@ -2864,24 +2484,17 @@ class LithographerGui:
 
         self.shown_image = ShownImage.CLEAR
 
-        self.top_panel = ttk.Frame(self.root)
-        self.top_panel.grid(row=0, column=0, sticky='ew')
 
-        # Map (top)
-        self.map = MapFrame(self.top_panel, self.event_dispatcher)
-        self.map.frame.grid(row=0, column=0, padx=5, pady=5)
+        self.top_panel = ttk.Frame(self.root)
+        self.top_panel.grid(row=0, column=0)
+
         # Camera frame (top)
         self.camera = CameraFrame(self.top_panel, self.event_dispatcher, config.camera, config.camera_scale)
-        self.camera.frame.grid(row=0, column=1, padx=5, pady=5)
+        self.camera.frame.grid(row=0, column=0)
 
         # Projector display (top)
         self.projector_display = ProjectorDisplayFrame(self.top_panel, self.event_dispatcher)
-        self.projector_display.frame.grid(row=0, column=2, padx=5, pady=5)
-
-        # center the frames
-        self.top_panel.grid_columnconfigure(0, weight=1)
-        self.top_panel.grid_columnconfigure(1, weight=1)
-        self.top_panel.grid_columnconfigure(2, weight=1)
+        self.projector_display.frame.grid(row=0, column=1, padx=5, pady=5)
 
         # Progress bar
         self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
@@ -2910,6 +2523,10 @@ class LithographerGui:
         # Tiling controls
         self.tiling_frame = TilingFrame(self.bottom_panel, self.event_dispatcher)
         self.tiling_frame.frame.grid(row=0, column=3)
+
+        # Configure grid weights for proper expansion
+        # self.root.columnconfigure(0, weight=1)
+        # self.root.rowconfigure(2, weight=1)  # Let the tab area expand
 
         # Legacy references for compatibility (if needed elsewhere in code)
         self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
