@@ -2195,8 +2195,6 @@ class TilingFrame:
 
         self.red_to_uv_offset = -40
 
-        self.overall_mask = None
-
         self.overall_pattern_size_w = 0
         self.overall_pattern_size_h = 0
 
@@ -2422,7 +2420,6 @@ class TilingFrame:
 
         def segment():
             #create tile directory and segment images
-            self.overall_mask = model.pattern_image_path
             split_image_with_overlap(model.pattern_image_path)
             #load the first tile for operator placement
             model.set_red_focus_source(RedFocusSource.PATTERN)
@@ -2463,12 +2460,13 @@ class TilingFrame:
 
         #Segment Images must be done before begining tiling
         #TODO enforce above
+        #Tiling check must be done before segment images if needed
+        self.tiling_check_button = TilingCheckFrame(self.frame, model)
+        self.tiling_check_button.frame.grid(row=0, column = 0)
         self.segment_images_button = ttk.Button(self.frame, text="Segement Images", command=segment, state="enabled")
-        self.segment_images_button.grid(row=0, column=0)
+        self.segment_images_button.grid(row=1, column=0)
         self.begin_tiling_button = ttk.Button(self.frame, text="Begin Tiling", command=on_begin, state="enabled")
         self.begin_tiling_button.grid(row=2, column=0)
-        self.tiling_check_button = TilingCheckFrame(self.frame, model, self.overall_mask)
-        self.tiling_check_button.frame.grid(row=1, column = 0)
         self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
         self.abort_tiling_button.grid(row=3, column=0)
 
@@ -2550,10 +2548,9 @@ class ProjectorDisplayFrame:
         self.label.configure(image=self.photo)
 
 class TilingCheckFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher, img):
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
         self.event_dispatcher = event_dispatcher
-        self.img = img
 
         self.capture_button = ttk.Button(
             self.frame, 
@@ -2569,6 +2566,7 @@ class TilingCheckFrame:
         self.frame.columnconfigure(0, weight=1)
 
     def capture_and_stitch(self):
+        self.img = self.event_dispatcher.pattern_image
         self.img_w, self.img_h = self.img.size # 3840*2, 2160*2 # in pixels 
         print("self.img_w, self.img_h: ", self.img_w, self.img_h)
 
@@ -2872,7 +2870,6 @@ class LithographerGui:
         # Map (top)
         self.map = MapFrame(self.top_panel, self.event_dispatcher)
         self.map.frame.grid(row=0, column=0, padx=5, pady=5)
-        
         # Camera frame (top)
         self.camera = CameraFrame(self.top_panel, self.event_dispatcher, config.camera, config.camera_scale)
         self.camera.frame.grid(row=0, column=1, padx=5, pady=5)
@@ -2913,10 +2910,6 @@ class LithographerGui:
         # Tiling controls
         self.tiling_frame = TilingFrame(self.bottom_panel, self.event_dispatcher)
         self.tiling_frame.frame.grid(row=0, column=3)
-
-        # Configure grid weights for proper expansion
-        # self.root.columnconfigure(0, weight=1)
-        # self.root.rowconfigure(2, weight=1)  # Let the tab area expand
 
         # Legacy references for compatibility (if needed elsewhere in code)
         self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
