@@ -31,6 +31,7 @@ from stage_control.grbl_stage import GrblStage
 from stage_control.stage_controller import StageController
 
 
+
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 #The values set here are not used and instead come from the config file
@@ -2942,17 +2943,29 @@ class LithographerGui:
 
 
 def main():
+
+    # Open a file selector window
+    config_win = tkinter.Tk()
+    config_win.withdraw()
+    ftypes = [('all files', '.*'), ('toml files', '.toml')]
+
+    # Window to prompt user to select a toml configuration file
+    # Note: this assumes that the current working directory has all the possible toml files
+    config_path = filedialog.askopenfilename(title="Select a config file (default is default.toml)",
+                                    filetypes=ftypes)
+    print(f"Selected configuration: {config_path}")
+
     try:
-        with open("config.toml", "r") as f:
+        with open(config_path, "r") as f:
             config = toml.load(f)
     except FileNotFoundError:
         print("config.toml does not exist, copying settings from default.toml")
-        shutil.copy("default.toml", "config.toml")
-        with open("config.toml", "r") as f:
+        shutil.copy("default.toml", config_path)
+        with open(config_path, "r") as f:
             config = toml.load(f)
 
     # STAGE CONFIG
-
+    config_win.destroy()
     stage_config = config["stage"]
     if stage_config["enabled"]:
         serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
@@ -2976,7 +2989,11 @@ def main():
         camera = flir.FlirCamera()
     elif camera_config["type"] in ("basler", "pylon"):
         from camera.pylon import BaslerPylon
-        camera = BaslerPylon()
+        try:
+            index = int(camera_config["index"])
+        except Exception:
+            index = 0
+        camera = BaslerPylon(index)
     elif camera_config["type"] == "none":
         camera = None
     else:

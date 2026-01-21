@@ -203,7 +203,7 @@ A sample configuration file with an explanation of the settings is shown below.
 # "flir" (for a FLIR camera)
 # "none" (to disable camera)
 type = "webcam"
-# The index field is optional and is only used to select which of multiple webcams should be used,
+# The index field is optional and is only used to select which of multiple webcams or basler/pylon cameras should be used,
 # e.g. on a laptop where there may be a builtin webcam in addition to an external USB camera.
 index = 1
 # The output from the camera is typically too large to show at full resolution.
