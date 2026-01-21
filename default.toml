@@ -6,7 +6,7 @@
 # "flir" (for a FLIR camera)
 # "none" (to disable camera)
 type = "webcam"
-# The index field is optional and is only used to select which of multiple webcams should be used,
+# The index field is optional and is only used to select which of multiple webcams or basler/pylon cameras should be used,
 # e.g. on a laptop where there may be a builtin webcam in addition to an external USB camera.
 index = 1
 # The output from the camera is typically too large to show at full resolution.
@@ -26,6 +26,7 @@ homing = false
 # Select the correct serial port for the device running GRBL.
 # The correct serial port can be checked with Device Manager on Windows.
 port = "COM6"
+
 # GRBL's baud rate is almost always 115200, do not change this value
 baud-rate = 115200
 
