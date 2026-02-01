@@ -205,6 +205,7 @@ A sample configuration file with an explanation of the settings is shown below.
 type = "webcam"
 # The index field is optional and is only used to select which of multiple webcams or basler/pylon cameras should be used,
 # e.g. on a laptop where there may be a builtin webcam in addition to an external USB camera.
+# Note: for local testing, use webcam with index = 0 for convenience
 index = 1
 # The output from the camera is typically too large to show at full resolution.
 # This parameter adjusts the size of the camera feed before it is displayed in the GUI.
