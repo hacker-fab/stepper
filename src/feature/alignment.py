@@ -66,6 +66,23 @@ def image_alignment(dst_img, src_img, display=False):
 
     ################## Evaluation ##################
 
+    # make sure there is only rigid body movement (rotation & translation)
+    # and no perspective terms in matrix
+    # M = [r0, r1, t0]
+    #     [r2, r3, t1]
+    #     [p1, p2, 1 ]
+    # R = [r0, r1]
+    #     [r2, r3]
+    # T = [t0]
+    #     [t1]
+    # P = [p1, p2]
+    perspective_matrix = M[2,0:2]
+
+    EPSILON = 1e-4 # near zero value
+    if perspective_matrix[0] >= EPSILON or perspective_matrix[1] >= EPSILON:
+        print("Warning: matrix contains perspective terms, not rigid motion")
+        print(f"Matrix: {M}")
+
     # inlier ratio
     num_inliers = sum(matchesMask)
     inlier_ratio = num_inliers / len(matchesMask)
@@ -73,7 +90,6 @@ def image_alignment(dst_img, src_img, display=False):
 
     # apply homography on src points and calculate distance to dst points
     # only considering inliers
-
     src_pts = cv.perspectiveTransform(src_pts, M)
     error = 0
     for i in range(0, len(matchesMask)):

@@ -647,37 +647,40 @@ class EventDispatcher:
             except FileExistsError:
                 pass
             log_file = open('aftest/log.csv', 'w')
-        
+
         counter = 0
         def sample_focus():
-            def do_thing():
+            def compute_score():
                 self.non_blocking_delay(0.1)
                 return compute_focus_score(self.camera_image, blue_only=blue_only)
-            focus_score = sorted([do_thing() for _ in range(3)])[1]
+            focus_score = sorted([compute_score() for _ in range(3)])[1]
             nonlocal counter
             if log:
                 log_file.write(f'{counter},{focus_score}\n')
                 cv2.imwrite(f'aftest/img{counter}.png', self.camera_image)
             counter += 1
             return focus_score
-            
 
         print("Starting autofocus")
-
         self.set_autofocus_busy(True)
-        self.non_blocking_delay(1.0)
-        mid_score = sample_focus()
-        self.move_relative({"z": -20.0})
-        self.non_blocking_delay(1.0)
-        neg_score = sample_focus()
+
+        mid_score = sample_focus() # Mid focus score
+        
+        self.move_relative({"z": -30.0})
+        self.non_blocking_delay(0.5)
+        self.move_relative({"z": 10.0})
+
+        neg_score = sample_focus() # Left focus score
+
         self.move_relative({"z": 40.0})
-        self.non_blocking_delay(1.0)
-        pos_score = sample_focus()
-        self.move_relative({"z": -20.0})
-        self.non_blocking_delay(1.0)
+        self.non_blocking_delay(0.5)
+        pos_score = sample_focus() # Right focus score
 
-        last_focus = mid_score
+        self.move_relative({"z": -30.0})
+        self.non_blocking_delay(0.5)
+        self.move_relative({"z": 10.0})
 
+        last_score = mid_score
         if neg_score < mid_score < pos_score:
             # Improved focus is in the +Z direction
             for i in range(30):
@@ -689,7 +692,6 @@ class EventDispatcher:
                     last_focus = new_score
                     break
                 last_focus = new_score
-
             for i in range(10):
                 self.move_relative({"z": -2.0})
                 self.non_blocking_delay(0.5)
@@ -708,7 +710,6 @@ class EventDispatcher:
                     print(f"Successful -Z coarse autofocus {i}")
                     break
                 last_focus = new_score
-
             for i in range(10):
                 self.move_relative({"z": 2.0})
                 self.non_blocking_delay(0.5)
@@ -722,7 +723,6 @@ class EventDispatcher:
             print(f"Almost in focus! (neg {neg_score} mid {mid_score} pos {pos_score})")
             self.move_relative({"z": -20.0})
             self.non_blocking_delay(0.5)
-
             for i in range(30):
                 self.move_relative({"z": 2.0})
                 self.non_blocking_delay(0.5)

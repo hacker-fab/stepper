@@ -6,7 +6,6 @@ import time
 
 from stage_control.stage_controller import StageController, UnsupportedCommand
 
-
 def clamp(value, lo, hi):
     if value > hi:
         return hi
