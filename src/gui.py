@@ -30,12 +30,44 @@ from projector import TkProjector
 from stage_control.grbl_stage import GrblStage
 from stage_control.stage_controller import StageController
 
+class State(Enum):
+  PROBE = 0
+  SEARCH = 1
+  SAMPLE = 2
+  ANALYZE = 3
+  VALIDATE = 4
+  ERROR = 5
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 #The values set here are not used and instead come from the config file
 DEFAULT_RED_EXPOSURE: float = 4167.0
 DEFAULT_UV_EXPOSURE: float = 25000.0
+
+def fetch_focus_score(camera_image, ddepth, kernel_size, blue_only):  
+    """ fetch_focus_score: computes the laplacian focal score after some
+    pre-processing of the camera image. The key is to detect the edges better
+    than other parts of the image that might not be suitable to be focused on. """
+
+    camera_image = camera_image.copy()
+    camera_image[:, :, 1] = 0  # green should never be used for focus
+    if blue_only:
+      camera_image[:, :, 0] = 0  # disable red
+    
+    # Consider: Crop to center 50% (avoids edge artifacts)
+    # h, w = camera_image.shape[:2]
+    # roi = camera_image[int(h*0.25):int(h*0.75), int(w*0.25):int(w*0.75)]
+      
+    # Remove noise by blurring with a Gaussian filter
+    src = cv2.GaussianBlur(camera_image, (3, 3), 0)
+ 
+    # Convert the image to grayscale
+    src_gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+
+    # Apply Laplace function
+    dst = cv2.Laplacian(src_gray, ddepth, ksize=kernel_size)
+    print("Score: ", dst.var())
+    return dst.var()
 
 def compute_focus_score(camera_image, blue_only, save=False):
     camera_image = camera_image.copy()
@@ -457,6 +489,20 @@ class EventDispatcher:
         self.hardware.stage.move_to({k: self.stage_setpoint[i] for k, i in (("x", 0), ("y", 1), ("z", 2))})
         self.on_event(Event.STAGE_POSITION_CHANGED)
 
+    def move_precise(self, delta, backlash=10.0):
+        """
+            Moves to a 'virtual' position using the relative motors.
+            ALWAYS approaches from the negative direction to kill backlash.
+        """
+        if(delta < 0):
+            self.move_relative({"z": delta - backlash})
+            self.wait_for_stage()
+            self.move_relative({"z": backlash})
+            self.wait_for_stage()
+        else:
+            self.move_relative({"z": delta})
+            self.wait_for_stage()
+
     def set_use_solid_red(self, use: bool):
         self.use_solid_red = use
         self.set_shown_image(ShownImage.RED_FOCUS)
@@ -651,8 +697,10 @@ class EventDispatcher:
         def sample_focus():
             def do_thing():
                 self.non_blocking_delay(0.1)
-                return compute_focus_score(self.camera_image, blue_only=blue_only)
-            focus_score = sorted([do_thing() for _ in range(3)])[1]
+                ddepth = cv2.CV_64F # tunable
+                kernel_size = 5     # tunable
+                return fetch_focus_score(self.camera_image, ddepth, kernel_size, blue_only=blue_only)
+            focus_score = sorted([compute_score() for _ in range(3)])[1]
             nonlocal counter
             if log:
                 log_file.write(f'{counter},{focus_score}\n')
@@ -664,77 +712,128 @@ class EventDispatcher:
         print("Starting autofocus")
 
         self.set_autofocus_busy(True)
-        self.non_blocking_delay(1.0)
-        mid_score = sample_focus()
-        self.move_relative({"z": -20.0})
-        self.non_blocking_delay(1.0)
-        neg_score = sample_focus()
-        self.move_relative({"z": 40.0})
-        self.non_blocking_delay(1.0)
-        pos_score = sample_focus()
-        self.move_relative({"z": -20.0})
-        self.non_blocking_delay(1.0)
+        
+        # Include new autofocus code
+        fit_threshold = 100.0
+        # PHASE 1: DIRECTION PROBING
+        # --------------------------
+        z: float = 0.0
+        best_z: float = 0.0
+        best_score: float = 0.0
+        probe_direction: int = 0
+        stage_step_size: float = 100.0
 
-        last_focus = mid_score
+        # Initialize current scores
+        current_focus_score = sample_focus()
+        best_score = current_focus_score
 
-        if neg_score < mid_score < pos_score:
-            # Improved focus is in the +Z direction
-            for i in range(30):
-                self.move_relative({"z": 10.0})
-                self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful +Z coarse autofocus {i}")
-                    last_focus = new_score
-                    break
-                last_focus = new_score
+        # Probe positive direction
+        self.move_precise(stage_step_size)
+        positive_focus_score = sample_focus()
+        best_z = -stage_step_size
+        z = -stage_step_size
 
-            for i in range(10):
-                self.move_relative({"z": -2.0})
-                self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful -Z fine autofocus {i}")
-                    break
-                last_focus = new_score
-        elif neg_score > mid_score > pos_score:
-            # Improved focus is in the -Z direction
-            for i in range(30):
-                self.move_relative({"z": -10.0})
-                self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful -Z coarse autofocus {i}")
-                    break
-                last_focus = new_score
-
-            for i in range(10):
-                self.move_relative({"z": 2.0})
-                self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful +Z fine autofocus {i}")
-                    break
-                last_focus = new_score
-        elif neg_score < mid_score and pos_score < mid_score:
-            # We are very close to already being in focus
-            print(f"Almost in focus! (neg {neg_score} mid {mid_score} pos {pos_score})")
-            self.move_relative({"z": -20.0})
-            self.non_blocking_delay(0.5)
-
-            for i in range(30):
-                self.move_relative({"z": 2.0})
-                self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful +Z fine autofocus {i}")
-                    break
-                last_focus = new_score
+        # check if we're moving in the right direction
+        if positive_focus_score > current_focus_score:
+            best_score = positive_focus_score
+            probe_direction = 1 # Peak is in +Z
+            best_z = 0
         else:
-            print("Autofocus is confused!")
+            probe_direction = -1 # Peak is in -Z
+            self.move_precise(2.0*(-stage_step_size))
+            z += 2.0*stage_step_size
+            best_z = 0
 
+        state = State.SEARCH
+        print(f"Ideal direction to move: {'+Z' if probe_direction == 1 else '-Z'}")
+
+        # PHASE 2: Growing searches
+        # ------------------------
+        limit_counter = 100
+        stage_step_size = 10
+        step = stage_step_size
+        print(f"Galloping in direction: {probe_direction}")
+
+        while limit_counter > 0:
+
+            # update counter
+            limit_counter -= 1
+
+            # Double the step size for speed
+            next_z = probe_direction * step
+            self.move_precise(next_z)
+            z += -next_z
+            new_score = sample_focus()
+
+            if new_score > best_score:
+                best_score = new_score
+                best_z = 0
+                step *= 2.0 # Accelerate!
+                print(f"  > Improving... Step now {step}")
+            else:
+                # We passed the peak!
+                print("  > Peak bracketed.")
+                state = State.SAMPLE
+
+        # PHASE 3: 5-POINT SAMPLING (Fine)
+        # ------------------------
+
+        print("Sampling 5 points for curve fit...")
+        # Define 5 points centered on our coarse guess
+        delta = best_z - 20.0
+        sample_points = [best_z - 20.0,best_z - 10.0, best_z, best_z + 10.0, best_z + 20.0]
+        scores = []
+        for i in range(len(sample_points)):
+            self.move_precise(delta)
+            z += (-delta)
+            delta = 5.0
+            scores.append(sample_focus())
+        state = State.ANALYZE
+
+        # PHASE 4: CURVE FITTING & VALIDATION
+        # ------------------------
+
+        # coeffs: y = ax^2 + bx + c
+        coeffs = np.polyfit(sample_points, scores, 2)
+        a, b, c = coeffs
+
+        # # VALIDATION 1: Is it a peak or a valley?
+        if a >= 0:
+            print("Error: Curve fit found a valley, not a peak. a < 0.")
+            state = State.ERROR
+            return state
+
+        # # Calculate Peak Z
+        z_peak = -b *1.0 / (2 * a)
+        fit_score = a*(z_peak**2) + b*z_peak + c
+
+        # VALIDATION 2: MSE check
+        # How far off were our 5 points from the ideal curve?
+        fitted_scores = [a*(z**2) + b*z + c for z in sample_points]
+        mse = np.mean((np.array(scores) - np.array(fitted_scores))**2)
+        print(f"Calculated Peak: {z_peak:.2f} (MSE: {mse:.2f})")
+
+        if mse > fit_threshold:
+            print("Error: Bad curve fit (too much noise/vibration).")
+            # Fallback: Just go to the best measured point
+            self.move_precise(best_z)
+            z += -best_z
+            state = State.VALIDATE
+
+        # PHASE 5: FINAL MOVE & VERIFY
+        # ------------------------
+        self.move_precise(z_peak)
+        z += -z_peak
+        final_score = sample_focus()
+
+        # Verification
+        error_percent = abs(final_score - fit_score) / fit_score
+        if error_percent > 0.10: # Allow 10% deviation
+            print(f"Warning: Result {final_score} deviates from prediction {fit_score}")
+            state = State.DONE
+
+        print("Autofocus Complete.")
         self.set_autofocus_busy(False)
-
         print("Finished autofocus")
     
     def initialize_alignment(self, config: LithographerConfig):
