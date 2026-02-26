@@ -1322,6 +1322,10 @@ class PredefinedImageSelector:
         self.image_dropdown.grid(row=1, column=0, columnspan=2, sticky="ew", pady=2)
         self.image_dropdown.bind("<<ComboboxSelected>>", self._on_selection_change)
         
+        # Add a button to Load custom alignment marks
+        self.upload_button = ttk.Button(self.widget, text="Upload Marks", command= self._upload_marks)
+        self.upload_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=2)
+
         # Add a button to load the selected image
         self.load_button = ttk.Button(self.widget, text="Load Selected", command=self._load_selected)
         self.load_button.grid(row=2, column=0, columnspan=2, sticky="ew", pady=2)
@@ -1339,6 +1343,22 @@ class PredefinedImageSelector:
                 self._load_image(path)
                 break
     
+    def _upload_marks(self):
+        """Called when Upload Marks button is clicked"""
+        current_directory = StringVar(value=str("~"));
+        # checks need to be made before we allow user to do this
+        dir_path = filedialog.askopenfilename(
+            initialdir=current_directory,
+            filetypes=[("All Files", "*.*")],
+            title="Select Custom Alignment Marks",
+        )
+        filename = f"Plus Mark {len(self.predefined_images)}"
+        print(f'uploading custom alignment marker file: {filename}')
+
+        if dir_path:  # User didn't cancel            
+            self.predefined_images.append((filename, dir_path))
+            self.image_dropdown['values'] = [name for name, _ in self.predefined_images]
+
     def _load_selected(self):
         """Called when Load Selected button is clicked"""
         if self.on_select and self.current_image:
