@@ -207,6 +207,51 @@ class Thumbnail:
         self.widget.configure(image=self.thumb_image)  # type:ignore
 
 
+class FloatEntry:
+    widget: Entry
+    _var: Variable
+
+    def __init__(
+        self,
+        parent,
+        default: int = 0,
+        var: Optional[Variable] = None,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+        justify: Literal["left", "center", "right"] = "center",
+    ):
+        self._var = var if var is not None else DoubleVar()
+        self._var.set(default)
+
+        self.default = default
+
+        self.min_value = min_value
+        self.max_value = max_value
+
+        self.widget = Entry(parent, textvariable=self._var, justify=justify)
+
+        self.widget.bind("<FocusOut>", self._round_display)
+        self.widget.bind("<Return>", self._round_display)
+
+    def _round_display(self, event=None):
+        try:
+            value = float(self.widget.get())
+            value = round(value, 1)
+            self._var.set(f"{value:.1f}")
+        except ValueError:
+            self._var.set(f"{self.default:.1f}")
+
+    def get(self) -> float:
+        if self.widget.get() == "":
+            self.default = round(self.default, 1)
+            return self.default
+        else:
+            return round(self._var.get(), 1)
+
+    def set(self, value: float):
+        value = round(value, 1)
+        self._var.set(value)
+
 # TODO:
 class IntEntry:
     widget: Entry
