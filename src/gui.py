@@ -939,12 +939,17 @@ class StagePositionFrame:
         control_frame = ttk.Frame(self.frame)
         control_frame.grid(row=1, column=0, columnspan=2)
         
-        # XY circular control: hide in UV mode
         if not uvmode:
+            # Custom XYZ control            
+            custom_control_frame = ttk.LabelFrame(control_frame, text="Custom Step")
+            custom_control_frame.grid(row=0, column=0, padx=10)
+            self.create_custom_xyz_control(custom_control_frame)
+
+            # XY circular control: hide in UV mode
             xy_frame = ttk.Frame(control_frame)
-            xy_frame.grid(row=0, column=0, padx=10)
+            xy_frame.grid(row=0, column=1, padx=10)
             self.create_xy_control(xy_frame)
-            z_col = 1
+            z_col = 2
         else:
             z_col = 0
         
@@ -1009,6 +1014,49 @@ class StagePositionFrame:
 
     def _position(self) -> tuple[int, int, int]:
         return tuple(intput.get() for intput in self.position_intputs)
+    
+    def create_custom_xyz_control(self, parent):
+        """Create custom step size control"""
+        class Direction(Enum):
+            POS = 0
+            NEG = 1
+    
+        class Axis(Enum):
+            X = 0
+            Y = 1
+            Z = 2
+        
+        def custom_step_move(direction, axis, step_size):
+            assert(step_size > 0, "step size should be greater than zero")
+            movement = step_size if direction == Direction.POS else -step_size                
+            if axis == Axis.X:
+                self.event_dispatcher.move_relative({"x": movement})
+            elif axis == Axis.Y:
+                self.event_dispatcher.move_relative({"y": movement})
+            else:
+                self.event_dispatcher.move_relative({"z": movement})
+
+        self.custom_step_size_label = ttk.Label(parent, text="step size")
+        self.custom_step_size = IntEntry(parent)
+        
+        self.custom_step_pos_x_button = ttk.Button(parent, text=f"+X", command=lambda: custom_step_move(Direction.POS, Axis.X, self.custom_step_size.get()))
+        self.custom_step_pos_y_button = ttk.Button(parent, text=f"+Y", command=lambda: custom_step_move(Direction.POS, Axis.Y, self.custom_step_size.get()))
+        self.custom_step_pos_z_button = ttk.Button(parent, text=f"+Z", command=lambda: custom_step_move(Direction.POS, Axis.Z, self.custom_step_size.get()))
+        
+        self.custom_step_neg_x_button = ttk.Button(parent, text=f"-X", command=lambda: custom_step_move(Direction.NEG, Axis.X, self.custom_step_size.get()))
+        self.custom_step_neg_y_button = ttk.Button(parent, text=f"-Y", command=lambda: custom_step_move(Direction.NEG, Axis.Y, self.custom_step_size.get()))
+        self.custom_step_neg_z_button = ttk.Button(parent, text=f"-Z", command=lambda: custom_step_move(Direction.NEG, Axis.Z, self.custom_step_size.get()))
+
+        # formatting
+        self.custom_step_size_label.grid(row=0, column=0)
+        self.custom_step_size.widget.grid(row=0, column=1, sticky="ew")
+        self.custom_step_size.widget.config(width="10")
+        self.custom_step_pos_x_button.grid(row=1, column=0, sticky="ew")
+        self.custom_step_neg_x_button.grid(row=1, column=1, sticky="ew")
+        self.custom_step_pos_y_button.grid(row=2, column=0, sticky="ew")
+        self.custom_step_neg_y_button.grid(row=2, column=1, sticky="ew")
+        self.custom_step_pos_z_button.grid(row=3, column=0, sticky="ew")
+        self.custom_step_neg_z_button.grid(row=3, column=1, sticky="ew")
     
     def create_xy_control(self, parent):
         """Create circular XY control with 4 quadrants and 4 layers each"""
