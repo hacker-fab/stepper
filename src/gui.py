@@ -1026,8 +1026,8 @@ class StagePositionFrame:
             Y = 1
             Z = 2
         
-        def custom_step_move(direction, axis, step_size):
-            assert(step_size > 0, "step size should be greater than zero")
+        def custom_step_move(direction, axis, step_size=10):
+            assert step_size > 0, "step size should be greater than zero"
             movement = step_size if direction == Direction.POS else -step_size                
             if axis == Axis.X:
                 self.event_dispatcher.move_relative({"x": movement})
