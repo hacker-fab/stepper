@@ -24,7 +24,7 @@ from ultralytics import YOLO
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
 from hardware import ImageProcessSettings, Lithographer, ProcessedImage
-from lib.gui import IntEntry, Thumbnail
+from lib.gui import IntEntry, Thumbnail, FloatEntry
 from lib.img import image_to_tk_image
 from projector import TkProjector
 from stage_control.grbl_stage import GrblStage
@@ -1250,9 +1250,14 @@ class ImageAdjustFrame:
         self.absolute_frame.grid(row=0, column=0)
 
         for i, coord in ((0, "x"), (1, "y"), (2, "ϴ")):
-            self.position_intputs.append(
-                IntEntry(parent=self.absolute_frame, default=0)
-            )
+            if i == 0 or i == 1:
+                self.position_intputs.append(
+                    IntEntry(parent=self.absolute_frame, default=0)
+                )
+            else:
+                self.position_intputs.append(
+                    FloatEntry(parent=self.absolute_frame, default=0)
+                )
             self.position_intputs[-1].widget.grid(row=0, column=i)
 
         def callback_set():
@@ -1267,14 +1272,24 @@ class ImageAdjustFrame:
         self.relative_frame.grid(row=1, column=0)
 
         for i, coord in ((0, "x"), (1, "y"), (2, "ϴ")):
-            self.step_size_intputs.append(
-                IntEntry(
-                    parent=self.relative_frame,
-                    default=10,
-                    min_value=-1000,
-                    max_value=1000,
+            if i == 0 or i == 1:
+                self.step_size_intputs.append(
+                    IntEntry(
+                        parent=self.relative_frame,
+                        default=10,
+                        min_value=-1000,
+                        max_value=1000,
+                    )
                 )
-            )
+            else:
+                self.step_size_intputs.append(
+                    FloatEntry(
+                        parent=self.relative_frame,
+                        default=10.0,
+                        min_value=0.0,
+                        max_value=360.0
+                    )
+                )
             self.step_size_intputs[-1].widget.grid(row=3, column=i)
 
             def callback_pos(index, c):
