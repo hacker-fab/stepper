@@ -6,15 +6,26 @@ from camera.camera_module import CameraModule
 
 
 class BaslerPylon(CameraModule):
-    def __init__(self):
-        # Create an instant camera object with the camera device found first.
+    def __init__(self, index):
+        # Create an instant camera object
+        # index in config file specifies which device to use
+        # in the case that there are multiple cameras connected
+
+        tl_factory = pylon.TlFactory.GetInstance()
+        devices = tl_factory.EnumerateDevices()
+
+        if index > len(devices) - 1:
+            print(f"Could not find baslerpylon camera with index {index}")
+            self.camera = None
+            return
+
         self.camera = pylon.InstantCamera(
-            pylon.TlFactory.GetInstance().CreateFirstDevice()
+            pylon.TlFactory.GetInstance().CreateDevice(devices[index])
         )
 
         self.capture_thread = None
         self.should_stop = threading.Event()
-    
+
     def setExposureTime(self, value):
         self.camera.ExposureTime.Value = value
 
