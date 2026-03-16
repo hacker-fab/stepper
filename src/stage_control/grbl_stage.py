@@ -43,7 +43,6 @@ class GrblStage(StageController):
         
         print(f"WPos startup (mm): {self._query_state()}") # queries for current position and state
         self._send_msg(b'$X\n') # exit out of any alarms
-        
     def _fill_resp_buffer(self):
         self.resp_buffer += self.controller_target.read_all()
     
@@ -418,7 +417,7 @@ class GrblStage(StageController):
         resp, self.resp_buffer = self.resp_buffer.split(b"\r\n", maxsplit=1)
         response = resp.decode("ascii", errors="replace").strip()
 
-        if response != "ok":
+        if "ok" not in response:
             raise RuntimeError(f"GRBL unlock ($X) failed — got: {response!r}")
 
         self.resp_buffer = b""
