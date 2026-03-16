@@ -458,6 +458,23 @@ class EventDispatcher:
         self.hardware.stage.move_to({k: self.stage_setpoint[i] for k, i in (("x", 0), ("y", 1), ("z", 2))})
         self.on_event(Event.STAGE_POSITION_CHANGED)
 
+<<<<<<< Updated upstream
+=======
+    def move_precise(self, delta, backlash=10.0):
+        """
+            Moves to a 'virtual' position using the relative motors.
+            ALWAYS approaches from the negative direction to kill backlash.
+        """
+        if(delta < 0):
+            self.move_relative({"z": delta - backlash})
+
+            self.move_relative({"z": backlash})
+
+        else:
+            self.move_relative({"z": delta})
+
+
+>>>>>>> Stashed changes
     def set_use_solid_red(self, use: bool):
         self.use_solid_red = use
         self.set_shown_image(ShownImage.RED_FOCUS)
@@ -650,10 +667,18 @@ class EventDispatcher:
         
         counter = 0
         def sample_focus():
+<<<<<<< Updated upstream
             def do_thing():
                 self.non_blocking_delay(0.1)
                 return compute_focus_score(self.camera_image, blue_only=blue_only)
             focus_score = sorted([do_thing() for _ in range(3)])[1]
+=======
+            def sample():
+                self.non_blocking_delay(0.5)
+                return fetch_focus_score(self.camera_image, blue_only=blue_only, log=True)
+            focus_score = sum([sample() for _ in range(5)])/5
+            print("focus avg:", focus_score)
+>>>>>>> Stashed changes
             nonlocal counter
             if log:
                 log_file.write(f'{counter},{focus_score}\n')
@@ -665,6 +690,7 @@ class EventDispatcher:
         print("Starting autofocus")
 
         self.set_autofocus_busy(True)
+<<<<<<< Updated upstream
         self.non_blocking_delay(1.0)
         mid_score = sample_focus()
         self.move_relative({"z": -20.0})
@@ -734,6 +760,191 @@ class EventDispatcher:
         else:
             print("Autofocus is confused!")
 
+=======
+        state = 2 # auto-set to positive for now
+
+        # PHASE 1: DIRECTION PROBING
+        # --------------------------
+        z: float = 0.0 # relative movement to previous position
+
+        best_z: float = 0.0 # relative movement to best z position
+        best_score: float = 0.0 # best focus score so far
+
+        fsm: int = 0 # (negative) 0,1 <-> 2,3 (positive)
+        ideal_range = 100.0
+        probe_direction: int = 1 # either 1 or -1 for pos and neg
+        stage_step_size: float = 800.0 # initial  magnitude of step size
+        projecting = False # self.red_focus_source == RedFocusSource.PATTERN # source determines focus score evaluation
+        limit_counter = 10 # max large steps to take, this goes hand-hand with ^^
+
+        # PHASE 3: 5-POINT SAMPLING (Fine)
+        # ------------------------
+        print("Sampling 5 points for curve fit...")
+        # Define 5 points centered on our coarse guess
+        # self.move_precise(best_z)
+        best_z = 0
+        new_score = sample_focus()
+        best_score = new_score
+
+        off = 800
+        self.move_precise(-off)
+        best_z = off
+        self.non_blocking_delay(3.0)
+        
+        # times_bad = 0
+        scores = []
+        for i in range(-off, off, 10):
+            self.move_precise(10)
+            scores.append(sample_focus())
+
+        best_index = scores.index(max(scores))
+        best_z += 10*best_index
+
+        self.move_precise(best_z)
+        best_score = max(scores)
+        print(f"Fine grain sampling done, best is: {best_score}")
+
+        # Probe current position and set best score
+        # current_focus_score = sample_focus()
+        # best_score = current_focus_score
+        
+        # # Probe negative direction
+        # # Reasoning: need to see both extremes before we settle one one
+        # self.move_precise(-stage_step_size)
+        # self.non_blocking_delay(1.0)
+        # negative_focus_score = sample_focus()
+        
+        # # Probe positive direction
+        # # Reasoning: more likely that z-stage is too far than too close (esp when chip first goes on stage)
+        # self.move_precise(2*stage_step_size)
+        # self.non_blocking_delay(2.0)
+        # positive_focus_score = sample_focus()
+        
+
+        # Initialize current z values
+        # best_z = -stage_step_size
+
+        # Determine probe direction
+
+        # if(negative_focus_score > current_focus_score and negative_focus_score >= 40.0):
+        #     # negative is actually close
+        #     best_score = negative_focus_score
+        #     probe_direction = -1 # Peak is in -Z most probably
+        #     self.move_precise(2.0*(-(stage_step_size + negative_focus_score-current_focus_score)))
+        #     best_z = 2*(negative_focus_score-current_focus_score)
+        #     limit_counter = 10
+        #     state, probe_direction = three_bit_saturating(state, probe_direction, True)
+        # elif (positive_focus_score > current_focus_score and positive_focus_score >= 40.0):
+        #     # positive is actually close
+        #     best_score = positive_focus_score
+        #     probe_direction = 1 # Peak is in +Z most probably
+        #     self.move_precise(1.0*(positive_focus_score-current_focus_score))
+        #     best_z = -1.0*(positive_focus_score-current_focus_score)
+        #     limit_counter = 10
+        # else:
+        #     # choose a direction, we should take it slowly
+        #     best_score = current_focus_score
+        #     self.move_precise(-stage_step_size)
+        #     best_z = 0
+
+        # print(f"Ideal direction to move: {'+Z' if probe_direction == 1 else '-Z'}")
+
+        # PHASE 2: Growing searches
+        # ------------------------
+        step_scalar = {0:1.0, 1:5.0, 2:10.0, 3:15.0, 4:15.0, 5:10.0, 6:7.0, 7:4.0, 8:2.0, 9:1.0}
+        step = 10 # dynamic step size
+        print(f"Galloping in direction: {probe_direction}")
+
+        while limit_counter > 0:
+            # update counter
+            limit_counter -= 1
+
+            # Probe for next position
+            next_z = probe_direction * step
+            self.move_precise(next_z)
+            best_z += -next_z # updates offset from best_z
+            new_score = sample_focus()
+            print(f"best_score: {best_score} vs current_score: {new_score}")
+
+            # better score exists, then update
+            if (new_score > best_score and new_score > 45.0):
+                best_score = new_score
+                best_z = 0
+                step = min(step * step_scalar[state], 50) # Accelerate! But cap a hard step limit
+                state, probe_direction = three_bit_saturating(state, probe_direction, True)
+                print(f"State{state}  > Improving... Step now {step} in direction {probe_direction}")
+            elif(new_score < best_score and best_score - new_score > 2.0):
+                state = 4 if state < 3 else 3
+                probe_direction = -1.0 * probe_direction
+                step = min(step * step_scalar[state], 50) # Accelerate! But cap a hard step limit
+                print(f"State{state}  Likely wrong direction ... Step now {step} in direction {probe_direction}")
+            else:
+                self.move_precise(best_z)
+                best_z = 0
+                state, probe_direction = three_bit_saturating(state, probe_direction, False)
+                print(f"State{state} > Failed progress. Diverting to best so far")
+
+        # PHASE 3: 5-POINT SAMPLING (Fine)
+        # ------------------------
+        print("Sampling 5 points for curve fit...")
+        # Define 5 points centered on our coarse guess
+        self.move_precise(best_z)
+        best_z = 0
+
+        sample_points = [-40, 10, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+        scores = []
+        for i in range(len(sample_points)):
+            self.move_precise(sample_points[i])
+            new_score = sample_focus()
+            scores.append(new_score)
+
+            # always check for optimal scores
+            if (new_score > best_score):
+                best_score = new_score
+                best_z = 0
+        self.move_precise(best_z)
+        print(f"Fine grain sampling done, values are: {scores}")
+
+        # PHASE 4: CURVE FITTING & VALIDATION
+        # ------------------------
+        print("Now curve-fitting...")
+        # coeffs: y = ax^2 + bx + c
+        # coeffs = np.polyfit(sample_points, scores, 2)
+        # a, b, c = coeffs
+        # print(f"a, b, c: {a}, {b}, {c}")
+
+        # # VALIDATION 1: Is it a peak or a valley?
+        # if a >= 0:
+        #     print("Error: Curve fit found a valley, not a peak. a < 0.")
+        #     return
+
+        # # # Calculate Peak Z
+        # z_peak = -b *1.0 / (2 * a)
+        # fit_score = a*(z_peak**2) + b*z_peak + c
+
+        # # VALIDATION 2: MSE check
+        # # How far off were our 5 points from the ideal curve?
+        # fitted_scores = [a*(z**2) + b*z + c for z in sample_points]
+        # mse = np.mean((np.array(scores) - np.array(fitted_scores))**2)
+        # print(f"Calculated Peak: {z_peak:.2f} (MSE: {mse:.2f})")
+
+        # if mse > fit_threshold:
+        #     print("Error: Bad curve fit (too much noise/vibration).")
+            # Fallback: Just go to the best measured point
+        # self.move_precise(best_z)
+
+        # PHASE 5: FINAL MOVE & VERIFY
+        # ------------------------
+        # self.move_precise(z_peak)
+        # final_score = sample_focus()
+
+        # # Verification
+        # error_percent = abs(final_score - fit_score) / fit_score
+        # if error_percent > 0.05: # Allow 10% deviation
+        #     print(f"Warning: Result {final_score} deviates from prediction {fit_score}")
+
+        print("Autofocus Complete.")
+>>>>>>> Stashed changes
         self.set_autofocus_busy(False)
 
         print("Finished autofocus")
