@@ -153,6 +153,7 @@ class Event(StrAutoEnum):
     PATTERNING_BUSY_CHANGED = auto()
     PATTERNING_FINISHED = auto()
     CHIP_CHANGED = auto()
+    AUTOFOCUS_BUSY = auto()
 
 
 class MovementLock(StrAutoEnum):
@@ -502,12 +503,36 @@ class EventDispatcher:
         """
         if(delta < 0):
             self.move_relative({"z": delta - backlash})
-            self.non_blocking_delay(0.5)
+            self.non_blocking_delay(0.2)
             self.move_relative({"z": backlash})
-            self.non_blocking_delay(0.5)
+            self.non_blocking_delay(0.2)
         else:
             self.move_relative({"z": delta})
-            self.non_blocking_delay(0.5)
+            self.non_blocking_delay(0.2)
+
+    def move_and_track_relative(self, delta):
+        """
+            Move while sampling focus scores until 
+            we reach the destination position
+        """
+        # poll = 10
+        scores: list[tuple[float, float]] = []
+        
+        x = self.stage_setpoint[0]
+        y = self.stage_setpoint[1]
+        z = delta + self.stage_setpoint[2]
+        self.stage_setpoint = (x, y, z)
+        self.hardware.stage.move_to({k: self.stage_setpoint[i] for k, i in (("x", 0), ("y", 1), ("z", 2))})
+        self.on_event(Event.AUTOFOCUS_BUSY)
+        
+
+        # for i in range(delta, step=poll):
+        #     z = i + self.stage_setpoint[2]
+        #     self.stage_setpoint = (x, y, z)
+        #     self.hardware.stage.move_to({k: self.stage_setpoint[i] for k, i in (("x", 0), ("y", 1), ("z", 2))})
+        #     self.on_event(Event.AUTOFOCUS_BUSY)
+        #     scores.append((z, fetch_focus_score(self.camera_image)))
+        # return scores
 
     def set_use_solid_red(self, use: bool):
         self.use_solid_red = use
@@ -699,18 +724,17 @@ class EventDispatcher:
                 pass
             log_file = open('aftest/log.csv', 'w')
         
-        counter = 0
+        # counter = 0
         def sample_focus():
             def sample():
-                self.non_blocking_delay(0.2)
                 return fetch_focus_score(self.camera_image, blue_only=blue_only, log=True)
-            focus_score = sum([sample() for _ in range(5)])/5
+            focus_score = sum([sample() for _ in range(10)])/10
             print("focus avg:", focus_score)
-            nonlocal counter
+            # nonlocal counter
             # if log:
             #     log_file.write(f'{counter},{focus_score}\n')
             #     cv2.imwrite(f'aftest/img{counter}.png', self.camera_image, log=True)
-            counter += 1
+            # counter += 1
             return focus_score
             
         # 000, 001, 010, 011 | 100, 101, 110, 111
@@ -727,146 +751,150 @@ class EventDispatcher:
         
         print("Starting autofocus")
 
-        self.set_autofocus_busy(True)
-        state = 2 # auto-set to positive for now
-
-        # PHASE 1: DIRECTION PROBING
-        # --------------------------
-        z: float = 0.0 # relative movement to previous position
-
-        best_z: float = 0.0 # relative movement to best z position
-        best_score: float = 0.0 # best focus score so far
-
-        fsm: int = 0 # (negative) 0,1 <-> 2,3 (positive)
-        fit_threshold = 10.0
-        probe_direction: int = 1 # either 1 or -1 for pos and neg
-        stage_step_size: float = 200.0 # initial  magnitude of step size
-        projecting = False # self.red_focus_source == RedFocusSource.PATTERN # source determines focus score evaluation
-
-        # Probe current position and set best score
-        current_focus_score = sample_focus()
-        best_score = current_focus_score
-
-        # Probe positive direction
-        # Reasoning: more likely that z-stage is too far than too close (esp when chip first goes on stage)
-        self.move_precise(stage_step_size)
-        positive_focus_score = sample_focus()
-        self.non_blocking_delay(1.0)
-
-        # Initialize current z values
-        best_z = -stage_step_size
-
-        # Determine probe direction
-        # projection -> higher is better, !projection -> lower is better
-        if (positive_focus_score > current_focus_score):
-            best_score = positive_focus_score
-            probe_direction = 1 # Peak is in +Z
-            best_z = 0
-            state, probe_direction = three_bit_saturating(state, probe_direction, True)
-        else:
-            state, probe_direction = three_bit_saturating(state, probe_direction, False)
-            probe_direction = -1 # Peak is in -Z
-            # go back to previous position if previous was better
-            self.move_precise(2.0*(-stage_step_size))
-            best_z = 0
-
-        print(f"Ideal direction to move: {'+Z' if probe_direction == 1 else '-Z'}")
-
-        # PHASE 2: Growing searches
-        # ------------------------
-        limit_counter = 10 # max large steps to take, this goes hand-hand with ^^
-        step_scalar = {0:1.0, 1:2.5, 2:2.0, 3:1.0, 4:0.5, 5:0.5, 6:1.0, 7:2.0, 8:2.5, 9:1.0}
-        step = 10 # dynamic step size
-        print(f"Galloping in direction: {probe_direction}")
-
-        while limit_counter > 0:
-            # update counter
-            limit_counter -= 1
-
-            # Probe for next position
-            next_z = probe_direction * step
-            self.move_precise(next_z)
-            best_z += -next_z # updates offset from best_z
-            new_score = sample_focus()
-            print(f"best_score: {best_score} vs current_score: {new_score}")
-
-            # better score exists, then update
-            if (new_score > best_score):
-                best_score = new_score
-                best_z = 0
-                step = min(step * step_scalar[state], 50) # Accelerate! But cap a hard step limit
-                state, probe_direction = three_bit_saturating(state, probe_direction, True)
-                print(f"State{state}  > Improving... Step now {step} in direction {probe_direction}")
-            else:
-                # We passed the peak!
-                self.move_precise(best_z)
-                state, probe_direction = three_bit_saturating(state, probe_direction, False)
-                print(f"State{state} > Peak bracketed. Still continuing")
-
-        # PHASE 3: 5-POINT SAMPLING (Fine)
-        # ------------------------
-        print("Sampling 5 points for curve fit...")
-        # Define 5 points centered on our coarse guess
-        self.move_precise(best_z)
-        best_z = 0
-
-        delta = - 20.0
-        sample_points = [best_z - 20.0,best_z - 10.0, best_z, best_z + 10.0, best_z + 20.0]
-        scores = []
-        for i in range(len(sample_points)):
-            self.move_precise(delta)
-            delta = 10.0
-            new_score = sample_focus()
-            scores.append(new_score)
-
-            # always check for optimal scores
-            if (new_score > best_score):
-                best_score = new_score
-                best_z = 0
+        # self.set_autofocus_busy(True)
+        self.on_event(Event.AUTOFOCUS_BUSY)
+        # # PHASE 1: HUGE Sampling
+        # # ------------------------
+        # best_score: float = sample_focus() # best focus score so far
         
-        print(f"Fine grain sampling done, values are: {scores}")
+        # print("Sampling huge range for optimal focus...")
+        # window = 500.0
+        # self.move_precise(-window)
+        # self.non_blocking_delay(0.2)
+        
+        # scores:list[tuple[float, float]] = []
+        # scores = self.move_and_track_relative(window*2.0)
 
-        # PHASE 4: CURVE FITTING & VALIDATION
-        # ------------------------
-        print("Now curve-fitting...")
-        # coeffs: y = ax^2 + bx + c
-        coeffs = np.polyfit(sample_points, scores, 2)
-        a, b, c = coeffs
-        print(f"a, b, c: {a}, {b}, {c}")
+        # positions = [score[1] for score in scores]
+        # focus_scores = [score[0] for score in scores]
 
-        # # VALIDATION 1: Is it a peak or a valley?
-        # if a >= 0:
-        #     print("Error: Curve fit found a valley, not a peak. a < 0.")
-        #     return
+        # best_score = max(focus_scores)
 
-        # # # Calculate Peak Z
-        # z_peak = -b *1.0 / (2 * a)
-        # fit_score = a*(z_peak**2) + b*z_peak + c
+        # optimal_idx = focus_scores.index(best_score)
+        # self.move_absolute(positions[optimal_idx])
 
-        # # VALIDATION 2: MSE check
-        # # How far off were our 5 points from the ideal curve?
-        # fitted_scores = [a*(z**2) + b*z + c for z in sample_points]
-        # mse = np.mean((np.array(scores) - np.array(fitted_scores))**2)
-        # print(f"Calculated Peak: {z_peak:.2f} (MSE: {mse:.2f})")
+        # print(f"Current best focus = {best_score} @ position {positions[optimal_idx]}...")
 
-        # if mse > fit_threshold:
-        #     print("Error: Bad curve fit (too much noise/vibration).")
-            # Fallback: Just go to the best measured point
-        self.move_precise(best_z)
+        # # PHASE 2: 10-POINT SAMPLING (Fine)
+        # # ------------------------
+        # print("Sampling small range for fine focus...")
+        # fine_window = 10.0
+        # self.move_precise(-fine_window)
+        # self.non_blocking_delay(0.2)
 
-        # PHASE 5: FINAL MOVE & VERIFY
-        # ------------------------
-        # self.move_precise(z_peak)
-        # final_score = sample_focus()
+        # fine_scores:list[tuple[float, float]] = []
+        # fine_scores = self.move_and_track_relative(fine_window*2.0)
 
-        # # Verification
-        # error_percent = abs(final_score - fit_score) / fit_score
-        # if error_percent > 0.05: # Allow 10% deviation
-        #     print(f"Warning: Result {final_score} deviates from prediction {fit_score}")
+        # positions = [score[1] for score in fine_scores]
+        # focus_scores = [score[0] for score in fine_scores]
 
-        print("Autofocus Complete.")
-        self.set_autofocus_busy(False)
-        print("Finished autofocus")
+        # best_score = max(focus_scores)
+
+        # optimal_idx = focus_scores.index(best_score)
+        # self.move_absolute(positions[optimal_idx])
+
+        # print(f"Best focus = {best_score} @ position {positions[optimal_idx]}...")
+
+        # state = 2 # auto-set to positive for now
+
+        # # PHASE 1: DIRECTION PROBING
+        # # --------------------------
+        # z: float = 0.0 # rel)ative movement to previous position
+
+        # best_z: float = 0.0 # relative movement to best z position
+        # best_score: float = 0.0 # best focus score so far
+
+        # probe_direction: int = 1 # either 1 or -1 for pos and neg
+        # stage_step_size: float = 200.0 # initial  magnitude of step size
+
+        # # Probe current position and set best score
+        # current_focus_score = sample_focus()
+        # best_score = current_focus_score
+
+        # # Probe positive direction
+        # # Reasoning: more likely that z-stage is too far than too close (esp when chip first goes on stage)
+        # self.move_precise(stage_step_size)
+        # positive_focus_score = sample_focus()
+        # self.non_blocking_delay(1.0)
+
+        # # Initialize current z values
+        # best_z = -stage_step_size
+
+        # # Determine probe direction
+        # # projection -> higher is better, !projection -> lower is better
+        # if (positive_focus_score > current_focus_score):
+        #     best_score = positive_focus_score
+        #     probe_direction = 1 # Peak is in +Z
+        #     best_z = 0
+        #     state, probe_direction = three_bit_saturating(state, probe_direction, True)
+        # else:
+        #     state, probe_direction = three_bit_saturating(state, probe_direction, False)
+        #     probe_direction = -1 # Peak is in -Z
+        #     # go back to previous position if previous was better
+        #     self.move_precise(2.0*(-stage_step_size))
+        #     best_z = 0
+
+        # print(f"Ideal direction to move: {'+Z' if probe_direction == 1 else '-Z'}")
+
+        # # PHASE 2: Growing searches
+        # # ------------------------
+        # limit_counter = 10 # max large steps to take, this goes hand-hand with ^^
+        # step_scalar = {0:1.0, 1:2.5, 2:2.0, 3:1.0, 4:0.5, 5:0.5, 6:1.0, 7:2.0, 8:2.5, 9:1.0}
+        # step = 10 # dynamic step size
+        # print(f"Galloping in direction: {probe_direction}")
+
+        # while limit_counter > 0:
+        #     # update counter
+        #     limit_counter -= 1
+
+        #     # Probe for next position
+        #     next_z = probe_direction * step
+        #     self.move_precise(next_z)
+        #     best_z += -next_z # updates offset from best_z
+        #     new_score = sample_focus()
+        #     print(f"best_score: {best_score} vs current_score: {new_score}")
+
+        #     # better score exists, then update
+        #     if (new_score > best_score):
+        #         best_score = new_score
+        #         best_z = 0
+        #         step = min(step * step_scalar[state], 50) # Accelerate! But cap a hard step limit
+        #         state, probe_direction = three_bit_saturating(state, probe_direction, True)
+        #         print(f"State{state}  > Improving... Step now {step} in direction {probe_direction}")
+        #     else:
+        #         # We passed the peak!
+        #         self.move_precise(best_z)
+        #         best_z = 0
+        #         state, probe_direction = three_bit_saturating(state, probe_direction, False)
+        #         print(f"State{state} > Peak bracketed. Still continuing")
+
+        # # PHASE 3: 5-POINT SAMPLING (Fine)
+        # # ------------------------
+        # print("Sampling 5 points for curve fit...")
+        # # Define 5 points centered on our coarse guess
+        # self.move_precise(best_z)
+        # best_z = 0
+
+        # delta = - 20.0
+        # sample_points = [best_z - 20.0,best_z - 10.0, best_z, best_z + 10.0, best_z + 20.0]
+        # scores = []
+        # for i in range(len(sample_points)):
+        #     self.move_precise(delta)
+        #     delta = 10.0
+        #     new_score = sample_focus()
+        #     scores.append(new_score)
+
+        #     # always check for optimal scores
+        #     if (new_score > best_score):
+        #         best_score = new_score
+        #         best_z = 0
+        
+        # print(f"Fine grain sampling done, values are: {scores}")
+        # self.move_precise(best_z)
+
+        # print("Autofocus Complete.")
+        # self.set_autofocus_busy(False)
+        # print("Finished autofocus")
     
     def initialize_alignment(self, config: LithographerConfig):
         self.config = config
@@ -1115,6 +1143,53 @@ class StagePositionFrame:
                 self.position_intputs[i].set(pos[i])
 
         event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, on_position_change)
+        
+        # Autofocus moved here
+        def on_autofocus_busy():
+            
+            self.autofocus_busy = True
+            self.on_event(Event.MOVEMENT_LOCK_CHANGED)
+
+            window = 500.0
+            fine_window = 10.0
+            ssize = 5
+            
+            # Sample Large
+            scores:list[tuple[float, float]] = []
+            best_score: float = 0
+            pos = event_dispatcher.stage_setpoint
+            for position in range(pos[2]-window, pos[2]+window, step=10):
+                self.position_intputs[2].set(position)
+                scores.append((position, sum([fetch_focus_score() for _ in range(ssize)])/ssize))
+
+            positions = [score[1] for score in scores]
+            focus_scores = [score[0] for score in scores]
+            best_score = max(focus_scores)
+
+            optimal_idx = focus_scores.index(best_score)
+            self.position_intputs[2].set(positions[optimal_idx])
+            print(f"Current best focus = {best_score} @ position {positions[optimal_idx]}...")
+
+            # Sample Fine
+            scores = []
+            best_score: float = 0
+            pos = event_dispatcher.stage_setpoint
+            for position in range(pos[2]-fine_window, pos[2]+fine_window):
+                self.position_intputs[2].set(position)
+                scores.append((position, sum([fetch_focus_score() for _ in range(ssize)])/ssize))
+
+            positions = [score[1] for score in scores]
+            focus_scores = [score[0] for score in scores]
+            best_score = max(focus_scores)
+
+            optimal_idx = focus_scores.index(best_score)
+            self.position_intputs[2].set(positions[optimal_idx])
+            print(f"Best focus = {best_score} @ position {positions[optimal_idx]}...")
+
+            self.autofocus_busy = False
+            self.on_event(Event.MOVEMENT_LOCK_CHANGED)
+
+        event_dispatcher.add_event_listener(Event.AUTOFOCUS_BUSY, on_autofocus_busy)
 
         # Shortcuts at bottom
         self.shortcut_frame = ttk.LabelFrame(self.frame, text="Shortcuts")
