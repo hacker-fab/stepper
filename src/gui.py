@@ -27,7 +27,7 @@ from hardware import ImageProcessSettings, Lithographer, ProcessedImage
 from lib.gui import IntEntry, Thumbnail, FloatEntry
 from lib.img import image_to_tk_image
 from projector import TkProjector
-from stage_control.grbl_stage import GrblStage
+from stage_control.grbl_stage import  GrblAlarmError, GrblError, GrblSoftLimitAlarm, GrblSoftLimitError ,GrblStage
 from stage_control.stage_controller import StageController
 
 
@@ -250,7 +250,7 @@ class EventDispatcher:
         root: Tk,
         camera: Optional[CameraModule],
         red_exposure: float,
-        uv_exposure: float,
+        uv_exposure: float
     ):
         # Hardware components
         self.hardware = Lithographer(stage, proj)
@@ -278,7 +278,8 @@ class EventDispatcher:
         self.red_focus_source = RedFocusSource.IMAGE
 
         # Stage control
-        self.stage_setpoint = (0.0, 0.0, 0.0)
+        self.stage_setpoint = (0,0,0)
+        print(f"self.stagepoint = {self.stage_setpoint}")
 
         # Status flags
         self.shown_image = ShownImage.CLEAR
@@ -442,20 +443,53 @@ class EventDispatcher:
         self.shown_image = shown_image
         self.on_event(Event.SHOWN_IMAGE_CHANGED)
 
+    def create_warning(self, msg: str):
+        print(f"Warning: {msg}")
+        messagebox.showwarning("Warning: ", msg)
+
     def move_absolute(self, coords: dict[str, float]):
-        self.hardware.stage.move_to(coords)
+
         x = coords.get("x", self.stage_setpoint[0])
         y = coords.get("y", self.stage_setpoint[1])
         z = coords.get("z", self.stage_setpoint[2])
-        self.stage_setpoint = (x, y, z)
+        set_point = (x, y, z)
+
+        try:
+            self.hardware.stage.move_to(coords)
+        except(GrblSoftLimitError, GrblSoftLimitAlarm) as e:
+            self.create_warning(f"Soft Limits exceeded: moving {coords} exceeded stage boundaries. Movement not permitted and will be ignored.")
+            self.hardware.stage.exit_exceptions()
+            self.on_event(Event.STAGE_POSITION_CHANGED)
+            return # return if soft limit alert created, soft limit alerts are shown before stage moves
+        except(GrblAlarmError, GrblError) as e:
+            self.create_warning(f"move_absolute failed -> {e}\n Please restart program")
+            self.hardware.stage.exit_exceptions() # force user to move back so hard limits are not reached
+            self.on_event(Event.STAGE_POSITION_CHANGED)
+            return
+
+        self.stage_setpoint = set_point
         self.on_event(Event.STAGE_POSITION_CHANGED)
 
     def move_relative(self, coords: dict[str, float]):
-        x = coords.get("x", 0) + self.stage_setpoint[0]
-        y = coords.get("y", 0) + self.stage_setpoint[1]
-        z = coords.get("z", 0) + self.stage_setpoint[2]
-        self.stage_setpoint = (x, y, z)
-        self.hardware.stage.move_to({k: self.stage_setpoint[i] for k, i in (("x", 0), ("y", 1), ("z", 2))})
+        x = self.stage_setpoint[0] + coords.get("x", 0)
+        y = self.stage_setpoint[1] + coords.get("y", 0)
+        z = self.stage_setpoint[2] + coords.get("z", 0)
+        set_point = (x, y, z)
+
+        try:
+            self.hardware.stage.move_by(coords)
+        except(GrblSoftLimitError, GrblSoftLimitAlarm) as e:
+            self.create_warning(f"Soft Limits exceeded: moving {coords} exceeded stage boundaries. Movement not permitted and will be ignored.")
+            self.hardware.stage.exit_exceptions()
+            self.on_event(Event.STAGE_POSITION_CHANGED)
+            return # return if soft limit alert created, soft limit alerts are shown before stage moves 
+        except(GrblAlarmError, GrblError) as e:
+            self.create_warning(f"move_absolute failed -> {e}\n Please restart program")
+            self.hardware.stage.exit_exceptions() # force user to move back so hard limits are not reached
+            self.on_event(Event.STAGE_POSITION_CHANGED)
+            return
+            
+        self.stage_setpoint = set_point
         self.on_event(Event.STAGE_POSITION_CHANGED)
 
     def set_use_solid_red(self, use: bool):
@@ -2526,6 +2560,7 @@ class TilingFrame:
             y_amount = abs(y_amount)
 
             x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
+            print(f"x_start {x_start}, y_start = {y_start}")
           
             #Move in Snake pattern with left to right on even rows and right to left on odd rows
             for y_idx in range(y_amount):
@@ -2942,7 +2977,7 @@ class LithographerGui:
             self.root, 
             config.camera,
             config.red_exposure,
-            config.uv_exposure,
+            config.uv_exposure
         )
         self.event_dispatcher.initialize_alignment(config)
 
@@ -3068,7 +3103,7 @@ def main():
             index = 0
         camera = Webcam(index)
     elif camera_config["type"] == "flir":
-        import camera.flir.flir_camera as flir
+        import camera.flir.flir_camera as flir # pyright: ignore[reportMissingImports]
         camera = flir.FlirCamera()
     elif camera_config["type"] in ("basler", "pylon"):
         from camera.pylon import BaslerPylon
@@ -3120,7 +3155,7 @@ def main():
         camera_scale,
         red_exposure,
         uv_exposure,
-        alignment_config,
+        alignment_config
     )
 
     lithographer = LithographerGui(lithographer_config)

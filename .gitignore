@@ -10,6 +10,7 @@
 
 # configuration
 config.toml
+*.toml
 
 # python
 .venv
