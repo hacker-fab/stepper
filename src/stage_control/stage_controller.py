@@ -17,6 +17,19 @@ class StageController:
 
     def has_homing(self):
         return False
-
+    
     def home(self):
-        raise UnsupportedCommand()
+        print(f"ignoring home() in dummy_stage controller")
+    
+    def move_relative(self, microns: dict[str, float]):
+        print(f"ignoring move_relative {microns} in dummy_stage controller")
+
+    def move_absolute(self, microns: dict[str, float]):
+        print(f"ignoring move_absolute {microns} in dummy_stage controller")
+
+    def reset_and_unlock(self):
+        print(f"ignoring unlock in dummy_stage controller")
+
+    def get_position(self):
+        print(f"ignoring get_position in dummy_stage controller")
+
