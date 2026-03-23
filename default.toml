@@ -23,6 +23,11 @@ uv-exposure = 25000.0
 enabled = false
 # Set homing to false if your stage does not have limit sensors
 homing = false
+# Set to false if you don't plan to use tiling features for current session
+tiling = false
+# Set autofocus average offset from homed z stage for fast autofocus, set 0 to disable autofocus
+autofocus = 0
+
 # Select the correct serial port for the device running GRBL.
 # The correct serial port can be checked with Device Manager on Windows.
 port = "COM6"
