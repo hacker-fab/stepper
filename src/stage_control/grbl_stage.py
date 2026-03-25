@@ -15,6 +15,20 @@ def clamp(value, lo, hi):
     else:
         return value
 
+# Define potential Exception errors
+class GrblError(Exception):
+    pass
+
+class GrblAlarmError(GrblError):
+    pass
+
+class GrblSoftLimitError(GrblError):
+    pass
+
+class GrblSoftLimitAlarm(GrblError):
+    pass
+
+
 
 class GrblStage(StageController):
     # only x, y, and z axes are supported by this interface
@@ -31,18 +45,56 @@ class GrblStage(StageController):
 
         self.resp_buffer = b""
 
-        print(self._query_state())
+        print(self._query_state()) # queries for current position and state
 
+        self.configuration = self._query_config() # queries for current configuration settings
+        
+    def unlock(self):
+        self.controller_target.write(b"$X\n")
+        
     def _fill_resp_buffer(self):
         self.resp_buffer += self.controller_target.read_all()
 
     def _send_msg(self, msg: bytes):
+
         self.controller_target.write(msg)
         while b"\r\n" not in self.resp_buffer:
             self._fill_resp_buffer()
         resp, self.resp_buffer = self.resp_buffer.split(b"\r\n", maxsplit=1)
-        if resp != b"ok":
-            raise Exception(f"not ok!!! {resp}")
+        response = resp.decode("ascii", errors="replace").strip()
+        
+        if response == 'ok':
+            return # happy path
+        
+        # GRBL errors -> no movement
+        if response.contains("error:"):
+            code = response.split(":", 1)[1]
+            print(f"error: {code} -> {response}")
+            if code == "15":
+                raise GrblSoftLimitError("Soft limit reached. Move away from the boundary.")
+            raise GrblError(f"GRBL error: {code}\n-> Please visit this site for debugging alarm codes: https://docs.lightburnsoftware.com/legacy/Troubleshooting/GRBLErrors")
+        
+        # GRBL alarms -> movement occured
+        if response.startswith("ALARM:"):
+            code = response.split(":", 1)[1]
+            print(f"ALARM: {code} -> {response}")
+            
+            if code == "2":
+                print("code 2")
+                self.exit_exceptions()
+                self.resp_buffer = b""
+                time.sleep(0.1)
+                # _, pos = self._query_state()
+                # self.stage_setpoint = (
+                #     pos[0] * 1000,
+                #     pos[1] * 1000,
+                #     pos[2] * 1000
+                # )
+                raise GrblSoftLimitAlarm("Soft limit alarm. Move away from the boundary.")
+            else:
+                raise GrblAlarmError(f"GRBL alarm: Code -> {code}\n-> Please visit this site for debugging alarm codes: https://docs.lightburnsoftware.com/legacy/Troubleshooting/GRBLErrors")
+        print("GrblError")
+        raise GrblError(f"Unexpected GRBL response: {response}\n-> Please visit this site for debugging alarm codes: https://docs.lightburnsoftware.com/legacy/Troubleshooting/GRBLErrors")
 
     def _query_state(self):
         self.controller_target.write(b"?")
@@ -62,9 +114,81 @@ class GrblStage(StageController):
 
         return idle, position
 
+    def _query_config(self):
+        """
+        queries for entire grbl settings ->
+        $0=10 (Step pulse time, microseconds) \n
+        $1=25 (Step idle delay, msec) \n
+        $2=0 (Step pulse invert, mask) \n
+        $3=0 (Step direction invert, mask) \n
+        $4=0 (Invert step enable pin, boolean)\n
+        $5=0 (Invert limit pins, boolean)\n
+        $6=0 (Invert probe pin, boolean)\n
+        $10=1 (Status report options, mask) \n
+        $11=0.010 (Junction deviation, mm) \n
+        $12=0.002 (Arc tolerance, mm) \n
+        $13=0 (Report inches, boolean) \n
+        $20=0 (Soft limits enable, boolean) \n
+        $21=0 (Hard limits enable, boolean) \n
+        $22=0 (Homing cycle enable, boolean) \n
+        $23=0 (Homing direction invert, mask) \n
+        $24=25.000 (Homing locate feed rate, mm/min) \n
+        $25=500.000 (Homing search seek rate, mm/min) \n
+        $26=250 (Homing switch debounce delay, msec) \n
+        $27=1.000 (Homing switch pull-off distance, mm) \n
+        $30=1000 (Max spindle speed, RPM) \n
+        $31=0 (Min spindle speed, RPM) \n
+        $32=0 (Laser mode enable, boolean) \n
+        $100=250.000 (X steps/mm) \n
+        $101=250.000 (Y steps/mm) \n
+        $102=250.000 (Z steps/mm) \n
+        $110=500.000 (X max rate, mm/min) \n
+        $111=500.000 (Y max rate, mm/min) \n
+        $112=500.000 (Z max rate, mm/min) \n
+        $120=10.000 (X acceleration, mm/sec^2) \n
+        $121=10.000 (Y acceleration, mm/sec^2) \n
+        $122=10.000 (Z acceleration, mm/sec^2) \n
+        $130=200.000 (X max travel, mm) \n
+        $131=200.000 (Y max travel, mm) \n
+        $132=200.000 (Z max travel, mm) \n
+        """
+        self.controller_target.write(b"$$\n")
+        lines = []
+
+        # fetch entire configuration for grbl
+        while True:
+            while b"\r\n" not in self.resp_buffer:
+                self._fill_resp_buffer()
+            raw, self.resp_buffer = self.resp_buffer.split(b"\r\n", maxsplit=1)
+            line = raw.decode("ascii", errors="replace").strip()
+            if not line:
+                continue
+            if line == "ok":
+                break
+            if line.startswith("error:"):
+                raise Exception(f"GRBL error: query config failed -> {line}") # double check this
+            lines.append(line)
+        
+        settings = {}
+        for line in lines:
+            if line.startswith("$") and "=" in line:
+                key, value = line.split("=", 1)
+                key = int(key[1:])
+                settings[int(key)] = float(value)
+        return settings
+
     def __del__(self):
         self._send_msg(b"G91\n")
 
+    def exit_exceptions(self):
+        print("in exit_exceptions")
+        self.controller_target.write(b"\x18")  # soft reset
+        print("soft reset")
+        time.sleep(0.1)
+        self.controller_target.write(b"$X\n")  # unlock
+        print("unlock")
+        self.resp_buffer = b""
+        
     def has_homing(self):
         return self.enable_homing
 
@@ -74,7 +198,10 @@ class GrblStage(StageController):
         else:
             raise UnsupportedCommand()
 
+        # G10 P0 L20 X0 Y0 Z0
+    
     def _move(self, microns: dict[str, float], relative):
+
         if relative:
             self._send_msg(b"G91\n")
         else:
@@ -91,7 +218,7 @@ class GrblStage(StageController):
             z_mm = microns["z"] / 1000.0
             msg += f" z{z_mm:.3f}"
         msg += "\n"
-
+        
         self._send_msg(msg.encode("ascii"))
 
     def move_relative(self, microns: dict[str, float]):
