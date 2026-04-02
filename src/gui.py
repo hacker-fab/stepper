@@ -28,6 +28,7 @@ from lib.gui import IntEntry, Thumbnail, FloatEntry
 from lib.img import image_to_tk_image
 from projector import TkProjector
 from stage_control.grbl_stage import GrblStage
+from stage_control.omm_stage import OMMStage
 from stage_control.stage_controller import StageController
 
 
@@ -3051,9 +3052,13 @@ def main():
     config_win.destroy()
     stage_config = config["stage"]
     if stage_config["enabled"]:
-        serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
-        print(f"Using serial port {serial_port.name}")
-        stage = GrblStage(serial_port, stage_config["homing"])
+        if stage_config.get("type") == "omm":
+            stage = OMMStage()
+            stage.connect(stage_config["port"], stage_config["baud-rate"])
+        else:
+            serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
+            print(f"Using serial port {serial_port.name}")
+            stage = GrblStage(serial_port, stage_config["homing"])
     else:
         stage = StageController()
 

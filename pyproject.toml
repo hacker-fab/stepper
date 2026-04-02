@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "open-micro-stage-api",
     "opencv-python>=4.11.0.86",
     "pillow>=11.1.0",
     "pypylon>=4.1.0",
@@ -12,3 +13,6 @@ dependencies = [
     "toml>=0.10.2",
     "ultralytics>=8.3.218",
 ]
+
+[tool.uv.sources]
+open-micro-stage-api = { git = "https://github.com/HonakerM/MicroManipulatorStepper/", subdirectory = "software/PythonAPI" }
