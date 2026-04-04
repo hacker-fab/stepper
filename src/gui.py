@@ -278,7 +278,7 @@ class EventDispatcher:
         self.red_focus_source = RedFocusSource.IMAGE
 
         # Stage control
-        self.stage_setpoint = (0.0, 0.0, 0.0)
+        self.stage_setpoint = (0.0,0.0,0.0)
 
         # Status flags
         self.shown_image = ShownImage.CLEAR
@@ -442,21 +442,88 @@ class EventDispatcher:
         self.shown_image = shown_image
         self.on_event(Event.SHOWN_IMAGE_CHANGED)
 
+    def create_warning(self, msg: str):
+        print(f"Warning: {msg}")
+        messagebox.showwarning("Warning: ", msg)
+
     def move_absolute(self, coords: dict[str, float]):
-        self.hardware.stage.move_to(coords)
+        
+        # 0  to  -($13X - $27)   in WPos space
         x = coords.get("x", self.stage_setpoint[0])
         y = coords.get("y", self.stage_setpoint[1])
         z = coords.get("z", self.stage_setpoint[2])
-        self.stage_setpoint = (x, y, z)
-        self.on_event(Event.STAGE_POSITION_CHANGED)
+        set_point = (x, y, z)
+
+        # if soft limits and max travel set, then enforce boundaries
+        # -$13X + $27 + a little leeway
+        if(self.hardware.stage.has_homing()):
+            max_x = -self.hardware.stage.configuration[130] * 1000 + self.hardware.stage.configuration[27]*1000 
+            max_y = -self.hardware.stage.configuration[131] * 1000 + self.hardware.stage.configuration[27]*1000 
+            max_z = -self.hardware.stage.configuration[132] * 1000 + self.hardware.stage.configuration[27]*1000 
+
+            # Check bounds
+            if not (max_x <= x <= 0):
+                self.create_warning(f"Movement to {x} prohibited. Exceeds bounds -> {max_x} <= {x} <= {0}")
+                return
+            if not (max_y <= y <= 0):
+                self.create_warning(f"Movement to {y} prohibited. Exceeds bounds -> {max_y} <= {y} <= {0}")
+                return
+            if not (max_z <= z <= 0):
+                self.create_warning(f"Movement to {z} prohibited. Exceeds bounds -> {max_z} <= {z} <= {0}")
+                return
+
+        try:
+            self.hardware.stage.move_absolute(coords)
+            self.stage_setpoint = set_point
+            self.on_event(Event.STAGE_POSITION_CHANGED)
+        
+        except(RuntimeError) as e:
+            self.create_warning(f"{str(e)}. Please restart the program and rehome.")
+        except(Exception) as e:
+            self.create_warning(f"{str(e)}. Please restart the program and rehome.")
+            self.stage_setpoint = self.hardware.stage.get_position()
+            self.on_event(Event.STAGE_POSITION_CHANGED) 
 
     def move_relative(self, coords: dict[str, float]):
-        x = coords.get("x", 0) + self.stage_setpoint[0]
-        y = coords.get("y", 0) + self.stage_setpoint[1]
-        z = coords.get("z", 0) + self.stage_setpoint[2]
-        self.stage_setpoint = (x, y, z)
-        self.hardware.stage.move_to({k: self.stage_setpoint[i] for k, i in (("x", 0), ("y", 1), ("z", 2))})
-        self.on_event(Event.STAGE_POSITION_CHANGED)
+
+        print(f"Moving: {coords}")
+        # find new coordinates
+        x = self.stage_setpoint[0] - coords.get("x", 0)
+        y = self.stage_setpoint[1] - coords.get("y", 0)
+        z = self.stage_setpoint[2] - coords.get("z", 0)
+        set_point = (x, y, z)
+        print(f"XYZ new: {set_point}")
+        
+        # if soft limits and max travel set, then enforce boundaries
+        if(self.hardware.stage.has_homing()):
+            max_x = -self.hardware.stage.configuration[130] * 1000 + self.hardware.stage.configuration[27] * 1000
+            max_y = -self.hardware.stage.configuration[131] * 1000 + self.hardware.stage.configuration[27] * 1000 
+            max_z = -self.hardware.stage.configuration[132] * 1000 + self.hardware.stage.configuration[27] * 1000 
+            print(f"LIMITS: {max_x}, {max_y}, {max_z}")
+
+            # Check bounds
+            if not (max_x <= -x <= 0):
+                self.create_warning(f"Movement to {x} prohibited. Exceeds bounds -> {max_x} <= {x} <= {0}")
+                return
+            if not (max_y <= -y <= 0):
+                self.create_warning(f"Movement to {y} prohibited. Exceeds bounds -> {max_y} <= {y} <= {0}")
+                return
+            if not (max_z <= -z <= 0):
+                self.create_warning(f"Movement to {z} prohibited. Exceeds bounds -> {max_z} <= {z} <= {0}")
+                return
+
+        try:
+            self.hardware.stage.move_relative(coords)
+            self.stage_setpoint = set_point
+            self.on_event(Event.STAGE_POSITION_CHANGED)
+
+        except(RuntimeError) as e:
+            self.create_warning(f"{str(e)}. Please restart the program and rehome.")
+
+        except(Exception) as e:
+            self.create_warning(f"{str(e)}. Please restart the program and rehome.")
+            self.stage_setpoint = self.hardware.stage.get_position()
+            self.on_event(Event.STAGE_POSITION_CHANGED) 
 
     def set_use_solid_red(self, use: bool):
         self.use_solid_red = use
@@ -501,17 +568,19 @@ class EventDispatcher:
         return self.shown_image in (ShownImage.PATTERN, ShownImage.UV_FOCUS)
 
     def home_stage(self):
+        """
+        Homing stage resets Machine position (Mpos) and sets Work Position (WPos)
+        of current state post-homing to (0, 0, 0), which means set_point must 
+        be updated to reflect the work position
+        """
         self.hardware.stage.home()
-        self.non_blocking_delay(1.0)
-        while True:
-            self.non_blocking_delay(1.0)
-            idle, pos = self.hardware.stage._query_state()
-            if idle:
-                break
+        print("Homing Complete.")
 
-        self.stage_setpoint = (pos[0] * 1000.0, pos[1] * 1000.0, pos[2] * 1000.0)
-        print(f"Homed stage to {self.stage_setpoint}")
         self.on_event(Event.STAGE_POSITION_CHANGED)
+    
+    def query_config(self):
+        self.hardware.stage._query_config()
+        print("Query Config Complete.")
 
     def set_image_position(self, x, y, t):
         self.image_adjust_position = (x, y, t)
@@ -2526,6 +2595,7 @@ class TilingFrame:
             y_amount = abs(y_amount)
 
             x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
+            print(f"x_start {x_start}, y_start = {y_start}")
           
             #Move in Snake pattern with left to right on even rows and right to left on odd rows
             for y_idx in range(y_amount):
@@ -3008,7 +3078,11 @@ class LithographerGui:
             self.event_dispatcher.enter_red_mode(mode_switch_autofocus=False) # ensure exposure settings are correctly set
             if self.event_dispatcher.hardware.stage.has_homing():
                 self.event_dispatcher.home_stage()
-                #self.event_dispatcher.move_relative({"x": 5000.0, "y": 3500.0, "z": 1900.0})
+                self.event_dispatcher.query_config()
+
+            self.event_dispatcher.stage_setpoint = self.event_dispatcher.hardware.stage.get_position()
+            print(f"Current GUI Location: {self.event_dispatcher.stage_setpoint}")
+
             messagebox.showinfo(
                 message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
             )
@@ -3053,7 +3127,7 @@ def main():
     if stage_config["enabled"]:
         serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
         print(f"Using serial port {serial_port.name}")
-        stage = GrblStage(serial_port, stage_config["homing"])
+        stage = GrblStage(serial_port, stage_config["homing"], stage_config["tiling"], stage_config["autofocus"])
     else:
         stage = StageController()
 
@@ -3120,7 +3194,7 @@ def main():
         camera_scale,
         red_exposure,
         uv_exposure,
-        alignment_config,
+        alignment_config
     )
 
     lithographer = LithographerGui(lithographer_config)
