@@ -2749,7 +2749,10 @@ class TilingCheckFrame:
         self.tile_width, self.tile_height = 3840, 2160 # in pixels, defined in TilingFrame
         
         # the distance that the stage will move in um
-        stride_x, stride_y = 798, 448 # 1037 / 1.3 and 583 / 1.3
+        width_um = 1037
+        height_um = 583
+        percentage = 0.5
+        stride_x, stride_y = width_um * percentage, height_um * percentage # 1037 / 1.3 and 583 / 1.3
         # crop image pixels
         # each snapshot captured is 1920 x 1080 pixels
         crop_x, crop_y = 1477, 831 # 1920 / 1.3 and 1080 / 1.3
@@ -2886,8 +2889,8 @@ class TilingCheckFrame:
         Overlay the pattern image in the center
         """
         # calculate how many times the stage will move: num cols & rows
-        self.img_w = 3840 * 1
-        self.img_h = 2160 * 1
+        self.img_w = 3840 * 2
+        self.img_h = 2160 * 2
         total_x_um = self.img_w * 1037 / 3840
         total_y_um = self.img_h * 583 / 2160
         num_cols = math.ceil(total_x_um / stride_x)
@@ -2942,9 +2945,10 @@ class TilingCheckFrame:
                 
                 captured_image = self.capture_current_image()
 
-                tile_path = dirname + f"tile_{row}_{col}.png"
+                tile_file = f"tile_{row}_{col}.png"
+                tile_path = dirname + tile_file
                 captured_image.save(tile_path)
-                f.write(f"{tile_path}: x={current_x}, y={current_y}")
+                f.write(f"{tile_file}: x={current_x}, y={current_y}\n")
 
                 self.event_dispatcher.non_blocking_delay(0.5)
                 self.frame.update()
