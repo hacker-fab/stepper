@@ -2890,27 +2890,16 @@ class TilingCheckFrame:
         self.img_h = 2160 * 1
         total_x_um = self.img_w * 1037 / 3840
         total_y_um = self.img_h * 583 / 2160
-        num_cols = int(total_x_um // stride_x)
-        num_rows = int(total_y_um // stride_y)
+        num_cols = math.ceil(total_x_um / stride_x)
+        num_rows = math.ceil(total_y_um / stride_y)
+
         print(f"img_w: {self.img_w}, img_h: {self.img_h}")
         print(f"num_cols: {num_cols}, num_rows: {num_rows}")
-
-        if num_cols * stride_x < total_x_um:
-            num_cols += 1
-        if num_rows * stride_y < total_y_um:
-            num_rows += 1
-
-        print(f"num_cols: {num_cols}, num_rows: {num_rows}")
-        
-        # large blank canvas
-        stitched_width = num_cols * crop_x
-        stitched_height = num_rows * crop_y
-        stitched_image = Image.new('RGB', (stitched_width, stitched_height), color='black')
-        
+    
         # get starting position: center the chip
         orig_x, orig_y, orig_z = self.event_dispatcher.stage_setpoint
-        delta_x_um = (num_cols * stride_x - total_x_um) / 2
-        delta_y_um = (num_rows * stride_y - total_y_um) / 2
+        delta_x_um = (num_cols * stride_x - total_x_um) / 2 # excess x movement
+        delta_y_um = (num_rows * stride_y - total_y_um) / 2 # excess y movement
         start_x = orig_x - delta_x_um
         start_y = orig_y - delta_y_um
         
@@ -2950,22 +2939,10 @@ class TilingCheckFrame:
                 
                 captured_image = self.capture_current_image()
 
+                print(f"current_x={current_x}, current_y={current_y}")
                 tile_path = f"data_collection_{curr_time}/tile_{row}_{col}.png"
                 captured_image.save(tile_path)
 
-                # crop
-                orig_width, orig_height = captured_image.size
-                # each snapshot captured is 1920 x 1080 pixels
-                left = (orig_width - crop_x) // 2
-                top = (orig_height - crop_y) // 2
-                right = left + crop_x
-                bottom = top + crop_y
-                cropped_img = captured_image.crop((left, top, right, bottom))
-                # paste
-                x_pos = col * crop_x
-                y_pos = (num_rows - 1 - row) * crop_y
-                stitched_image.paste(cropped_img, (x_pos, y_pos))
-                
                 self.event_dispatcher.non_blocking_delay(0.5)
                 self.frame.update()
         
