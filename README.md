@@ -219,7 +219,13 @@ uv-exposure = 25000.0
 # Set enabled to false to disable all motion.
 enabled = true
 # Set homing to false if your stage does not have limit sensors
-homing = true
+homing = false
+# Enable tiling if user wishes to use tiling features
+tiling = false
+# Set autofocus offset, requires homing to be true. Set 0 for no autofocus 
+autofocus = 0
+
+
 # Select the correct serial port for the device running GRBL.
 # The correct serial port can be checked with Device Manager on Windows.
 port = "COM6"
