@@ -3139,6 +3139,13 @@ def main():
     if stage_config["enabled"]:
         serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
         print(f"Using serial port {serial_port.name}")
+    
+    # default features to False if they aren't specified -> supports legacy config.toml files
+    if stage_config.get("tiling") is None:
+        stage_config['tiling'] = False
+    if stage_config.get('autofocus') is None:
+        stage_config['autofocus'] = 0
+    
         stage = GrblStage(serial_port, stage_config["homing"], stage_config["tiling"], stage_config["autofocus"])
     else:
         stage = StageController()
