@@ -2904,7 +2904,10 @@ class TilingCheckFrame:
         start_y = orig_y - delta_y_um
         
         curr_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        os.mkdir(f"data_collection_{curr_time}/")
+        dirname = f"data_collection_{curr_time}/"
+        os.mkdir(dirname)
+        file_pos_log = dirname + "log.txt"
+        f = open(file_pos_log, "w")
 
         # move in snake pattern with left to right on even rows
         # and right to left on odd rows
@@ -2939,9 +2942,9 @@ class TilingCheckFrame:
                 
                 captured_image = self.capture_current_image()
 
-                print(f"current_x={current_x}, current_y={current_y}")
-                tile_path = f"data_collection_{curr_time}/tile_{row}_{col}.png"
+                tile_path = dirname + f"tile_{row}_{col}.png"
                 captured_image.save(tile_path)
+                f.write(f"{tile_path}: x={current_x}, y={current_y}")
 
                 self.event_dispatcher.non_blocking_delay(0.5)
                 self.frame.update()
