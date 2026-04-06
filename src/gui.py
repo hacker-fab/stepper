@@ -2730,7 +2730,7 @@ class TilingCheckFrame:
 
         self.capture_button = ttk.Button(
             self.frame, 
-            text="Capture & Stitch Chip Imges", 
+            text="Data Collection", 
             command=self.capture_and_stitch
         )
         self.capture_button.grid(row=0, column=0)
@@ -2757,14 +2757,8 @@ class TilingCheckFrame:
         self.capture_button.config(state='disabled', text="Capturing...")
         self.frame.update()
         
-        stitched_image = self.takeAndStitchMapImages(stride_x, stride_y, crop_x, crop_y)
-        if stitched_image:
-            self.display_image(stitched_image, crop_x, crop_y)
-            print("Stitching complete!")
-        else:
-            print("Failed to stitch images")
-            
-        self.capture_button.config(state='normal', text="Capture & Stitch Chip Imges")
+        self.dataCollection(stride_x, stride_y, crop_x, crop_y)    
+        self.capture_button.config(state='normal', text="Data Collection")
 
     def display_image(self, pil_image, crop_x, crop_y):
         display_img = pil_image.copy()
@@ -2882,6 +2876,105 @@ class TilingCheckFrame:
         stitched_image = stitched_image.convert('RGB')
 
         return stitched_image
+    
+    def dataCollection(self, stride_x, stride_y, crop_x, crop_y):
+        """
+        Take snapshots num_cols * num_rows times, move in snake pattern
+        Move in stride_x and y um in distance
+        Crop all snapshots to crop_x, crop_y pixels in the center
+        Paste them to the blank canvas
+        Overlay the pattern image in the center
+        """
+        # calculate how many times the stage will move: num cols & rows
+        self.img_w = 3840 * 1
+        self.img_h = 2160 * 1
+        total_x_um = self.img_w * 1037 / 3840
+        total_y_um = self.img_h * 583 / 2160
+        num_cols = int(total_x_um // stride_x)
+        num_rows = int(total_y_um // stride_y)
+        print(f"img_w: {self.img_w}, img_h: {self.img_h}")
+        print(f"num_cols: {num_cols}, num_rows: {num_rows}")
+
+        if num_cols * stride_x < total_x_um:
+            num_cols += 1
+        if num_rows * stride_y < total_y_um:
+            num_rows += 1
+
+        print(f"num_cols: {num_cols}, num_rows: {num_rows}")
+        
+        # large blank canvas
+        stitched_width = num_cols * crop_x
+        stitched_height = num_rows * crop_y
+        stitched_image = Image.new('RGB', (stitched_width, stitched_height), color='black')
+        
+        # get starting position: center the chip
+        orig_x, orig_y, orig_z = self.event_dispatcher.stage_setpoint
+        delta_x_um = (num_cols * stride_x - total_x_um) / 2
+        delta_y_um = (num_rows * stride_y - total_y_um) / 2
+        start_x = orig_x - delta_x_um
+        start_y = orig_y - delta_y_um
+        
+        curr_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.mkdir(f"data_collection_{curr_time}/")
+
+        # move in snake pattern with left to right on even rows
+        # and right to left on odd rows
+        for row in range(num_rows):
+            current_y = start_y + row * stride_y
+            
+            if row % 2 == 0:
+                col_range = range(num_cols)
+                first_x = start_x
+            else:
+                col_range = range(num_cols - 1, -1, -1)
+                first_x = start_x + (num_cols - 1) * stride_x
+
+            # move to the next row
+            self.event_dispatcher.move_absolute({
+                "x": first_x,
+                "y": current_y,
+                "z": orig_z
+            })
+            self.event_dispatcher.non_blocking_delay(2)
+            
+            # columns in this row
+            for idx, col in enumerate(col_range):
+                current_x = start_x + col * stride_x
+                if idx > 0: # idx = 0 first one don't need to move
+                    self.event_dispatcher.move_absolute({
+                        "x": current_x,
+                        "y": current_y,
+                        "z": orig_z
+                    })
+                    self.event_dispatcher.non_blocking_delay(2.5)
+                
+                captured_image = self.capture_current_image()
+
+                tile_path = f"data_collection_{curr_time}/tile_{row}_{col}.png"
+                captured_image.save(tile_path)
+
+                # crop
+                orig_width, orig_height = captured_image.size
+                # each snapshot captured is 1920 x 1080 pixels
+                left = (orig_width - crop_x) // 2
+                top = (orig_height - crop_y) // 2
+                right = left + crop_x
+                bottom = top + crop_y
+                cropped_img = captured_image.crop((left, top, right, bottom))
+                # paste
+                x_pos = col * crop_x
+                y_pos = (num_rows - 1 - row) * crop_y
+                stitched_image.paste(cropped_img, (x_pos, y_pos))
+                
+                self.event_dispatcher.non_blocking_delay(0.5)
+                self.frame.update()
+        
+        # Return to starting position
+        self.event_dispatcher.move_absolute({
+            "x": orig_x,
+            "y": orig_y,
+            "z": orig_z
+        })
 
 class MapFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
