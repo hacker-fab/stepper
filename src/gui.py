@@ -11,6 +11,8 @@ from datetime import datetime
 from enum import Enum, auto
 from functools import partial
 from pathlib import Path
+from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
 from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.ttk import Progressbar
 from typing import Callable, List, Optional
@@ -2638,8 +2640,6 @@ class TilingFrame:
             self.model.enter_red_mode(mode_switch_autofocus=False)
             self.model.move_relative({"z": -1 * self.red_to_uv_offset})
 
-
-
         def segment():
             #create tile directory and segment images
             split_image_with_overlap(model.pattern_image_path)
@@ -2648,7 +2648,6 @@ class TilingFrame:
             image_path = "tiles/tile_"+str(0)+","+str(0)+".png"
             current_tile = Image.open(image_path)
             model.set_pattern_image(current_tile, image_path)
-
 
         def on_begin():
             model.set_red_focus_source(RedFocusSource.PATTERN)
@@ -2680,6 +2679,98 @@ class TilingFrame:
         #TODO IMPLEMENT ABORT
         def on_abort():
             pass
+
+        # New Tiling Function
+
+        def estimate_transform(
+            raw: np.ndarray,
+            digital: np.ndarray
+        ) -> tuple[float, float, float]:
+            """
+            Given matched point pairs, estimate (dx, dy, rotation_degrees)
+            using least-squares rigid body fit.
+
+            Assumption made: user does not tilt the chip by more than 90 degrees
+            because sth is wrong with chip placement if that's the case and
+            user should benefit from replacing the chip on the stage
+
+            src_pts: (K, 2) — camera-detected positions
+            dst_pts: (K, 2) — pattern expected positions (after step shift)
+            """
+
+            # --- Translation: avg x,y offset ---
+            delta = raw - digital          # shape = (K, 2)
+            dx = float(np.mean(delta[:, 0]))
+            dy = float(np.mean(delta[:, 1]))
+
+            raw_centroid = raw - digital.mean(axis=0)
+            digital_centroid = raw - digital.mean(axis=0)
+
+            angles = []
+            for s, d in zip(raw_centroid, digital_centroid):
+                cross = d[0]*s[1] - d[1]*s[0]   # |d||s|sin θ
+                dot   = d[0]*s[0] + d[1]*s[1]   # |d||s|cos θ
+                angles.append(np.arctan(cross, dot))
+            
+
+            return (dx, dy, float(np.degrees(np.mean(angles))))
+        
+        def extract_stage_movement_errors(expect_img: Image, real_img: Image, direction: str=None, step_size:int=None):
+            """
+            Takes in 2 images:
+                - `expect_img`: img of pattern over red focus
+                -  `real_ing`: img of red focus raw
+            `direction`: where stage moved from
+            Match camera detections to pattern detections by nearest-neighbor
+            after normalizing for scale/translation.Then calculates transform
+            Returns list of tuple(dx, dy, rotation degree) pairs.
+            """
+
+            if expect_img is None or real_img is None:
+                print("Error: one or both images are None")
+                return (0,0,0)
+
+            cam_marks:list[dict] | list[tuple] = detect_alignment_markers_tiling(model.model, expect_img) # assume returning [dict{}]
+            pat_marks:list[dict] | list[tuple] = detect_alignment_markers_tiling(model.model, real_img) # assume returning [dict{}]
+
+            if len(cam_marks) == 0 or len(pat_marks) == 0:
+                print("No markers detected in one or both images")
+                return (0, 0, 0)
+            
+            if direction == 'right':
+                pat_marks = [(mark["center"][0]+step_size,mark["center"][1])  for mark in pat_marks]
+            elif direction == 'left':
+                pat_marks = [(mark["center"][0]-step_size,mark["center"][1])  for mark in pat_marks]
+            elif direction == 'up':
+                pat_marks = [(mark["center"][0],mark["center"][1]+step_size)  for mark in pat_marks]
+            else: # down
+                pat_marks = [(mark["center"][0],mark["center"][1]-step_size)  for mark in pat_marks]
+            
+            # match coordinates to closest coordinates
+            # if diff > threshold, then ignore match bc likely wrong
+            dists = cdist(cam_marks, pat_marks)  # Compute distance between each pair of the two collections of inputs
+            row_ind, col_ind = linear_sum_assignment(dists) # brute-force match finding
+
+            matched_cam = []
+            matched_pat = []
+            for r, c in zip(row_ind, col_ind):
+                if dists[r, c] < 100:
+                    matched_cam.append(cam_marks[r])
+                    matched_pat.append(cam_marks[c])
+
+            if len(matched_cam) < 2:
+                print(f"Warning: only {len(matched_cam)} valid match(es) found, need at least 2 for rotation")
+                if len(matched_cam) == 1:
+                    # Can only compute translation, not rotation
+                    dx = matched_cam[0][0] - matched_pat[0][0]
+                    dy = matched_cam[0][1] - matched_pat[0][1]
+                    return (dx, dy, 0.0)
+                return (0, 0, 0)
+
+            matched_cam = np.array(matched_cam) 
+            matched_pat = np.array(matched_pat) 
+
+            return estimate_transform(matched_cam, matched_pat)
 
         #Segment Images must be done before begining tiling
         #TODO enforce above
