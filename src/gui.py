@@ -459,21 +459,11 @@ class EventDispatcher:
         z = coords.get("z", 0)
         set_point = (x, y, z)
 
-        if(self.hardware.stage.has_homing()): # if soft limits and max travel set, then enforce boundaries
-            print(f"New position: {set_point}") # debugging statements
-            max_x = -self.hardware.stage.configuration[130] * 1000 + self.hardware.stage.configuration[27] * 1000
-            max_y = self.hardware.stage.configuration[131] * 1000 - self.hardware.stage.configuration[27] * 1000 
-            max_z = -self.hardware.stage.configuration[132] * 1000 + self.hardware.stage.configuration[27] * 1000 
-
-            # Check bounds
-            if not (max_x <= set_point[0] <= 0):
-                self.create_warning(f"Moving X to {x} prohibited. Absolute x boundaries are between {0} and {max_x}")
-                return
-            if not (max_y >= set_point[1] >= 0):
-                self.create_warning(f"Moving Y to {y} prohibited. Absolute y boundaries are between {0} and {max_y}")
-                return
-            if not (max_z <= set_point[2] <= 0):
-                self.create_warning(f"Moving Z to {z} prohibited. Absolute z boundaries are between {0} and {max_z}")
+        if self.hardware.stage.has_homing():
+            print(f"Moving to absolute: {set_point}")
+            ok, msg = self._check_bounds(set_point)
+            if not ok:
+                self.create_warning(msg)
                 return
 
         try:
@@ -489,6 +479,37 @@ class EventDispatcher:
             self.stage_setpoint = self.hardware.stage.get_position()
             self.on_event(Event.STAGE_POSITION_CHANGED) 
 
+    def _compute_bounds(self):
+        cfg = self.hardware.stage.configuration
+        mask    = int(cfg[23])   # homing direction invert mask
+        pulloff = cfg[27] * 1000 # mm → your units
+
+        def axis_bounds(travel_param, bit):
+            travel = cfg[travel_param] * 1000
+            homes_to_max = bool(mask & (1 << bit))
+            if homes_to_max:
+                # origin at max end → coords are negative
+                return (-travel + pulloff, 0.0)
+            else:
+                # origin at min end → coords are positive
+                return (0.0, travel - pulloff)
+        return {
+            'x': axis_bounds(130, 0),
+            'y': axis_bounds(131, 1),
+            'z': axis_bounds(132, 2),
+        }
+        
+    def _check_bounds(self, set_point):
+        bounds = self._compute_bounds()
+        axes = [('x', 0), ('y', 1), ('z', 2)]
+        for name, i in axes:
+            lo, hi = bounds[name]
+            val = set_point[i]
+            if not (lo <= val <= hi):
+                return False, (f"Moving {name.upper()} to {val} prohibited. "
+                            f"Boundaries are [{lo}, {hi}]")
+        return True, None
+
     def move_relative(self, coords: dict[str, float]):
 
         if(self.hardware.stage.has_homing()): # debugging statements
@@ -503,20 +524,9 @@ class EventDispatcher:
         
         # if soft limits and max travel set, then enforce boundaries
         if(self.hardware.stage.has_homing()):
-            print(f"New position: {set_point}") # debugging statements
-            max_x = -self.hardware.stage.configuration[130] * 1000 + self.hardware.stage.configuration[27] * 1000
-            max_y = self.hardware.stage.configuration[131] * 1000 - self.hardware.stage.configuration[27] * 1000 
-            max_z = -self.hardware.stage.configuration[132] * 1000 + self.hardware.stage.configuration[27] * 1000 
-
-            # Check bounds
-            if not (max_x <= set_point[0] <= 0):
-                self.create_warning(f"Moving X by {x} prohibited. Absolute x boundaries are between {0} and {max_x}")
-                return
-            if not (max_y >= set_point[1] >= 0):
-                self.create_warning(f"Moving Y by {y} prohibited. Absolute y boundaries are between {0} and {max_y}")
-                return
-            if not (max_z <= set_point[2] <= 0):
-                self.create_warning(f"Moving Z by {z} prohibited. Absolute z boundaries are between {0} and {max_z}")
+            ok, msg = self._check_bounds(set_point)
+            if not ok:
+                self.create_warning(msg)
                 return
 
         try:
@@ -3088,10 +3098,10 @@ class LithographerGui:
         def on_start():
             self.camera.start()
             self.event_dispatcher.enter_red_mode(mode_switch_autofocus=False) # ensure exposure settings are correctly set
+            self.event_dispatcher.query_config()
             if self.event_dispatcher.hardware.stage.has_homing():
                 self.event_dispatcher.home_stage()
-                self.event_dispatcher.query_config()
-
+            
             self.event_dispatcher.stage_setpoint = self.event_dispatcher.hardware.stage.get_position()
             print(f"Current GUI Location: {self.event_dispatcher.stage_setpoint}")
 
@@ -3140,12 +3150,11 @@ def main():
         serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
         print(f"Using serial port {serial_port.name}")
     
-    # default features to False if they aren't specified -> supports legacy config.toml files
-    if stage_config.get("tiling") is None:
-        stage_config['tiling'] = False
-    if stage_config.get('autofocus') is None:
-        stage_config['autofocus'] = 0
-    
+        # default features to False if they aren't specified -> supports legacy config.toml files
+        if stage_config.get("tiling", 0) == 0:
+            stage_config['tiling'] = False
+        if stage_config.get('autofocus', 0) == 0:
+            stage_config['autofocus'] = 0
         stage = GrblStage(serial_port, stage_config["homing"], stage_config["tiling"], stage_config["autofocus"])
     else:
         stage = StageController()
