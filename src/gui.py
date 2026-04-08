@@ -505,9 +505,9 @@ class EventDispatcher:
         for name, i in axes:
             lo, hi = bounds[name]
             val = set_point[i]
-            if not (lo <= val <= hi):
+            if not (-lo >= val >= -hi):
                 return False, (f"Moving {name.upper()} to {val} prohibited. "
-                            f"Boundaries are [{lo}, {hi}]")
+                            f"Boundaries are [{-lo}, {-hi}]")
         return True, None
 
     def move_relative(self, coords: dict[str, float]):
