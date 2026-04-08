@@ -41,4 +41,7 @@ class StageController:
     
     def get_on_start_location(self):
         print(f"ignoring get_on_start_location in dummy_stage controller")
+    
+    def get_bounds(self)->dict[str, tuple[float, float]]:
+        print(f"ignoring get_bounds in dummy_stage controller")
 

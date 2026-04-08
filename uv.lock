@@ -902,7 +902,7 @@ wheels = [
 [[package]]
 name = "open-micro-stage-api"
 version = "0.1.0"
-source = { git = "https://github.com/HonakerM/MicroManipulatorStepper/?subdirectory=software%2FPythonAPI#ae8ad089ecc320a7db8c9e01407019a0e57f33c5" }
+source = { git = "https://github.com/hacker-fab/MicroManipulatorStepper/?subdirectory=software%2FPythonAPI#6f98c085bd4514a1acf3b6cc2ed4c4ee8b38239b" }
 dependencies = [
     { name = "colorama" },
     { name = "numpy" },
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "open-micro-stage-api", git = "https://github.com/HonakerM/MicroManipulatorStepper/?subdirectory=software%2FPythonAPI" },
+    { name = "open-micro-stage-api", git = "https://github.com/hacker-fab/MicroManipulatorStepper/?subdirectory=software%2FPythonAPI" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pillow", specifier = ">=11.1.0" },
     { name = "pypylon", specifier = ">=4.1.0" },

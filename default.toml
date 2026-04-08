@@ -36,9 +36,11 @@ autofocus = 0
 port = "COM9"
 # Select the type of stage for the stepper. Use `grbl` for most cases while `omm` is 
 # experimental
-type = "omm"
+type = "grbl"
 # GRBL's baud rate is almost always 115200 while omm is almost always 921600 
 baud-rate = 115200
+[stage.omm]
+z-max = -1
 
 # This section configures alignment marker detection
 [alignment]

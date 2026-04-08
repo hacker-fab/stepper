@@ -480,35 +480,16 @@ class EventDispatcher:
             self.stage_setpoint = self.hardware.stage.get_position()
             self.on_event(Event.STAGE_POSITION_CHANGED) 
 
-    def _compute_bounds(self):
-        cfg = self.hardware.stage.configuration
-        mask    = int(cfg[23])   # homing direction invert mask
-        pulloff = cfg[27] * 1000 # mm → your units
-
-        def axis_bounds(travel_param, bit):
-            travel = cfg[travel_param] * 1000
-            homes_to_max = bool(mask & (1 << bit))
-            if homes_to_max:
-                # origin at max end → coords are negative
-                return (-travel + pulloff, 0.0)
-            else:
-                # origin at min end → coords are positive
-                return (0.0, travel - pulloff)
-        return {
-            'x': axis_bounds(130, 0),
-            'y': axis_bounds(131, 1),
-            'z': axis_bounds(132, 2),
-        }
         
     def _check_bounds(self, set_point):
-        bounds = self._compute_bounds()
+        bounds = self.hardware.stage.get_bounds()
         axes = [('x', 0), ('y', 1), ('z', 2)]
         for name, i in axes:
             lo, hi = bounds[name]
             val = set_point[i]
-            if not (-lo >= val >= -hi):
+            if not (lo <= val <= hi):
                 return False, (f"Moving {name.upper()} to {val} prohibited. "
-                            f"Boundaries are [{-lo}, {-hi}]")
+                            f"Boundaries are [{lo}, {hi}]")
         return True, None
 
     def move_relative(self, coords: dict[str, float]):
@@ -599,7 +580,7 @@ class EventDispatcher:
         self.on_event(Event.STAGE_POSITION_CHANGED)
     
     def query_config(self):
-        self.hardware.stage._query_config()
+        self.hardware.stage.get_position()
         print("Query Config Complete.")
 
     def set_image_position(self, x, y, t):
@@ -3149,7 +3130,7 @@ def main():
     stage_config = config["stage"]
     if stage_config["enabled"]:
         if stage_config.get("type") == "omm":
-            stage = OMMStage()
+            stage = OMMStage(stage_config["autofocus"], stage_config["omm"]["z-max"])
             stage.connect(stage_config["port"], stage_config["baud-rate"])
         else:
             serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])

@@ -27,12 +27,14 @@ class Position:
 class OMMStage(StageController):
     """Open Micro Manipulator stage controller implementation."""
     
-    def __init__(self):
+    def __init__(self, autofocus_offset, z_max: float):
         """
         Initialize the OMM stage controller.
         """
         self._current_position: Position = Position(0.0, 0.0, 0.0)
         self.omm = OpenMicroStageInterface(False, False)
+        self._autofocus_offset = autofocus_offset
+        self._z_max = z_max
     
     def connect(self, port: str, baud_rate: int = 921600):
         """Connect to the OMM stage."""
@@ -127,7 +129,7 @@ class OMMStage(StageController):
         print(f"ignoring set_on_start_location in dummy_stage controller")
 
     def get_autofocus(self):
-        return self.get_position()[2]
+        return self._autofocus_offset
 
     def get_position(self):
         self._update_position()
@@ -146,3 +148,10 @@ class OMMStage(StageController):
         self.omm.wait_for_stop()
         self._update_position()
         return res
+
+    def get_bounds(self):
+        return {
+            "x": (-12*1000.0, 12*1000.0),
+            "y": (-12*1000.0, 12*1000.0),
+            "z": (-12*1000.0, self._z_max * 1000.0)
+        }

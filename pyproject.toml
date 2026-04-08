@@ -15,4 +15,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-open-micro-stage-api = { git = "https://github.com/HonakerM/MicroManipulatorStepper/", subdirectory = "software/PythonAPI" }
+open-micro-stage-api = { git = "https://github.com/hacker-fab/MicroManipulatorStepper/", subdirectory = "software/PythonAPI" }
