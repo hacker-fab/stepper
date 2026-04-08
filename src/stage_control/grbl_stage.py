@@ -42,6 +42,7 @@ class GrblStage(StageController):
         self.resp_buffer = b""
         
         print(f"WPos startup (mm): {self._query_state()}") # queries for current position and state
+        self._send_msg(b'$X\n') # exit out of any alarms
         
     def _fill_resp_buffer(self):
         self.resp_buffer += self.controller_target.read_all()
