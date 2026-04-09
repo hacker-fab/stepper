@@ -9,11 +9,6 @@ class UnsupportedCommand(Exception):
 
 # This will be an abstract interface for stage positioning.
 class StageController:
-    def move_by(self, amounts: dict[str, float]):
-        print(f"ignoring move_by {amounts} in dummy stage controller")
-
-    def move_to(self, amounts: dict[str, float]):
-        print(f"ignoring move_to {amounts} in dummy_stage controller")
 
     def has_homing(self):
         return False
@@ -41,4 +36,7 @@ class StageController:
     
     def get_on_start_location(self):
         print(f"ignoring get_on_start_location in dummy_stage controller")
+    
+    def get_bounds(self)->dict[str, tuple[float, float]]:
+        print(f"ignoring get_bounds in dummy_stage controller")
 

@@ -43,7 +43,9 @@ class GrblStage(StageController):
         
         print(f"WPos startup (mm): {self._query_state()}") # queries for current position and state
         self._send_msg(b'$X\n') # exit out of any alarms
-        
+
+        self._query_config() # query for grbl config settings, which we will need to determine bounds and other features
+
     def _fill_resp_buffer(self):
         self.resp_buffer += self.controller_target.read_all()
     
@@ -418,7 +420,7 @@ class GrblStage(StageController):
         resp, self.resp_buffer = self.resp_buffer.split(b"\r\n", maxsplit=1)
         response = resp.decode("ascii", errors="replace").strip()
 
-        if response != "ok":
+        if "ok" not in response:
             raise RuntimeError(f"GRBL unlock ($X) failed — got: {response!r}")
 
         self.resp_buffer = b""
@@ -481,7 +483,7 @@ class GrblStage(StageController):
         but this provides a good point to start the gradient
         descent search. 
         """
-        return self.autofocus_estimate
+        return -1*self.autofocus_estimate
         
     def get_position(self) -> tuple[float, float, float]:
         """
@@ -497,6 +499,30 @@ class GrblStage(StageController):
     
     def get_on_start_location(self) -> tuple[float, float, float]:
         return self.on_start_location
+    
+    def get_bounds(self):
+        cfg = self.configuration
+        mask    = int(cfg[23])   # homing direction invert mask
+        pulloff = cfg[27] * 1000 # mm → your units
+
+        def axis_bounds(travel_param, bit):
+            travel = cfg[travel_param] * 1000
+            homes_to_max = bool(mask & (1 << bit))
+            if homes_to_max:
+                # origin at max end → coords are negative
+                return (-travel + pulloff, 0.0)
+            else:
+                # origin at min end → coords are positive
+                return (0.0, travel - pulloff)
+        x = axis_bounds(130, 0)
+        y = axis_bounds(131, 1)
+        z = axis_bounds(132, 2)
+        return {
+            'x': [-x[0], -x[1]],
+            'y': [-y[0], -y[1]],
+            'z': [-z[0], -z[1]],
+        }
+
     """
     # pass in list of amounts to move by. Dictionary in "axis: amount" format
     def move_by(self, amounts: dict[str, float]):

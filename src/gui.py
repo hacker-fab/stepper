@@ -28,15 +28,34 @@ from lib.gui import IntEntry, Thumbnail, FloatEntry
 from lib.img import image_to_tk_image
 from projector import TkProjector
 from stage_control.grbl_stage import GrblStage
+from stage_control.omm_stage import OMMStage
 from stage_control.stage_controller import StageController
-
-
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 #The values set here are not used and instead come from the config file
 DEFAULT_RED_EXPOSURE: float = 4167.0
 DEFAULT_UV_EXPOSURE: float = 25000.0
+
+def fetch_focus_score(camera_image, blue_only, ddepth=cv2.CV_64F, kernel_size=5, log=False):
+    """ fetch_focus_score: computes the laplacian focal score after some
+    pre-processing of the camera image. The key is to detect the edges better
+    than other parts of the image that might not be suitable to be focused on. """
+
+    camera_image = camera_image.copy()
+    camera_image[:, :, 1] = 0  # green should never be used for focus
+    if blue_only:
+      camera_image[:, :, 0] = 0  # disable red
+
+    src = camera_image
+    src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+    # Remove noise by blurring with a Gaussian filter
+    src = cv2.GaussianBlur(src, (21, 21), 0)
+
+    # Apply Laplace function
+    src = cv2.Laplacian(src, ddepth, ksize=kernel_size)
+
+    return src.var()
 
 def compute_focus_score(camera_image, blue_only, save=False):
     camera_image = camera_image.copy()
@@ -479,35 +498,16 @@ class EventDispatcher:
             self.stage_setpoint = self.hardware.stage.get_position()
             self.on_event(Event.STAGE_POSITION_CHANGED) 
 
-    def _compute_bounds(self):
-        cfg = self.hardware.stage.configuration
-        mask    = int(cfg[23])   # homing direction invert mask
-        pulloff = cfg[27] * 1000 # mm → your units
-
-        def axis_bounds(travel_param, bit):
-            travel = cfg[travel_param] * 1000
-            homes_to_max = bool(mask & (1 << bit))
-            if homes_to_max:
-                # origin at max end → coords are negative
-                return (-travel + pulloff, 0.0)
-            else:
-                # origin at min end → coords are positive
-                return (0.0, travel - pulloff)
-        return {
-            'x': axis_bounds(130, 0),
-            'y': axis_bounds(131, 1),
-            'z': axis_bounds(132, 2),
-        }
         
     def _check_bounds(self, set_point):
-        bounds = self._compute_bounds()
+        bounds = self.hardware.stage.get_bounds()
         axes = [('x', 0), ('y', 1), ('z', 2)]
         for name, i in axes:
             lo, hi = bounds[name]
             val = set_point[i]
-            if not (-lo >= val >= -hi):
+            if not (lo <= val <= hi):
                 return False, (f"Moving {name.upper()} to {val} prohibited. "
-                            f"Boundaries are [{-lo}, {-hi}]")
+                            f"Boundaries are [{lo}, {hi}]")
         return True, None
 
     def move_relative(self, coords: dict[str, float]):
@@ -598,7 +598,7 @@ class EventDispatcher:
         self.on_event(Event.STAGE_POSITION_CHANGED)
     
     def query_config(self):
-        self.hardware.stage._query_config()
+        self.hardware.stage.get_position()
         print("Query Config Complete.")
 
     def set_image_position(self, x, y, t):
@@ -736,100 +736,135 @@ class EventDispatcher:
                 pass
             log_file = open('aftest/log.csv', 'w')
         
-        if self.hardware.stage.has_homing():
-            # temporarily hold off on autofocus with homing enabled due to position boundary limits
-            # TODO: CMU S26 Stepper team will create a PR for new autofocus algorithm with homing enabled
-            self.create_warning("With homing enabled, autofocus won't work optimally, please focus manually.")
-            return
-        
-        counter = 0
-        def sample_focus():
-            def do_thing():
-                self.non_blocking_delay(0.1)
-                return compute_focus_score(self.camera_image, blue_only=blue_only)
-            focus_score = sorted([do_thing() for _ in range(3)])[1]
-            nonlocal counter
-            if log:
-                log_file.write(f'{counter},{focus_score}\n')
-                cv2.imwrite(f'aftest/img{counter}.png', self.camera_image)
-            counter += 1
-            return focus_score
-            
-
         print("Starting autofocus")
+        
+        if self.hardware.stage.has_homing():
 
-        self.set_autofocus_busy(True)
-        self.non_blocking_delay(1.0)
-        mid_score = sample_focus()
-        self.move_relative({"z": -20.0})
-        self.non_blocking_delay(1.0)
-        neg_score = sample_focus()
-        self.move_relative({"z": 40.0})
-        self.non_blocking_delay(1.0)
-        pos_score = sample_focus()
-        self.move_relative({"z": -20.0})
-        self.non_blocking_delay(1.0)
+            counter = 0
+            def sample():
+                def one_sample():
+                    return fetch_focus_score(self.camera_image, blue_only=blue_only, log=True)
+                focus_score = sum([one_sample() for _ in range(5)])/5
+                print("focus average:", focus_score)
+                nonlocal counter
+                if log:
+                    log_file.write(f'{counter},{focus_score}\n')
+                    cv2.imwrite(f'aftest/img{counter}.png', self.camera_image, log=True)
+                counter += 1
+                return focus_score
+            
+            print("Starting Autofocus...")
+            # Sample estimated optimal initially
+            best_score = -1.0
+            best_z = 0
+            z_base = self.hardware.stage.get_autofocus()
 
-        last_focus = mid_score
-
-        if neg_score < mid_score < pos_score:
-            # Improved focus is in the +Z direction
-            for i in range(30):
-                self.move_relative({"z": 10.0})
+            # account for uv mode, where z-focus is different
+            if blue_only == True:
+                z_base += 50.0
+                self.move_absolute({"z": z_base})
                 self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful +Z coarse autofocus {i}")
-                    last_focus = new_score
-                    break
-                last_focus = new_score
 
-            for i in range(10):
-                self.move_relative({"z": -2.0})
+            else:
+                for i in range(-20, 20, 2):
+                    self.move_absolute({"z": z_base-i})
+                    self.non_blocking_delay(0.5)
+                    new_score = sample()
+                    # always check for optimal scores
+                    if (new_score > best_score):
+                        best_score = new_score
+                        best_z = self.stage_setpoint[2]
+                
+                print(f"Fine grain sampling done, best focus is: {best_score}")
+                self.move_absolute({"z":best_z})
                 self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful -Z fine autofocus {i}")
-                    break
-                last_focus = new_score
-        elif neg_score > mid_score > pos_score:
-            # Improved focus is in the -Z direction
-            for i in range(30):
-                self.move_relative({"z": -10.0})
-                self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful -Z coarse autofocus {i}")
-                    break
-                last_focus = new_score
 
-            for i in range(10):
-                self.move_relative({"z": 2.0})
-                self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful +Z fine autofocus {i}")
-                    break
-                last_focus = new_score
-        elif neg_score < mid_score and pos_score < mid_score:
-            # We are very close to already being in focus
-            print(f"Almost in focus! (neg {neg_score} mid {mid_score} pos {pos_score})")
-            self.move_relative({"z": -20.0})
-            self.non_blocking_delay(0.5)
-
-            for i in range(30):
-                self.move_relative({"z": 2.0})
-                self.non_blocking_delay(0.5)
-                new_score = sample_focus()
-                if last_focus > new_score:
-                    print(f"Successful +Z fine autofocus {i}")
-                    break
-                last_focus = new_score
         else:
-            print("Autofocus is confused!")
+            counter = 0
+            def sample_focus():
+                def do_thing():
+                    self.non_blocking_delay(0.1)
+                    return compute_focus_score(self.camera_image, blue_only=blue_only)
+                focus_score = sorted([do_thing() for _ in range(3)])[1]
+                nonlocal counter
+                if log:
+                    log_file.write(f'{counter},{focus_score}\n')
+                    cv2.imwrite(f'aftest/img{counter}.png', self.camera_image)
+                counter += 1
+                return focus_score
+              
+            self.set_autofocus_busy(True)
+            self.non_blocking_delay(1.0)
+            mid_score = sample_focus()
+            self.move_relative({"z": -20.0})
+            self.non_blocking_delay(1.0)
+            neg_score = sample_focus()
+            self.move_relative({"z": 40.0})
+            self.non_blocking_delay(1.0)
+            pos_score = sample_focus()
+            self.move_relative({"z": -20.0})
+            self.non_blocking_delay(1.0)
 
+            last_focus = mid_score
+
+            if neg_score < mid_score < pos_score:
+                # Improved focus is in the +Z direction
+                for i in range(30):
+                    self.move_relative({"z": 10.0})
+                    self.non_blocking_delay(0.5)
+                    new_score = sample_focus()
+                    if last_focus > new_score:
+                        print(f"Successful +Z coarse autofocus {i}")
+                        last_focus = new_score
+                        break
+                    last_focus = new_score
+
+                for i in range(10):
+                    self.move_relative({"z": -2.0})
+                    self.non_blocking_delay(0.5)
+                    new_score = sample_focus()
+                    if last_focus > new_score:
+                        print(f"Successful -Z fine autofocus {i}")
+                        break
+                    last_focus = new_score
+            elif neg_score > mid_score > pos_score:
+                # Improved focus is in the -Z direction
+                for i in range(30):
+                    self.move_relative({"z": -10.0})
+                    self.non_blocking_delay(0.5)
+                    new_score = sample_focus()
+                    if last_focus > new_score:
+                        print(f"Successful -Z coarse autofocus {i}")
+                        break
+                    last_focus = new_score
+
+                for i in range(10):
+                    self.move_relative({"z": 2.0})
+                    self.non_blocking_delay(0.5)
+                    new_score = sample_focus()
+                    if last_focus > new_score:
+                        print(f"Successful +Z fine autofocus {i}")
+                        break
+                    last_focus = new_score
+            elif neg_score < mid_score and pos_score < mid_score:
+                # We are very close to already being in focus
+                print(f"Almost in focus! (neg {neg_score} mid {mid_score} pos {pos_score})")
+                self.move_relative({"z": -20.0})
+                self.non_blocking_delay(0.5)
+
+                for i in range(30):
+                    self.move_relative({"z": 2.0})
+                    self.non_blocking_delay(0.5)
+                    new_score = sample_focus()
+                    if last_focus > new_score:
+                        print(f"Successful +Z fine autofocus {i}")
+                        break
+                    last_focus = new_score
+            else:
+                print("Autofocus is confused!")
+
+        print("Autofocus Complete.")
         self.set_autofocus_busy(False)
-
         print("Finished autofocus")
     
     def initialize_alignment(self, config: LithographerConfig):
@@ -936,15 +971,15 @@ class CameraFrame:
             if self.pending_frame is None:
                 return
             image, dimensions, format = self.pending_frame
-            red_score = compute_focus_score(image, blue_only=False)
-            blue_score = compute_focus_score(image, blue_only=True)
+            red_score = fetch_focus_score(image, blue_only=False)
+            blue_score = fetch_focus_score(image, blue_only=True)
             self.focus_score_label.configure(text=f"Focus Score: {red_score:.3e} {blue_score:.3e}")
 
             try:
                 filename = self.snapshots_pending.get_nowait()
                 print(f"Saving image {filename}")
-                compute_focus_score(image, blue_only=False, save='focusred.png')
-                compute_focus_score(image, blue_only=False, save='focusblue.png')
+                fetch_focus_score(image, blue_only=False)
+                fetch_focus_score(image, blue_only=False)
                 img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 cv2.imwrite(filename, img)
             except queue.Empty:
@@ -2477,7 +2512,7 @@ class TilingFrame:
             #If a small amount of alignment is needed move the image otherwise move the stage since we have far more percision in moving the image than the stage
             #The con of this is that large movements of the image result in cropping of the image
             #TODO calibrate the stage move threshold
-            if(dx or dy < 10):
+            if(dx < 10 or dy < 10):
                 #move the image instead of the stage
                 model.set_image_position(dx, dy, t=0)
             else:
@@ -3147,15 +3182,19 @@ def main():
     config_win.destroy()
     stage_config = config["stage"]
     if stage_config["enabled"]:
-        serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
-        print(f"Using serial port {serial_port.name}")
-    
-        # default features to False if they aren't specified -> supports legacy config.toml files
-        if stage_config.get("tiling", 0) == 0:
-            stage_config['tiling'] = False
-        if stage_config.get('autofocus', 0) == 0:
-            stage_config['autofocus'] = 0
-        stage = GrblStage(serial_port, stage_config["homing"], stage_config["tiling"], stage_config["autofocus"])
+        if stage_config.get("type") == "omm":
+            stage = OMMStage(stage_config["autofocus"], stage_config["omm"]["z-max"])
+            stage.connect(stage_config["port"], stage_config["baud-rate"])
+        else:
+            serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
+            print(f"Using serial port {serial_port.name}")
+        
+            # default features to False if they aren't specified -> supports legacy config.toml files
+            if stage_config.get("tiling", 0) == 0:
+                stage_config['tiling'] = False
+            if stage_config.get('autofocus', 0) == 0:
+                stage_config['autofocus'] = 0
+            stage = GrblStage(serial_port, stage_config["homing"], stage_config["tiling"], stage_config["autofocus"])
     else:
         stage = StageController()
 
