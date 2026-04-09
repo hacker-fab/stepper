@@ -58,12 +58,18 @@ Enable homing (if you have sensors).
 $22=1
 ```
 
+Ensure that positions are given as `WPos` instead of `MPos`. This allows
+us to set a (0,0,0) starting point for within grbl itself. Note that this
+is optional, but highly recommened, as it's easier to read coordinates 
+from grbl this way.
+
 Adjust the homing direction invert mask (if you have sensors).
 Bits 0, 1, and 2 in this value correspond to the X, Y, and Z axes.
 For each axis, check if the limit switch is reached by moving in the positive direction or the negative direction.
 If the axis requires negative movement, set the corresponding bit.
 On CMU's setup, the limit switches are all reached by traveling in the negative direction,
-so we use a value of 7 (invert all axes).
+so we use a value of 7 (invert all axes). However this value may change
+depending on how you also configure setting `$3`. 
 
 ```
 $23=7
@@ -220,9 +226,16 @@ uv-exposure = 25000.0
 enabled = true
 # Set homing to false if your stage does not have limit sensors
 homing = false
+
+# The following features can be enabled when homing 
+# is set to true. Note that this assumes the stage
+# won't be moved manually, but entirely through the gui
+
 # Enable tiling if user wishes to use tiling features
 tiling = false
-# Set autofocus offset, requires homing to be true. Set 0 for no autofocus 
+# Set autofocus offset to get an estimated focus position
+# for the z-stage. Set 0 to use the original autofocus
+# algorithm, which may take more time to run. 
 autofocus = 0
 
 
@@ -236,8 +249,13 @@ baud-rate = 115200
 [alignment]
 # Enable or disable real-time detection of alignment markers
 enabled = false
-# Path to the YOLO model weights file
-model_path = "best.pt"
+# Path to the alignment model weights file
+# The following paths are supported: "ckpts/best.pt" and "ckpts/weights.onnx"
+# The key difference between the two are that best.pt runs a YOLO model trained on developed
+# images while weights.onnx runs on RF-DETR, which is trained on both developed and latent images
+# that suite it for the tiling feature for the stepper
+model_path = "ckpts/best.pt"
+
 # Alignment marker reference coordinates (in pixels)
 right_marker_x = 1634.0  # x-coordinate for markers on the right side
 top_marker_y = 117.5     # y-coordinate for markers on the top
