@@ -129,6 +129,7 @@ class OMMStage(StageController):
         print(f"ignoring set_on_start_location in dummy_stage controller")
 
     def get_autofocus(self):
+        print(f"current autofocus value: {self._autofocus_offset}")
         return self._autofocus_offset
 
     def get_position(self):

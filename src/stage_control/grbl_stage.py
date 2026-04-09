@@ -420,7 +420,7 @@ class GrblStage(StageController):
         resp, self.resp_buffer = self.resp_buffer.split(b"\r\n", maxsplit=1)
         response = resp.decode("ascii", errors="replace").strip()
 
-        if response != "ok":
+        if "ok" not in response:
             raise RuntimeError(f"GRBL unlock ($X) failed — got: {response!r}")
 
         self.resp_buffer = b""
@@ -483,7 +483,7 @@ class GrblStage(StageController):
         but this provides a good point to start the gradient
         descent search. 
         """
-        return self.autofocus_estimate
+        return -1*self.autofocus_estimate
         
     def get_position(self) -> tuple[float, float, float]:
         """
