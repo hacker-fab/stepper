@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 import serial
 import math
+import onnxruntime as rt
 from PIL import Image, ImageOps, ImageTk
 from ultralytics import YOLO
 from camera.camera_module import CameraModule
@@ -32,6 +33,8 @@ from stage_control.omm_stage import OMMStage
 from stage_control.stage_controller import StageController
 
 # TODO: Don't hardcode
+RF_DETR_IMPUT_SIZE = 704
+CONFIDENCE_THRESHOLD = 0.77
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 #The values set here are not used and instead come from the config file
 DEFAULT_RED_EXPOSURE: float = 4167.0
@@ -70,7 +73,6 @@ def compute_focus_score(camera_image, blue_only, save=False):
         print('saved focus: ', np.min(img_lapl), np.max(img_lapl))
         cv2.imwrite(save, img_lapl * 255.0 / 5.0)
     return img_lapl.var() / mean
-
 
 def detect_alignment_markers(model, image, draw_rectangle=False):
     detections = []
@@ -231,7 +233,7 @@ class Chip:
 class EventDispatcher:
     hardware: Lithographer
     root: Tk
-    model: Optional[YOLO]
+    model: Optional[YOLO | rt.InferenceSession]
     camera: Optional[CameraModule]
     red_focus: ProcessedImage
     uv_focus: ProcessedImage
@@ -473,9 +475,9 @@ class EventDispatcher:
         
         # find new coordinates -> some nuance exists between work and gui positioning
         # in work position, the x moves in negative direction (away from home) and y moves in positive direction (away from home)
-        x = coords.get("x", 0)
-        y = coords.get("y", 0)
-        z = coords.get("z", 0)
+        x = coords.get("x", self.stage_setpoint[0])
+        y = coords.get("y", self.stage_setpoint[1])
+        z = coords.get("z", self.stage_setpoint[2])
         set_point = (x, y, z)
 
         if self.hardware.stage.has_homing():
@@ -879,6 +881,67 @@ class EventDispatcher:
         self.set_autofocus_busy(False)
         print("Finished autofocus")
     
+    def detect_marks_for_slam(self, img, session):
+        """
+        Detects alignment markers for tiling SLAM algorithm
+        Returns an array of dictionary coordinates:
+        Example: arr[0] = {"center": (x,y), "left":(x,y), "right":(x,y), "top":(x,y), "bottom":(x,y)}
+        """
+        vis = img.copy()
+        orig_h, orig_w = vis.shape[:2]
+        img_resized = cv2.resize(vis, (RF_DETR_IMPUT_SIZE, RF_DETR_IMPUT_SIZE)) # fsr it only accepts one size
+        img_input = img_resized.transpose(2, 0, 1)  # HWC -> CHW
+        img_input = np.expand_dims(img_input, 0).astype(np.float32) / 255.0
+
+        # Run inference
+        input_name = session.get_inputs()[0].name
+        boxes, scores = session.run(None, {input_name: img_input})
+
+        boxes = boxes[0] 
+        scores = scores[0] 
+
+        markers = []
+        for i in range(len(boxes)):
+            class_id = np.argmax(scores[i])
+            confidence = 1 / (1 + np.exp(-scores[i][class_id]))
+            if confidence > CONFIDENCE_THRESHOLD:
+                x, y, w, h = boxes[i]
+                
+                # fetch centers, and scale back to original image size
+                cx = int(x * orig_w)
+                cy = int(y * orig_h)
+                bw = int(w * orig_w)
+                bh = int(h * orig_h)
+
+                marker = {
+                    "center": (cx, cy),
+                    "left":   (cx - bw // 2, cy),
+                    "right":  (cx + bw // 2, cy),
+                    "top":    (cx, cy - bh // 2),
+                    "bottom": (cx, cy + bh // 2)
+                }
+                markers.append(marker)
+                print(f"Detection: class={class_id}, confidence={confidence:.2f} ->\ncoordinates: {marker}\n")
+        return markers
+    
+    def get_model(self, path: str):
+        """
+        Based on which model we're using, we will feed the model
+        a different session. 'best.pt' indicates YOLO while the onx 
+        file indicates RF-DETR
+        
+        Note to developers: RF-DETR was trained on latent and developed patterns
+        while YOLO model was trained on developed patterns only
+        """
+        if "best" in path:
+            print("Using YOLO model")
+            self.model = YOLO(path)
+        else:
+            print("Using RF_DETR model")
+            session = rt.InferenceSession(path)
+            self.model = session
+        return True
+
     def initialize_alignment(self, config: LithographerConfig):
         self.config = config
         self.realtime_detection = config.alignment.enabled
@@ -886,10 +949,10 @@ class EventDispatcher:
         try:
             print("loading model")
             model_path = config.alignment.model_path
-            self.model = YOLO(model_path)
+            self.get_model(model_path)
             print("loaded model")
         except Exception as e:
-            print(f"Failed to load YOLO model: {e}")
+            print(f"Failed to load alignment model: {e}")
 
     def set_snapshot_directory(self, directory: Path):
         self.snapshot_directory = directory
@@ -2372,6 +2435,10 @@ class GlobalSettingsFrame:
 
         # Configure grid weights for proper expansion
         self.snapshot_frame.columnconfigure(1, weight=1)
+
+        # Button for new RF-DETR Model's alignment detection
+        self.detect_button = ttk.Button(self.frame, text="Detect Fiducials", command=lambda: event_dispatcher.detect_marks_for_slam(event_dispatcher.camera_image, event_dispatcher.model))
+        self.detect_button.grid(row=3, column=0, sticky="ew")
 
 
 class ExposureHistoryFrame:
