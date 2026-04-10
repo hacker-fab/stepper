@@ -21,15 +21,20 @@ uv-exposure = 25000.0
 [stage]
 # Set enabled to false to disable all motion.
 enabled = true
-
 # Set homing to false if your stage does not have limit sensors
 homing = false
 
+# The following features can be enabled when homing 
+# is set to true. Note that this assumes the stage
+# won't be moved manually, but entirely through the gui
+
 # Enable tiling if user wishes to use tiling features
 tiling = false
-
-# Set autofocus offset, requires homing to be true. Set 0 for no autofocus 
+# Set autofocus offset to get an estimated focus position
+# for the z-stage. Set 0 to use the original autofocus
+# algorithm, which may take more time to run. 
 autofocus = 0
+
 
 # Select the correct serial port for the device running GRBL.
 # The correct serial port can be checked with Device Manager on Windows.
@@ -46,8 +51,13 @@ z-max = -1
 [alignment]
 # Enable or disable real-time detection of alignment markers
 enabled = false
-# Path to the YOLO model weights file
+# Path to the alignment model weights file
+# The following paths are supported: "ckpts/best.pt" and "ckpts/weights.onnx"
+# The key difference between the two are that best.pt runs a YOLO model trained on developed
+# images while weights.onnx runs on RF-DETR, which is trained on both developed and latent images
+# that suite it for the tiling feature for the stepper
 model_path = "ckpts/best.pt"
+
 # Alignment marker reference coordinates (in pixels)
 right_marker_x = 1820.0  # x-coordinate for markers on the right side
 top_marker_y = 269.0     # y-coordinate for markers on the top

@@ -12,6 +12,7 @@ dependencies = [
     "pyserial>=3.5",
     "toml>=0.10.2",
     "ultralytics>=8.3.218",
+    "onnxruntime>=1.19.0,<1.22.0"
 ]
 
 [tool.uv.sources]
