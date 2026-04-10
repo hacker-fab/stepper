@@ -483,7 +483,7 @@ class GrblStage(StageController):
         but this provides a good point to start the gradient
         descent search. 
         """
-        return -1*self.autofocus_estimate
+        return self.autofocus_estimate
         
     def get_position(self) -> tuple[float, float, float]:
         """
@@ -501,28 +501,33 @@ class GrblStage(StageController):
         return self.on_start_location
     
     def get_bounds(self):
+        """
+        Gets soft boundaries based on configuration for $3 and $27
+        in GRBL for each stage axis
+
+        Note: as of now, CMU's setup is
+        $3=7
+        $23=7
+
+        which allows +x to travel in the positive WPos coorindate space
+        """
         cfg = self.configuration
-        mask    = int(cfg[23])   # homing direction invert mask
-        pulloff = cfg[27] * 1000 # mm → your units
 
-        def axis_bounds(travel_param, bit):
-            travel = cfg[travel_param] * 1000
-            homes_to_max = bool(mask & (1 << bit))
-            if homes_to_max:
-                # origin at max end → coords are negative
-                return (-travel + pulloff, 0.0)
-            else:
-                # origin at min end → coords are positive
-                return (0.0, travel - pulloff)
-        x = axis_bounds(130, 0)
-        y = axis_bounds(131, 1)
-        z = axis_bounds(132, 2)
+        if cfg.get(22, 0) != 1:
+            return None
+
+        pulloff_microns = cfg[27] * 1000
+
+        def axis_bounds(travel_param):
+            usable = cfg[travel_param] * 1000 - pulloff_microns
+            return (min(usable, 0.0), max(usable, 0.0))
+
         return {
-            'x': [-x[0], -x[1]],
-            'y': [-y[0], -y[1]],
-            'z': [-z[0], -z[1]],
+            'x': list(axis_bounds(130)),
+            'y': list(axis_bounds(131)),
+            'z': list(axis_bounds(132)),
         }
-
+    
     """
     # pass in list of amounts to move by. Dictionary in "axis: amount" format
     def move_by(self, amounts: dict[str, float]):
