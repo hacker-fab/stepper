@@ -233,7 +233,7 @@ class Chip:
 class EventDispatcher:
     hardware: Lithographer
     root: Tk
-    model: Optional[YOLO]
+    model: Optional[YOLO | rt.InferenceSession]
     camera: Optional[CameraModule]
     red_focus: ProcessedImage
     uv_focus: ProcessedImage
@@ -475,9 +475,9 @@ class EventDispatcher:
         
         # find new coordinates -> some nuance exists between work and gui positioning
         # in work position, the x moves in negative direction (away from home) and y moves in positive direction (away from home)
-        x = coords.get("x", 0)
-        y = coords.get("y", 0)
-        z = coords.get("z", 0)
+        x = coords.get("x", self.stage_setpoint[0])
+        y = coords.get("y", self.stage_setpoint[1])
+        z = coords.get("z", self.stage_setpoint[2])
         set_point = (x, y, z)
 
         if self.hardware.stage.has_homing():
@@ -939,7 +939,8 @@ class EventDispatcher:
         else:
             print("Using RF_DETR model")
             session = rt.InferenceSession(path)
-        return session
+            self.model = session
+        return True
 
     def initialize_alignment(self, config: LithographerConfig):
         self.config = config
@@ -948,7 +949,7 @@ class EventDispatcher:
         try:
             print("loading model")
             model_path = config.alignment.model_path
-            self.model = self.get_model(model_path)
+            self.get_model(model_path)
             print("loaded model")
         except Exception as e:
             print(f"Failed to load alignment model: {e}")
@@ -2434,6 +2435,10 @@ class GlobalSettingsFrame:
 
         # Configure grid weights for proper expansion
         self.snapshot_frame.columnconfigure(1, weight=1)
+
+        # Button for new RF-DETR Model's alignment detection
+        self.detect_button = ttk.Button(self.frame, text="Detect Fiducials", command=lambda: event_dispatcher.detect_marks_for_slam(event_dispatcher.camera_image, event_dispatcher.model))
+        self.detect_button.grid(row=3, column=0, sticky="ew")
 
 
 class ExposureHistoryFrame:

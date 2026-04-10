@@ -154,6 +154,23 @@ python --version          # ensure version is correct (<=3.10)
 pip install -r requirements.txt
 ```
 
+## Loading Alignment Markers (RF_DETR model)
+
+Due to file size constraints in GitHub, the actual file for the RF_DETR weights (`weights.onnx`) are not stored
+in this repository, and are instead replaced by a pointer file on a large file system in git (Git LFS)
+In order to extract that file, you have two options:
+
+```bash
+git lfs install
+git clone https://github.com/hacker-fab/stepper
+git lfs pull
+```
+
+> If you already cloned without LFS, you can just run `git lfs pull` to fetch the weights, no need to run the second line.
+
+Alternatively, you may fetch the real file [here](https://drive.google.com/file/d/1gzfTfCEShMwD_rnQ02xfzXXrrkVuZwpM/view?usp=drive_link) and replace the current `weights.onnx` file with the one downloaded from the link. 
+
+
 ### Using a Basler (Pylon) camera
 
 To use a Basler camera with the GUI, you will need to install `pylon` from
