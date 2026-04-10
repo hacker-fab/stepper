@@ -50,7 +50,7 @@ def fetch_focus_score(camera_image, blue_only, ddepth=cv2.CV_64F, kernel_size=5,
     src = camera_image
     src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
     # Remove noise by blurring with a Gaussian filter
-    src = cv2.GaussianBlur(src, (21, 21), 0)
+    src = cv2.GaussianBlur(src, (3, 3), 0)
 
     # Apply Laplace function
     src = cv2.Laplacian(src, ddepth, ksize=kernel_size)
@@ -483,24 +483,31 @@ class EventDispatcher:
             ok, msg = self._check_bounds(set_point)
             if not ok:
                 self.create_warning(msg)
-                return
+                return False
 
         try:
             self.hardware.stage.move_absolute(coords)
             self.stage_setpoint = set_point
             self.on_event(Event.STAGE_POSITION_CHANGED)
+            return True
         
         except(RuntimeError) as e:
             self.create_warning(f"{str(e)}. Please remove your chip, restart the program.")
+            return False
 
         except(Exception) as e:
             self.create_warning(f"{str(e)}. Please remove your chip, restart the program.")
             self.stage_setpoint = self.hardware.stage.get_position()
             self.on_event(Event.STAGE_POSITION_CHANGED) 
+            return False
 
         
     def _check_bounds(self, set_point):
         bounds = self.hardware.stage.get_bounds()
+
+        if bounds is None:
+            return True  # no homing, no bounds enforced
+        
         axes = [('x', 0), ('y', 1), ('z', 2)]
         for name, i in axes:
             lo, hi = bounds[name]
@@ -754,7 +761,6 @@ class EventDispatcher:
                 return focus_score
             
             print("Starting Autofocus...")
-            # Sample estimated optimal initially
             best_score = -1.0
             best_z = 0
             z_base = self.hardware.stage.get_autofocus()
@@ -762,12 +768,18 @@ class EventDispatcher:
             # account for uv mode, where z-focus is different
             if blue_only == True:
                 z_base += 50.0
-                self.move_absolute({"z": z_base})
-                self.non_blocking_delay(0.5)
+                if(self.move_absolute({"z": z_base})) == False:
+                    self.create_warning("Failed autofocus, z-stage can't go past boundary limits")
+                    self.set_autofocus_busy(False)
+                    return
+                self.non_blocking_delay(1.0)
 
             else:
                 for i in range(-20, 20, 2):
-                    self.move_absolute({"z": z_base-i})
+                    if not (self.move_absolute({"z": z_base+i})):
+                        self.create_warning("Failed autofocus, z-stage can't go past boundary limits")
+                        self.set_autofocus_busy(False)
+                        return
                     self.non_blocking_delay(0.5)
                     new_score = sample()
                     # always check for optimal scores
@@ -777,7 +789,7 @@ class EventDispatcher:
                 
                 print(f"Fine grain sampling done, best focus is: {best_score}")
                 self.move_absolute({"z":best_z})
-                self.non_blocking_delay(0.5)
+                self.non_blocking_delay(1.0)
 
         else:
             counter = 0
