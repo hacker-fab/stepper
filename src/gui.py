@@ -3187,6 +3187,7 @@ class ImageStitchSettings:
     output_folder: str
     resize: float
     debug: bool
+    threshold: int
 
 @dataclass
 class TilePreprocessSettings:
@@ -3250,7 +3251,7 @@ class ImageStitchingFrame:
         curr_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         capture_folder = f"data_collection_{curr_time}/"
 
-        captures, num_rows, num_cols = self.capture_helper(
+        captures, captured_positions, num_rows, num_cols = self.capture_helper(
             settings=ImageCaptureSettings(
                 stride_x_um=self.stride_x_um,
                 stride_y_um=self.stride_y_um,
@@ -3268,20 +3269,24 @@ class ImageStitchingFrame:
             gaussian_kernel_size=(7, 7)
         ))
 
+        # max difference between expected distance and calculated difference we can tolerate
+        # before falling back on the default values
+        threshold = 200
         stitched_image = self.stitch_helper(
             preprocessed_imgs,
+            captured_positions,
             settings=ImageStitchSettings(
                 num_rows=num_rows,
                 num_cols=num_cols,
                 output_folder=capture_folder,
                 resize=0.2,
-                debug=False
+                debug=True,
+                threshold=threshold
             )
         )
         
         if stitched_image is not None:
-            target_size = (self.snapshot_width_px, self.snapshot_height_px)
-            displayed_image = cv2.resize(stitched_image, target_size)
+            displayed_image = cv2.resize(stitched_image, (self.snapshot_width_px // 10, self.snapshot_height_px // 10))
             displayed_image = Image.fromarray(displayed_image)
             self.display_image(displayed_image)
             print("stitching complete!")
@@ -3314,6 +3319,7 @@ class ImageStitchingFrame:
         """
 
         captured_imgs = []
+        captured_positions = []
     
         num_cols = int(settings.total_x_um // settings.stride_x_um)
         num_rows = int(settings.total_y_um // settings.stride_y_um)
@@ -3342,7 +3348,8 @@ class ImageStitchingFrame:
         # and right to left on odd rows
         for row in range(num_rows):
             row_imgs = []
-            current_y = start_y + row * settings.stride_y_um
+            row_pos = []
+            current_y = start_y - row * settings.stride_y_um
 
             if row % 2 == 0:
                 col_range = range(num_cols)
@@ -3381,11 +3388,14 @@ class ImageStitchingFrame:
                 
                 self.event_dispatcher.non_blocking_delay(0.5)
                 self.frame.update()
+                row_pos.append((current_x, current_y))
 
             if row % 2 == 0:
                 captured_imgs.append(row_imgs)
+                captured_positions.append(row_pos)
             else:
                 captured_imgs.append(row_imgs[::-1])
+                captured_positions.append(row_pos[::-1])
         # Return to starting position
         self.event_dispatcher.move_absolute({
             "x": orig_x,
@@ -3394,7 +3404,8 @@ class ImageStitchingFrame:
         })
         self.event_dispatcher.non_blocking_delay(0.5)
 
-        return captured_imgs, num_rows, num_cols
+        print(captured_positions)
+        return captured_imgs, captured_positions, num_rows, num_cols
 
     def preprocess_image(self, img, settings: TilePreprocessSettings):
         img = np.array(img)
@@ -3452,8 +3463,7 @@ class ImageStitchingFrame:
         MIN_MATCH_COUNT = 4
         if len(good) < MIN_MATCH_COUNT:
             print(f"not enough matches were found: {len(good)} < {MIN_MATCH_COUNT}")
-            matchesMask = None
-            return
+            return (None, 0)
 
         src_pts = np.float32([src_keypoints[m.queryIdx].pt for m in good]).reshape(-1,1,2)
         dst_pts = np.float32([dst_keypoints[m.trainIdx].pt for m in good]).reshape(-1,1,2)
@@ -3506,7 +3516,7 @@ class ImageStitchingFrame:
 
         return (M, error)
 
-    def stitch_helper(self, imgs, settings: ImageStitchSettings):
+    def stitch_helper(self, imgs, stage_positions, settings: ImageStitchSettings):
         # stich images in a snake like pattern
         rows = settings.num_rows
         cols = settings.num_cols
@@ -3523,23 +3533,43 @@ class ImageStitchingFrame:
                 if row == 0 and col == 0:
                     curr_tile_info = (row, col)
                     curr_tile = imgs[0][0]
+                    curr_tile_stage_pos = stage_positions[0][0]
                     positions[row][col] = curr_pos
                     continue
 
                 next_tile = imgs[row][col]
                 next_tile_info = (row, col)
+                next_tile_stage_pos = stage_positions[row][col]
+
+                expected_dx = (next_tile_stage_pos[0] - curr_tile_stage_pos[0]) * 1.668
+                expected_dy = (next_tile_stage_pos[1] - curr_tile_stage_pos[1]) * 1.576
 
                 print(f"curr_tile_info: {curr_tile_info}, next_tile_info: {next_tile_info}")
                 M, error = self.image_alignment(curr_tile, next_tile)
-                dx = M[0][2]
-                dy = M[1][2]
-                x, y = curr_pos
-                curr_pos = (x + dx, y + dy)
+
+                if M is None:
+                    # could not find an alignment use expected values
+                    dx = expected_dx
+                    dy = expected_dy
+                else:
+                    dx = M[0][2]
+                    dy = M[1][2]
+
+                    prediction_error = math.ceil(math.sqrt((expected_dx - dx)**2 + (expected_dy - dy)**2))
+                    print(f"expected movement dx={expected_dx}, dy={expected_dy}")
+                    print(f"image alignment calculated move as dx={dx}, dy={dy}")
+
+                    if prediction_error > settings.threshold:
+                        print("prediction error exceeded threshold, using expected dx and dy")
+                        dx = expected_dx
+                        dy = expected_dy
+
+                curr_pos = (curr_pos[0] + dx, curr_pos[1] + dy)
                 positions[row][col] = curr_pos
-                print(f"should move dx={dx}, dy={dy}")
 
                 curr_tile = next_tile
                 curr_tile_info = next_tile_info
+                curr_tile_stage_pos = next_tile_stage_pos
 
         if settings.debug:
             for row in range(0, rows):
