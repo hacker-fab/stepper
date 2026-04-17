@@ -207,7 +207,7 @@ class TilingParameters:
     t_h_px: int
     overlay_x_px: int
     overlay_y_px: int
-    steps_per_tile: int
+    ratio: float
     stride_x: int
     stride_y: int
     num_rows: int
@@ -2440,7 +2440,7 @@ class TilingFrame:
 
         # Rachel insertions
         self.params = TilingParameters(None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
-        self.params.steps_per_tile = 2
+        self.params.ratio = 0.5
         self.params.px_to_step_x = px_to_step_x
         self.params.px_to_step_y = px_to_step_y
         self.params.step_error_threshold_x = 10
@@ -2568,7 +2568,7 @@ class TilingFrame:
 
             return (total_dx, total_dy, d0)
 
-        def slam_way_to_target(model, row:int, col:int, num_cols:int, width:int, height:int, partial_steps:int, layer, src_img, dest_img):
+        def slam_way_to_target(model, row:int, col:int, num_cols:int, width:int, height:int, ratio:int, layer, src_img, dest_img):
             """
             Takes in 2 images:
             - `model`: marker detection model (likely RF-DETR)
@@ -2584,11 +2584,12 @@ class TilingFrame:
             error_x = 0 # steps
             h_direction = None
             v_direction = None
-
+            
+            num_iterations = math.ceil(1 / ratio)
             # step-alignment
-            for _ in range(partial_steps): 
+            for _ in range(num_iterations):
                 # # determine next step direction (and) size
-                h_direction, v_direction, step_x, step_y = get_next_tile_vector(row, col, width, height, num_cols, partial_steps, error_x, error_y)
+                h_direction, v_direction, step_x, step_y = get_next_tile_vector(row, col, width, height, num_cols, num_iterations, error_x, error_y)
                 print(f"next tile vector returned: {h_direction}, {v_direction}, {step_x}, {step_y}")
 
                 # calculate relative position and move there
@@ -2683,8 +2684,8 @@ class TilingFrame:
             stride_x = tile_width*self.params.px_to_step_x - overlap_x*self.params.px_to_step_x
             stride_y = tile_height*self.params.px_to_step_y - overlap_y*self.params.px_to_step_y
 
-            self.params.stride_x = stride_x
-            self.params.stride_y = stride_y
+            # self.params.stride_x = 1037 # stage movement 
+            # self.params.stride_y = 565
             ####################### Rachel Insertion ############################################
             
             # Compute all top-left coordinates
@@ -2775,6 +2776,18 @@ class TilingFrame:
             prev_row = 0
             prev_col = 0
 
+            projection_width_steps = 1037
+            projection_height_steps = 583
+
+            overlay_w_px = 200 
+            overlay_h_px = 200
+
+            overlay_w_steps = px_to_step_x * overlay_w_px
+            overlay_h_steps = px_to_step_y * overlay_h_px
+
+            self.param.stride_x = int((projection_width_steps - overlay_w_steps) * self.params.ratio)
+            self.param.stride_y = int((projection_height_steps - overlay_h_steps) * self.params.ratio)
+
              # iterate row in order
             for row in range(self.params.num_rows):
 
@@ -2790,7 +2803,7 @@ class TilingFrame:
                         print(f"on_begin calling slam_way_to_target: {row}, {col}")
                         src_img, dest_img = slam_way_to_target(model.model, prev_row, prev_col, self.params.num_cols, 
                                                                                 self.params.stride_x, self.params.stride_y, 
-                                                                                self.params.steps_per_tile, 2, 
+                                                                                self.params.ratio, 2, 
                                                                                 src_img, dest_img)
 
                     # store location exposure
