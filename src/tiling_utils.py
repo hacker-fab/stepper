@@ -13,6 +13,7 @@ CONFIDENCE_THRESHOLD = 0.77
 
 px_to_step_x = 1.576
 px_to_step_y = 1.668
+digital_to_cam_view = 0.5
 
 ################## Capture and Stitch Utility Functions ##################
 def stitching_preprocess(img):
@@ -210,9 +211,10 @@ def get_next_tile_vector(row:int, col:int, width:int, height:int, num_cols:int, 
     else: # moving to different column
         h_direction = 'right' if (row % 2 == 0) else 'left'
         v_direction = None
-
-    step_x = math.floor((width-error_x) * (1/num_steps)) if h_direction != None else 0
-    step_y = math.floor((height-error_y) * (1/num_steps)) if v_direction != None else 0
+    print(f"width={width}, error_x={error_x}, num_steps={num_steps}, height={height}, error_y={error_y}")
+    step_x = math.floor(width-error_x) if h_direction != None else 0
+    step_y = math.floor(height-error_y) if v_direction != None else 0
+    print(f"h_direction={h_direction}, v_direction={v_direction}, step_x={step_x}, step_y={step_y}")
     return (h_direction, v_direction, step_x, step_y)
 
 def match_alignment_markers_by_coordinates(dest_marks, src_marks, src_marks_shifted, img_h, img_w):

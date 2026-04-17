@@ -164,7 +164,7 @@ class GrblStage(StageController):
                     print(f"[GRBL feedback]: {item}")
                     continue  # keep waiting for ok/error
                 if "ok" in item:
-                    print("Received OK")
+                    # print("Received OK")
                     return  # happy path, command completed, successful
                 elif item.startswith("error:"):
                     print(f"[GRBL error]: {item}")
@@ -344,7 +344,7 @@ class GrblStage(StageController):
         if not self.valid_position and self.enable_tiling: # only block if users are doing tiling
             raise RuntimeError("Position is invalid — please exit and re-open the application.")
         
-        print("moving relative", microns)
+        # print("moving relative", microns)
         self._move(microns, relative=True)
 
     def move_absolute(self, microns: dict[str, float]):
@@ -359,7 +359,7 @@ class GrblStage(StageController):
         if not self.valid_position and self.enable_tiling: # only block if users are doing tiling
             raise RuntimeError("Position is invalid — please exit and re-open the application.")
         
-        print("moving absolute", microns)
+        # print("moving absolute", microns)
         self._move(microns, relative=False)
     
     def soft_reset(self):
