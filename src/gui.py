@@ -136,6 +136,7 @@ class Event(StrAutoEnum):
     PATTERNING_BUSY_CHANGED = auto()
     PATTERNING_FINISHED = auto()
     CHIP_CHANGED = auto()
+    STITCH_COMPLETED = auto()
 
 
 class MovementLock(StrAutoEnum):
@@ -3290,6 +3291,7 @@ class ImageStitchingFrame:
             displayed_image = Image.fromarray(displayed_image)
             self.display_image(displayed_image)
             print("stitching complete!")
+            self.event_dispatcher.on_event(Event.STITCH_COMPLETED, stitched_image)
         else:
             print("failed to stitch images")
             
