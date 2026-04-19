@@ -560,6 +560,10 @@ class EventDispatcher:
         self.pattern_image = img
         self.pattern_image_path = path
         self._refresh_pattern()
+    
+    def set_prev_pattern_image(self, img: Image.Image, path: str):
+        self.prev_pattern_image = img
+        self.prev_pattern_image_path = path
 
     def set_red_focus_image(self, img: Image.Image):
         self.red_focus_image = img
@@ -2115,6 +2119,81 @@ class UvModeFrame:
         self.patterning_frame = PatterningFrame(self.right_frame, event_dispatcher)
         self.patterning_frame.frame.grid(row=1, column=0)
 
+class PreviousPatternUploadFrame:
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        upload_type = "Previous Layer Pattern"
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Create container frame for centering
+        container = ttk.Frame(self.frame)
+        container.grid(row=0, column=0)
+        
+        # Main pattern upload section
+        self.upload_frame = ttk.LabelFrame(container, text=f"{upload_type} Upload")
+        self.upload_frame.grid(row=0, column=0)
+        
+        # Pattern selector (using existing ImageSelectFrame functionality)
+        self.pattern_selector = ImageSelectFrame(
+            self.upload_frame,
+            f"Select {upload_type}",
+            self._on_pattern_upload
+        )
+        self.pattern_selector.frame.grid(row=0, column=0)
+        
+        # Pattern info display
+        self.info_frame = ttk.LabelFrame(container, text=f"{upload_type} Information")
+        self.info_frame.grid(row=1, column=0)
+        
+        self.pattern_path_var = StringVar(value="No pattern loaded")
+        ttk.Label(self.info_frame, text=f"{upload_type}:").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.info_frame, textvariable=self.pattern_path_var, 
+                 foreground="blue").grid(row=0, column=1, sticky="w", padx=(10,0))
+        
+        # Pattern preview (larger than thumbnail)
+        self.preview_frame = ttk.LabelFrame(container, text=f"{upload_type} Preview")
+        self.preview_frame.grid(row=0, column=1, rowspan=2, padx=10)
+        
+        # Center the container
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_rowconfigure(0, weight=1)
+        
+        # Create larger preview image
+        preview_size = (320, 240)  # Larger than THUMBNAIL_SIZE
+        placeholder = Image.new("RGB", preview_size, "gray")
+        self.preview_photo = image_to_tk_image(placeholder)
+        self.preview_label = ttk.Label(self.preview_frame, image=self.preview_photo)
+        self.preview_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Upload instructions
+        instruction_text = ("Upload your pattern image using the selector above. "
+                          "The previous layer pattern will be used to align with the stitched image")
+        ttk.Label(self.upload_frame, text=instruction_text, 
+                 wraplength=400).grid(row=1, column=0, padx=5, pady=5)
+    
+    def _on_pattern_upload(self, _):
+        """Handle pattern upload"""
+        if self.pattern_selector.thumb.image:
+            # Update the event dispatcher with the new pattern
+            self.event_dispatcher.set_prev_pattern_image(
+                self.pattern_selector.thumb.image, 
+                self.pattern_selector.thumb.path
+            )
+            
+            # Update the info display
+            if self.pattern_selector.thumb.path:
+                filename = Path(self.pattern_selector.thumb.path).name
+                self.pattern_path_var.set(filename)
+            else:
+                self.pattern_path_var.set("Pattern uploaded")
+            
+            # Update preview image
+            if self.pattern_selector.thumb.image:
+                preview_img = self.pattern_selector.thumb.image.copy()
+                preview_img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+                self.preview_photo = image_to_tk_image(preview_img)
+                self.preview_label.configure(image=self.preview_photo)
+
 class PatternUploadFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
@@ -2194,10 +2273,15 @@ class ModeSelectFrame:
         self.notebook = ttk.Notebook(parent)
 
         # Add Pattern Upload tab first
+        self.previous_layer_upload_frame = PreviousPatternUploadFrame(self.notebook, event_dispatcher)
+        self.notebook.add(self.previous_layer_upload_frame.frame, text="Previous Layer Upload")
+
         self.pattern_upload_frame = PatternUploadFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.pattern_upload_frame.frame, text="Pattern Upload")
+        
         self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.red_mode_frame.frame, text="Red Light Alignment Mode")
+        
         self.uv_mode_frame = UvModeFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.uv_mode_frame.frame, text="UV Exposure Mode")
 
@@ -2218,9 +2302,11 @@ class ModeSelectFrame:
 
     def _current_tab(self):
         selected = self.notebook.select()
-        if "patternupload" in selected.lower() or self.notebook.index("current") == 0:
+        if "previouslayer" in selected.lower() or self.notebook.index("current") == 0:
+            return "prevpattern"
+        if "patternupload" in selected.lower() or self.notebook.index("current") == 1:
             return "pattern"
-        elif "redmode" in selected or self.notebook.index("current") == 1:
+        elif "redmode" in selected or self.notebook.index("current") == 2:
             return "red" 
         else:
             return "uv"
