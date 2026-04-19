@@ -3549,11 +3549,13 @@ class ImageStitchingFrame:
 
                 if M is None:
                     # could not find an alignment use expected values
+                    print(f"alignment algorithm failed, using expected dx and dy")
+                    print(f"expected movement dx={expected_dx}, dy={expected_dy}")
                     dx = expected_dx
                     dy = expected_dy
                 else:
                     dx = M[0][2]
-                    dy = M[1][2]
+                    dy = -M[1][2] # accounting for difference between the stage y positive and canvas y positive
 
                     prediction_error = math.ceil(math.sqrt((expected_dx - dx)**2 + (expected_dy - dy)**2))
                     print(f"expected movement dx={expected_dx}, dy={expected_dy}")
@@ -3571,10 +3573,6 @@ class ImageStitchingFrame:
                 curr_tile_info = next_tile_info
                 curr_tile_stage_pos = next_tile_stage_pos
 
-        if settings.debug:
-            for row in range(0, rows):
-                for col in range(0, cols):
-                    print(f"row: {row}, col: {col}, position:{positions[row][col]}")
 
         xs = []
         ys = []
@@ -3582,7 +3580,12 @@ class ImageStitchingFrame:
         for row in range(0, rows):
             for col in range(0, cols):
                 x, y = positions[row][col]
+                y = -y # account for the difference between y positive for stage and canvas
+                positions[row][col] = (x, y)
                 h, w = imgs[row][col].shape[:2]
+
+                if settings.debug:
+                    print(f"row: {row}, col: {col}, position:{(x, y)}")
 
                 xs.append(x + w)
                 xs.append(x)
@@ -3607,6 +3610,8 @@ class ImageStitchingFrame:
                 x = int(x) - shift_w
                 y = int(y) - shift_h
                 # shift into canvas coords
+                if settings.debug:
+                    print(f"position to paste in canvas: {(y, x)}, {y+h, x+w}")
                 canvas[y:y+h, x:x+w] = img
 
         # resize and output
