@@ -145,7 +145,7 @@ class GrblStage(StageController):
             - <>: Status reports are sent in chevrons.
         """
         self.controller_target.write(msg) # write gcode command
-        deadline = time.time() + 50.0
+        deadline = time.time() + 120.0
         while True:
             while b"\r\n" not in self.resp_buffer: # sometimes grbl may take time to respond, so we wait until
                 self._fill_resp_buffer()             # the response actually arrives. This is really important.

@@ -9,10 +9,10 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 
 RF_DETR_IMPUT_SIZE = 704
-CONFIDENCE_THRESHOLD = 0.77
+CONFIDENCE_THRESHOLD = 0.75
 
-px_to_step_x = 1.576
-px_to_step_y = 1.668
+px_to_step_x = 1.0/1.576
+px_to_step_y = 1.0/1.668
 digital_to_cam_view = 0.5
 
 ################## Capture and Stitch Utility Functions ##################
@@ -188,7 +188,7 @@ def detect_marks_for_slam(img, session, orig_h, orig_w, threshold=0.77) -> list[
     return markers
 
 ################## Snake Pattern Tiling Functions ##################
-def get_next_tile_vector(row:int, col:int, width:int, height:int, num_cols:int, num_steps:int, error_x:int=0, error_y:int = 0):
+def get_next_tile_vector(row:int, col:int, width:int, height:int, num_rows:int, num_cols:int, num_steps:int, error_x:int=0, error_y:int = 0):
     """
     determine next step direction and size (in steps)
     Arguments:
@@ -196,14 +196,13 @@ def get_next_tile_vector(row:int, col:int, width:int, height:int, num_cols:int, 
         - col: current column
         - width: total amount of steps to take horizontally (steps)
         - height: total amount of steps to take vertically (steps)
-        - num_cols: number of columns
+        - num_rows, num_cols: number of columns
         - num_steps: how many steps of movement
         - error_x=0: x step-errors from previous step (steps)
         - error_y=0: y step-errors from previous step (steps)
 
     Returns: tuple(h_direction, v_direction, step_x, step_y) --> units: (steps)
     """           
-    assert error_x >= 0 and error_y >=0, "errorx and error_y must be in absolute value steps, no negatives!"
     is_row_transition = ((col == 0 and row % 2 == 1) or (col == num_cols-1 and row % 2 == 0))
     if is_row_transition == True: # moving to different row
         v_direction = 'down'
@@ -212,15 +211,15 @@ def get_next_tile_vector(row:int, col:int, width:int, height:int, num_cols:int, 
         h_direction = 'right' if (row % 2 == 0) else 'left'
         v_direction = None
     print(f"width={width}, error_x={error_x}, num_steps={num_steps}, height={height}, error_y={error_y}")
-    step_x = math.floor(width-error_x) if h_direction != None else 0
-    step_y = math.floor(height-error_y) if v_direction != None else 0
+    step_x = math.floor(width - error_x) if h_direction is not None else 0
+    step_y = math.floor(height + error_y) if v_direction is not None else 0
     print(f"h_direction={h_direction}, v_direction={v_direction}, step_x={step_x}, step_y={step_y}")
     return (h_direction, v_direction, step_x, step_y)
 
 def match_alignment_markers_by_coordinates(dest_marks, src_marks, src_marks_shifted, img_h, img_w):
 
     img_diagonal = np.sqrt(img_h**2 + img_w**2)
-    match_threshold = 0.05 * img_diagonal
+    match_threshold = 0.08 * img_diagonal
     dists = cdist(dest_marks, src_marks_shifted)
     row_ind, col_ind = linear_sum_assignment(dists)
 
