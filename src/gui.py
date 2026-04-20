@@ -14,6 +14,7 @@ from pathlib import Path
 from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.ttk import Progressbar
 from typing import Callable, List, Optional
+from pycpd import RigidRegistration
 
 import cv2
 import numpy as np
@@ -31,6 +32,7 @@ from stage_control.grbl_stage import GrblStage
 from stage_control.omm_stage import OMMStage
 from stage_control.stage_controller import StageController
 import matplotlib.pyplot as plt
+from tiling_utils import detect_marks_for_slam, rf_detr_preprocess
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
@@ -3708,6 +3710,64 @@ class ImageStitchingFrame:
         cv2.imwrite(output_path, canvas)
         return canvas
 
+class MultiLayerAlignFrame:    
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+            self.frame = ttk.Frame(parent)
+            self.event_dispatcher = event_dispatcher
+
+            self.capture_button = ttk.Button(
+                self.frame, 
+                text="Detect Alignment Markers",
+                command=self.detect_alignment_markers
+            )
+            self.capture_button.grid(row=0, column=0)
+
+            self.preview_label = ttk.Label(self.frame)
+            self.preview_label.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+            
+            self.frame.rowconfigure(1, weight=1)
+            self.frame.columnconfigure(0, weight=1)
+
+    def detect_alignment_markers(self):
+        digital_pattern = self.event_dispatcher.prev_pattern_image
+        stitched_image = self.event_dispatcher.stitched_image
+
+        processed_digital_pattern, orig_h, orig_w = rf_detr_preprocess(digital_pattern, layer=2)
+        digital_marks = detect_marks_for_slam(processed_digital_pattern, self.event_dispatcher.model, orig_h, orig_w)
+
+        processed_stitched_pattern, orig_h, orig_w = rf_detr_preprocess(stitched_image, layer=2)
+        stitched_marks = detect_marks_for_slam(processed_stitched_pattern, self.event_dispatcher.model, orig_h, orig_w)
+
+        # sort in row-major order
+        sorted_digital_marks = np.array(sorted(digital_marks, key=lambda item: (item[1], item[0])))
+
+        print(f"number of markers detected: {len(stitched_marks)}")
+        print(f"number of markers detected: {len(digital_marks)}")
+
+        s, R_est, t_est, matches = self.align_stitched_to_digital(stitched_marks, sorted_digital_marks, True)
+        sorted_stitched_marks = self.sort_stitched_alignment_markers(matches, stitched_marks)
+
+    # Align markers in stitched image to those in digital image using CPD registration
+    def align_stitched_to_digital(stitched_marks_centers, digital_marks_centers):
+        digital = digital_marks_centers     # fixed target
+        stitched = stitched_marks_centers   # moving source
+        print(f"X (fixed,  digital):  {digital.shape} points")
+        print(f"Y (moving, stitched): {stitched.shape} points")
+
+        # CPD registration
+        reg = RigidRegistration(X=digital, Y=stitched)
+        transformed_stitched, (s, R_est, t_est) = reg.register()
+
+        matches = np.argmax(reg.P, axis=1) # matches[i] = index in X that Y[i] maps to
+
+        # TY  == s * Y @ R_est.T + t_est   (stitched marks in digital space)
+        print(f"Estimated scale : {s}")
+        print(f"Estimated rotation {R_est}")
+        print(f"Estimated translation: {t_est}")
+        print(f"Matches: {matches}")
+        print(transformed_stitched)
+
+        return (s, R_est, t_est, matches)
 
 def main():
 
