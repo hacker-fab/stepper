@@ -3,6 +3,7 @@ import os
 import queue
 import shutil
 import time
+import PIL
 import toml
 
 import tkinter
@@ -14,12 +15,12 @@ from pathlib import Path
 from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.ttk import Progressbar
 from typing import Callable, List, Optional
+import onnxruntime as rt
 
 import cv2
 import numpy as np
 import serial
 import math
-import onnxruntime as rt
 from PIL import Image, ImageOps, ImageTk
 from ultralytics import YOLO
 from camera.camera_module import CameraModule
@@ -28,13 +29,16 @@ from hardware import ImageProcessSettings, Lithographer, ProcessedImage
 from lib.gui import IntEntry, Thumbnail, FloatEntry
 from lib.img import image_to_tk_image
 from projector import TkProjector
+from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
 from stage_control.grbl_stage import GrblStage
 from stage_control.omm_stage import OMMStage
 from stage_control.stage_controller import StageController
 
+# importing tiling utilities
+from tiling_utils import CONFIDENCE_THRESHOLD, fetch_alignemnt_errors, match_alignment_markers_by_coordinates, rf_detr_preprocess, estimate_transform, detect_marks_for_slam, get_next_tile_vector, px_to_step_x, px_to_step_y, digital_to_cam_view
+
 # TODO: Don't hardcode
-RF_DETR_IMPUT_SIZE = 704
-CONFIDENCE_THRESHOLD = 0.77
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
 #The values set here are not used and instead come from the config file
 DEFAULT_RED_EXPOSURE: float = 4167.0
@@ -98,13 +102,11 @@ def detect_alignment_markers(model, image, draw_rectangle=False):
 
     return detections, display_image 
 
-
 class StrAutoEnum(str, Enum):
     """Base class for string-valued enums that use auto()"""
 
     def _generate_next_value_(name, *_):
         return name.lower()
-
 
 class ShownImage(StrAutoEnum):
     """The type of image currently being displayed by the projector"""
@@ -115,14 +117,12 @@ class ShownImage(StrAutoEnum):
     RED_FOCUS = auto()
     UV_FOCUS = auto()
 
-
 class PatterningStatus(StrAutoEnum):
     """The current state of the patterning process"""
 
     IDLE = auto()
     PATTERNING = auto()
     ABORTING = auto()
-
 
 class Event(StrAutoEnum):
     """Events that can be dispatched to listeners"""
@@ -133,11 +133,11 @@ class Event(StrAutoEnum):
     IMAGE_ADJUST_CHANGED = auto()
     PATTERN_IMAGE_CHANGED = auto()
     MOVEMENT_LOCK_CHANGED = auto()
+    EXPOSURE_TIME_CHANGED = auto()
     EXPOSURE_PATTERN_PROGRESS_CHANGED = auto()
     PATTERNING_BUSY_CHANGED = auto()
     PATTERNING_FINISHED = auto()
     CHIP_CHANGED = auto()
-
 
 class MovementLock(StrAutoEnum):
     """Controls whether stage position can be manually adjusted"""
@@ -146,7 +146,6 @@ class MovementLock(StrAutoEnum):
     XY_LOCKED = auto() # Only Z (focus) is free to move to avoid smearing UV focus pattern
     LOCKED = auto()  # No positions can move to avoid disrupting patterning
 
-
 class RedFocusSource(StrAutoEnum):
     """The source image to use for red focus mode"""
 
@@ -154,7 +153,6 @@ class RedFocusSource(StrAutoEnum):
     SOLID = auto()  # Shows a solid red screen
     PATTERN = auto()  # Uses the blue channel from the pattern image
     INV_PATTERN = auto()  # Uses the inverse of the blue channel from the pattern image
-
 
 @dataclass
 class AlignmentConfig:
@@ -167,7 +165,6 @@ class AlignmentConfig:
     x_scale_factor: float
     y_scale_factor: float
 
-
 @dataclass
 class LithographerConfig:
     stage: StageController
@@ -176,7 +173,6 @@ class LithographerConfig:
     red_exposure: float
     uv_exposure: float
     alignment: AlignmentConfig
-
 
 @dataclass
 class ExposureLog:
@@ -205,6 +201,24 @@ class ExposureLog:
             d["aborted"],
         )
 
+# This serves as configurations for the Tiling Feature
+@dataclass
+class TilingParameters:
+    align_image: Image
+    t_w_px: str # not used
+    t_h_px: int # not used
+    overlay_x_px: int # not used
+    overlay_y_px: int # not used
+    ratio: float
+    stride_x: int
+    stride_y: int
+    num_rows: int
+    num_cols: int
+    prefix_path: str
+    px_to_step_x: float
+    px_to_step_y: float
+    step_error_threshold_x: int
+    step_error_threshold_y: int
 
 @dataclass
 class ChipLayer:
@@ -217,7 +231,6 @@ class ChipLayer:
     def from_disk(cls, d):
         return cls([ExposureLog.from_disk(ex) for ex in d["exposures"]])
 
-
 @dataclass
 class Chip:
     layers: List[ChipLayer]
@@ -228,7 +241,6 @@ class Chip:
     @classmethod
     def from_disk(cls, d):
         return cls([ChipLayer.from_disk(layer) for layer in d["layers"]])
-
 
 class EventDispatcher:
     hardware: Lithographer
@@ -414,7 +426,7 @@ class EventDispatcher:
             self.solid_red_image = Image.new("RGB", self.hardware.projector.size(), "red")
 
         img = self._red_focus_source()
-
+        print(f"_refresh_red_focus: size: {self.image_adjust_position}, posterization: {self.posterize_strength}, projector size: {self.hardware.projector.size()}, border size = {self.border_size}")
         self.red_focus.update(
             image=img,
             settings=ImageProcessSettings(
@@ -481,7 +493,6 @@ class EventDispatcher:
         set_point = (x, y, z)
 
         if self.hardware.stage.has_homing():
-            print(f"Moving to absolute: {set_point}")
             ok, msg = self._check_bounds(set_point)
             if not ok:
                 self.create_warning(msg)
@@ -522,8 +533,7 @@ class EventDispatcher:
     def move_relative(self, coords: dict[str, float]):
 
         if(self.hardware.stage.has_homing()): # debugging statements
-            print(f"Moving: {coords}")
-            print(f"Current position: {self.stage_setpoint[0]}, {self.stage_setpoint[1]}, {self.stage_setpoint[2]}")
+            print(f"Moving by: {coords} | Current position: {self.stage_setpoint[0]}, {self.stage_setpoint[1]}, {self.stage_setpoint[2]}")
         # find new coordinates -> some nuance exists between work and gui positioning
         # in work position, the x moves in negative direction (away from home) and y moves in positive direction (away from home
         x = self.stage_setpoint[0] + coords.get("x", 0)
@@ -611,6 +621,7 @@ class EventDispatcher:
         print("Query Config Complete.")
 
     def set_image_position(self, x, y, t):
+        print("invoked: set_image_position")
         self.image_adjust_position = (x, y, t)
         self._refresh_red_focus()
         self._refresh_uv_focus()
@@ -724,7 +735,7 @@ class EventDispatcher:
         
         self.on_event(Event.MOVEMENT_LOCK_CHANGED)
 
-    def autofocus(self, blue_only, log=False):
+    def autofocus(self, blue_only, log=False, search=20, start=None):
         if not self.camera:
             print("No camera connected, skipping autofocus")
             return
@@ -744,16 +755,14 @@ class EventDispatcher:
             except FileExistsError:
                 pass
             log_file = open('aftest/log.csv', 'w')
-        
-        print("Starting autofocus")
-        
+                
         if self.hardware.stage.has_homing():
 
             counter = 0
             def sample():
                 def one_sample():
                     return fetch_focus_score(self.camera_image, blue_only=blue_only, log=True)
-                focus_score = sum([one_sample() for _ in range(5)])/5
+                focus_score = sum([one_sample() for _ in range(3)])/3
                 print("focus average:", focus_score)
                 nonlocal counter
                 if log:
@@ -765,11 +774,14 @@ class EventDispatcher:
             print("Starting Autofocus...")
             best_score = -1.0
             best_z = 0
-            z_base = self.hardware.stage.get_autofocus()
+            if start == None:
+                z_base = self.hardware.stage.get_autofocus()
+            else:
+                z_base = start
 
             # account for uv mode, where z-focus is different
             if blue_only == True:
-                z_base += 50.0
+                z_base -= 50.0
                 if(self.move_absolute({"z": z_base})) == False:
                     self.create_warning("Failed autofocus, z-stage can't go past boundary limits")
                     self.set_autofocus_busy(False)
@@ -777,8 +789,8 @@ class EventDispatcher:
                 self.non_blocking_delay(1.0)
 
             else:
-                for i in range(-20, 20, 2):
-                    if not (self.move_absolute({"z": z_base+i})):
+                for i in range(-search, search, 2):
+                    if not (self.move_absolute({"z": (z_base+i)})):
                         self.create_warning("Failed autofocus, z-stage can't go past boundary limits")
                         self.set_autofocus_busy(False)
                         return
@@ -881,49 +893,6 @@ class EventDispatcher:
         self.set_autofocus_busy(False)
         print("Finished autofocus")
     
-    def detect_marks_for_slam(self, img, session):
-        """
-        Detects alignment markers for tiling SLAM algorithm
-        Returns an array of dictionary coordinates:
-        Example: arr[0] = {"center": (x,y), "left":(x,y), "right":(x,y), "top":(x,y), "bottom":(x,y)}
-        """
-        vis = img.copy()
-        orig_h, orig_w = vis.shape[:2]
-        img_resized = cv2.resize(vis, (RF_DETR_IMPUT_SIZE, RF_DETR_IMPUT_SIZE)) # fsr it only accepts one size
-        img_input = img_resized.transpose(2, 0, 1)  # HWC -> CHW
-        img_input = np.expand_dims(img_input, 0).astype(np.float32) / 255.0
-
-        # Run inference
-        input_name = session.get_inputs()[0].name
-        boxes, scores = session.run(None, {input_name: img_input})
-
-        boxes = boxes[0] 
-        scores = scores[0] 
-
-        markers = []
-        for i in range(len(boxes)):
-            class_id = np.argmax(scores[i])
-            confidence = 1 / (1 + np.exp(-scores[i][class_id]))
-            if confidence > CONFIDENCE_THRESHOLD:
-                x, y, w, h = boxes[i]
-                
-                # fetch centers, and scale back to original image size
-                cx = int(x * orig_w)
-                cy = int(y * orig_h)
-                bw = int(w * orig_w)
-                bh = int(h * orig_h)
-
-                marker = {
-                    "center": (cx, cy),
-                    "left":   (cx - bw // 2, cy),
-                    "right":  (cx + bw // 2, cy),
-                    "top":    (cx, cy - bh // 2),
-                    "bottom": (cx, cy + bh // 2)
-                }
-                markers.append(marker)
-                print(f"Detection: class={class_id}, confidence={confidence:.2f} ->\ncoordinates: {marker}\n")
-        return markers
-    
     def get_model(self, path: str):
         """
         Based on which model we're using, we will feed the model
@@ -957,7 +926,6 @@ class EventDispatcher:
     def set_snapshot_directory(self, directory: Path):
         self.snapshot_directory = directory
         self.snapshot_directory.mkdir(exist_ok=True)
-
 
 class SnapshotFrame:
     """
@@ -1003,7 +971,6 @@ class SnapshotFrame:
 
     def _refresh_name_preview(self):
         self.name_preview.configure(text=f"Output File: {self._next_filename()}")
-
 
 class CameraFrame:
     def __init__(
@@ -1463,6 +1430,7 @@ class ImageAdjustFrame:
 
         def callback_set():
             x, y, t = self._position()
+            print(f"setting image position: {x}, {y}, {t}")
             event_dispatcher.set_image_position(x, y, t)
 
         self.set_position_button = ttk.Button(self.absolute_frame, text="Set Image Position", command=callback_set)
@@ -1681,7 +1649,6 @@ class ImageSelectFrame:
 
         self.label = ttk.Label(self.frame, text=button_text)
         self.label.grid(row=1, column=0)
-
 
 class PatternDisplayFrame: # read only pattern display in red and uv focusing mode
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -1941,7 +1908,6 @@ class ChipFrame:
             pos = f"{ex.coords[0]},{ex.coords[1]},{ex.coords[2]}"
             self.cur_layer_view.insert("", "end", ex_id, image=self._get_thumbnail(ex.path), values=(pos,))
 
-
 class ExposureFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
@@ -1993,13 +1959,17 @@ class ExposureFrame:
         self.posterize_cutoff_entry.widget.grid(row=2, column=2, sticky="nesw")
         self.posterize_cutoff_entry.widget["state"] = "disabled"
 
+        def on_change_exposure(new_exposure):
+            self.exposure_time_entry.set(new_exposure)
+
+        event_dispatcher.add_event_listener(Event.EXPOSURE_TIME_CHANGED, on_change_exposure)
+
     # returns threshold percentage if posterizing is enabled, else None
     def _posterize_strength(self) -> Optional[int]:
         if self.posterize_enable_var.get():
             return self.posterize_cutoff_entry.get()
         else:
             return None
-
 
 class PatterningFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -2050,7 +2020,6 @@ class PatterningFrame:
         # TODO: What is the correct size?
         self.thumb_image = image_to_tk_image(img.resize(THUMBNAIL_SIZE))
         self.preview_tile.configure(image=self.thumb_image)  # type:ignore
-
 
 class RedModeFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -2137,7 +2106,6 @@ class RedModeFrame:
 
     def red_focus_image(self):
         return self.red_focus_frame.thumb.image
-
 
 class UvModeFrame:
     def __init__(self, parent, event_dispatcher):
@@ -2315,6 +2283,76 @@ class GlobalSettingsFrame:
         self.realtime_detection_check.grid(row=1, column=0, columnspan=2)
         self.realtime_detection_var.trace_add("write", set_realtime_detection)
 
+        def auto_align():
+
+            print("\Auto alignment")
+            event_dispatcher.set_red_focus_source(RedFocusSource.PATTERN)
+            event_dispatcher.set_red_focus_image(event_dispatcher.pattern_image)
+
+            pattern_img = event_dispatcher.camera_image.copy()
+            cv2.imwrite("align.png", pattern_img) 
+
+            event_dispatcher.non_blocking_delay(0.5)
+            event_dispatcher.set_red_focus_source(RedFocusSource.SOLID)
+
+            cam_img = event_dispatcher.camera_image.copy()
+            cv2.imwrite("cam.png", cam_img)
+
+            dx, dy, dr = fetch_alignemnt_errors(event_dispatcher.model, pattern_img, cam_img, 2)
+            print(f"fetch_alignemnt_errors returned with {dx}, {dy}, {dr}")
+            
+            if(dx == None and dy == None and dr == None):
+                dx, dy, dr = 0,0,0
+                self.model.create_warning("Couldn't find alignment markers. Please align manually")
+                return
+
+            error_x = round(dx*px_to_step_x) # scale pixels to number of steps  
+            error_y = round(dy*px_to_step_y) # scale pixels to number of steps 
+            print(f"fine transform is: {error_x}, {error_y}, with rotation {dr} (steps)")
+
+            tries = 0
+            can_exit = False
+            while tries < 10:
+
+                # if close enough, just move the pattern digitally
+                if(can_exit and abs(error_x) <= 10 and abs(error_y) <= 10):
+                    event_dispatcher.set_image_position(error_x, error_y, dr)
+                    event_dispatcher.non_blocking_delay(0.5)
+                    print("Done auto-alignment. Setting image rotation and offset for patterning")
+                    return
+                
+                # adjust
+                print(f"\ntry {tries}: move_relative error_x{-error_x}, and error_y={error_y}")
+                event_dispatcher.move_relative({'x': -error_x, 'y': error_y})
+                event_dispatcher.non_blocking_delay(0.5)
+                
+                # capture and detect
+                cam_img = event_dispatcher.camera_image.copy()
+                print(f"Calling fetch_alignemnt_errors")
+                dx, dy, dr = fetch_alignemnt_errors(event_dispatcher.model, cam_img, pattern_img, 2)
+                print(f"fetch_alignemnt_errors reuturned iwth {dx}, {dy}, {dr}")
+                
+                if(dx == None and dy == None and dr == None):
+                    print(f"moving back a stride...")
+                    # move back
+                    event_dispatcher.move_relative({'x': error_x, 'y': -error_y})
+                    event_dispatcher.non_blocking_delay(0.5)
+                    error_x+=5 # small adjustment in steps size
+                    error_y-=5 # small adjustment in steps size
+                    tries += 1
+                    can_exit = False
+                    continue
+                
+                # store errors so next movement accomodates for them
+                error_x = round(dx*px_to_step_x) # scale pixels to number of steps 
+                error_y = round(dy*px_to_step_y) # scale pixels to number of steps 
+                can_exit = True
+                print(f"error_x{error_x}, and error_y={error_y}")
+
+                tries += 1
+                if tries == 10:
+                    self.model.create_warning("Couldn't find alignment markers.Please align manually.")
+        
         def do_align():
             h, w, _ = event_dispatcher.camera_image.shape
             markers, _ = detect_alignment_markers(event_dispatcher.model, event_dispatcher.camera_image)
@@ -2351,7 +2389,8 @@ class GlobalSettingsFrame:
         self.alignbutton = ttk.Button(
             self.frame, 
             text="Align :)", 
-            command=do_align, 
+            #command=do_align, 
+            command=auto_align,
             state="disabled" if event_dispatcher.model is None else "normal",
         )
         self.alignbutton.grid(row=2, column=1)
@@ -2440,7 +2479,6 @@ class GlobalSettingsFrame:
         self.detect_button = ttk.Button(self.frame, text="Detect Fiducials", command=lambda: event_dispatcher.detect_marks_for_slam(event_dispatcher.camera_image, event_dispatcher.model))
         self.detect_button.grid(row=3, column=0, sticky="ew")
 
-
 class ExposureHistoryFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.LabelFrame(parent, text="Exposure History")
@@ -2461,7 +2499,6 @@ class ExposureHistoryFrame:
             self.text.insert("end", line)
         self.text["state"] = "disabled"
 
-
 class OffsetAmountFrame:
     def __init__(self, parent, label, default_offset):
         self.frame = ttk.LabelFrame(parent, text=label)
@@ -2479,138 +2516,307 @@ class OffsetAmountFrame:
 
 class TilingFrame:
     def __init__(self, parent, model: EventDispatcher):
-        self.frame = ttk.LabelFrame(parent, text="Tiling")
-        self.model = model
 
-        self.red_to_uv_offset = -40
+        self.params = TilingParameters(None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        
+        # constants that we can tune
+        self.params.ratio = 0.5
+        self.red_to_uv_offset = 60
+        self.red_to_pattern_offset = 10
+        self.params.px_to_step_x = px_to_step_x
+        self.params.px_to_step_y = px_to_step_y
+        self.params.step_error_threshold_x = 10
+        self.params.step_error_threshold_y = 10
+        self.leeway_w_steps = 10
+        self.leeway_h_steps = 10
+        self.projection_width_steps = 1037 # steps 
+        self.projection_height_steps = 583 # steps
 
         self.overall_pattern_size_w = 0
         self.overall_pattern_size_h = 0
+        self.overlay_w_px = 0
+        self.overlay_h_px = 0
 
-        #Defaults set based on DLP471TP and a 10x objective
+        self.segmented = False
+        self.exposure_time = 30000
+        self.model = model
+
+        """
+        self.tile_width, self.tile_height = 3840, 2160 # in pixels, defined in TilingFrame
+        # each snapshot captured is 1920 x 1080 pixels
+        """
+        
+        self.frame = ttk.LabelFrame(parent, text="Tiling")
+        
+        self.layer = tkinter.IntVar(self.frame, value=1) # default is layer 1
+
+        def on_layer_change(*args):
+            try:
+                # Attempt to get the integer value
+                current_layer = self.layer.get()
+                if(current_layer == 1):
+                    self.model.on_event(Event.EXPOSURE_TIME_CHANGED, self.exposure_time)
+                else:
+                    self.model.on_event(Event.EXPOSURE_TIME_CHANGED, 8000)
+                self.layer.set(current_layer)
+                print(f"on_layer_change: {current_layer}")
+                
+            except tkinter.TclError:
+                pass
+            
+        self.layer.trace_add("write", on_layer_change)
+
+        # Defaults set based on DLP471TP and a 10x objective
         #5.4 um Pixel Pitch
         #Width 10.368 mm
         #Height 5.832 mm
-        # Move in X = 10.368mm / 10 = 1037um
+        # Move in X = 10.368 mm / 10 = 1037um
         # Move in Y = 5.832 mm / 10 = 538.2 um ~ 539 um
-        #Subtraction amounts are there to tune the offset for the alignment markers
+        # Subtraction amounts are there to tune the offset for the alignment markers
         self.x_settings = OffsetAmountFrame(self.frame, "X", 1037-54) #Move amount between exposures in X
         self.y_settings = OffsetAmountFrame(self.frame, "Y", 539-27)  #Move amount between exposures in y
+        
+        def snake_pattern_alignment_errors(model, dest_img, src_img, 
+                        dir_x=None, dir_y=None, step_x:int=0, step_y:int=0, layer=1, 
+                        src_pattern=False, dest_pattern=False) -> tuple[float, float, float]:
+            """
+            Takes in 2 images:
+            - `src_img`: original image (either former location or pattern image)
+            - `dest_img`: new image (either new offset or raw red focus)
+            - `dir_x, dir_y`: x direction, y direction stage moved
+            - 'step_x, step_y`: in stepper steps, how many taken per axis
+            - `src_pattern, dest_pattern`: booleans that indicate whether image is digital (False --> camera)
 
-        #Tiling verisons of alignment
-        def detect_alignment_markers_tiling(yolo_model, image, draw_rectangle=False, edge=None, edge_fraction=0.25):
-            #Detects alignment markers and optionally filters detections by image edge(s).
-            #yolo_model: YOLO model
-            #image: image to detect on 
-            #draw_rectangle: If True, draw rectangles
-            #edge: 'left', 'right', 'top', or a list like ['left', 'right'] where markers are expected
-                                                    #none means that markers are expect on all edges
-            #edge_fraction: Fraction of width/height considered as edge region
+            Preconditions:
+            - imgs must be of same size (or scaled to same size for convenience)
+            - step_size is given in stepper steps
+
+            Match camera detections to pattern detections by nearest-neighbor
+            after normalizing for scale/translation.Then calculates transform
+            Returns list of tuple(dx, dy, rotation degree) pairs (pixels)
+            """
+            assert src_img is not None and dest_img is not None, "Error: one or both images are None"
+            assert ((step_x >= 0) and (step_y >= 0)), "Error: step size cannot be negative, use direction args for negatives"
+            # calculate step size
+            step_size_x_px = round(step_x / self.params.px_to_step_x) # convert steps to pixels => modified to be other way around
+            step_size_y_px = round(step_y / self.params.px_to_step_y) # convert steps to pixels
+            print(f"step size calculations (pixels): dir_x {dir_x}, dir_y {dir_y}, step_size_x_px {step_size_x_px}, step_size_y_px {step_size_y_px}")
+
+            # pre-processing
+            dest_processed, d_h, d_w = rf_detr_preprocess(dest_img, layer+1 if dest_pattern == True else layer)
+            src_processed, s_h, s_w = rf_detr_preprocess(src_img, layer+1 if src_pattern == True else layer)
+
+            # intermediate check
+            assert dest_processed.shape == src_processed.shape, "Error: images are differently sized, exiting function"
+
+            # detect raw alignment marks -> raw marks are in pixels
+            src_marks_raw = detect_marks_for_slam(src_processed, model, d_h, d_w, CONFIDENCE_THRESHOLD) # assume returning [dict{}]
+            dest_marks_raw = detect_marks_for_slam(dest_processed, model, s_h, s_w, CONFIDENCE_THRESHOLD) # assume returning [dict{}]
+            print("detected src mark count: ", len(src_marks_raw), "detected dest mark count: ", len(dest_marks_raw))
+            # detection failed: no correction needed, just default to trusting stage steps
+            if len(dest_marks_raw) == 0 or len(src_marks_raw) == 0:
+                print("Early exit: No markers detected in one or both images")
+                return (None, None, None)
+
+            # take centroids of each set of marks
+            dest_marks = [mark["center"] for mark in dest_marks_raw]
+            src_marks = [mark["center"] for mark in src_marks_raw]
+            print(f"raw dest_marks: {dest_marks}")
+            print(f"raw src_marks: {src_marks}")
+
+            # if direction and step size are defined, then we should offset the src
+            # img and bring it close to dest markers and match them, this maximizes
+            # the probability that we find correct matches without needing to run some
+            # crazy algorithm that takes forever ;)
+
+            step_dx = 0
+            step_dy = 0
+            src_marks_shifted = src_marks.copy()  # default: no shift
+
+            # offset src_img's detections so they can match with current camera img
+            shift_x = 0
+            shift_y = 0
+
+            if dir_x == 'right':
+                shift_x = +step_size_x_px
+            elif dir_x == 'left':
+                shift_x = -step_size_x_px
+
+            if dir_y == 'up':
+                shift_y = +step_size_y_px 
+            elif dir_y == 'down':
+                shift_y = -step_size_y_px  
+
+            step_dx = shift_x
+            step_dy = shift_y
+            print(f"shift size (px): step_dx {step_dx}, step_dy={step_dy}")
+            src_marks_shifted = [(x + shift_x, y + shift_y) for x, y in src_marks]
+            print(f"new src_marks that are shifted: {src_marks_shifted}\n")
+
+            # match coordinates to closest coordinates -> match-finder alg
+            img_h, img_w = dest_img.shape[1], dest_img.shape[0]  
+            matched_dest, _, matched_src_shifted = match_alignment_markers_by_coordinates(dest_marks, src_marks, src_marks_shifted, img_h, img_w)
+            print("\nmatched_dest_marks", matched_dest)
+            print("matched_src_shifted_marks", matched_src_shifted)
+            # check if we should proceed with error correction
+            if len(matched_dest) < 1:
+                print(f"Warning: {len(matched_dest)} valid match(es) found, need at least 2 for rotation. Skipping correction.")
+                return (0, 0, 0)
+
+            # calculate transform in pixels and rotation
+            dx, dy, d0 = estimate_transform(np.array(matched_dest), np.array(matched_src_shifted))
+            print(f"calculated estimate_transform, {dx}, {dy}, {d0}")
+            if len(matched_dest) == 1:
+                d0 = 0.0
+            if abs(d0) >= 90.0:
+                self.model.create_warning(f"Error: chip is rotated from previous layer. Please correct rotation and re-pattern. Skipping errors")
+                return (0, 0, 0)
+
+            total_dx, total_dy, d0 = (dx, dy, d0) # removed dx+step_x, removed dy+step_y
+            print(f"error transform result (px): {round(total_dx)}, {round(total_dy)}, {d0}")
+
+            return (round(total_dx), round(total_dy), d0)
+
+        def slam_way_to_target(model, row:int, col:int, num_rows:int, num_cols:int, width:int, height:int, ratio:int, layer, src_img, dest_img):
+            """
+            Takes in 2 images:
+            - `model`: marker detection model (likely RF-DETR)
+            - `row, col`: tile row, tile column
+            - `num_cols`: total number of tile columns in pattern
+            - `width, height`: steps to take in each direction
+            - `partial_steps`: number of steps to take to get to next tiling location on stage
+            - `layer`: layer 1 for first layer, 2, for next, etc. 
+            - `src_img, dest_img`: captures of destination (where you currently are), source (where you came from, or a pattern image for alignment feature)
+            """
+            error_y = 0 # steps
+            error_x = 0 # steps
+            h_direction = None
+            v_direction = None
             
-            detections = []
-            display_image = image.copy()
-            try:
-                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                original_height, original_width = image_rgb.shape[:2]
-                resized = cv2.resize(image_rgb, (640, 640))
-                results = yolo_model(resized)
-                boxes = results[0].boxes
+            num_iterations = math.ceil(1 / ratio)
+            # step-alignment
+            for _ in range(num_iterations):
+                
+                # # determine next step direction (and) size
+                h_direction, v_direction, step_x, step_y = get_next_tile_vector(row, col, width, height, num_rows, num_cols, num_iterations, error_x, error_y)
+                print(f"\nnext tile vector returned: h_direction={h_direction}, v_direction={v_direction}, step_x={step_x}, step_y={step_y}")
 
-                if isinstance(edge, str):
-                    edge = [edge]  # allow single string or list
+                # calculate relative position and move there
+                dx_step = math.floor((step_x if h_direction == 'right' else -step_x) if h_direction != None else 0)
+                dy_step = math.floor((step_y-15 if v_direction == 'down' else -step_y+15) if v_direction != None else 0) # y-axis needs some leeway, it tends to overstep down
 
-                for box in boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    x1 = int(x1 * original_width / 640)
-                    x2 = int(x2 * original_width / 640)
-                    y1 = int(y1 * original_height / 640)
-                    y2 = int(y2 * original_height / 640)
-                    x_center = (x1 + x2) / 2
-                    y_center = (y1 + y2) / 2
+                # move the stage to next half-step + error corrected coordiantes
+                print(f"moving a stride...")
+                self.model.move_relative({'x': -dx_step, 'y': -dy_step})
+                self.model.non_blocking_delay(1.0)
 
-                    # If edge filtering is enabled
-                    if edge is not None:
-                        if 'left' in edge and x_center > original_width * edge_fraction:
-                            continue
-                        if 'right' in edge and x_center < original_width * (1 - edge_fraction):
-                            continue
-                        if 'top' in edge and y_center > original_height * edge_fraction:
-                            continue
+                # detect alignment errors from stage movement
+                self.model.autofocus(blue_only=False, search=4, start=self.model.stage_setpoint[2])
+                wait()
+                
+                dest_img = self.model.camera_image.copy()
+                self.model.non_blocking_delay(0.5)
+                
+                # fetch alignment error
+                dx_step = abs(dx_step)
+                dy_step = abs(dy_step)
+                print(f"\nCalling alignment_errors with h={h_direction}, v={v_direction}, dx_step {dx_step} and dy_step {dy_step}, layer {layer}")
+                dx, dy, dr = snake_pattern_alignment_errors(model, dest_img, src_img, h_direction, v_direction, dx_step, dy_step, layer, 
+                                                                                                    src_pattern=False, dest_pattern=False)
+                print(f"alignment_errors returned with derivatives (pixels): {dx}, {dy}, {dr}")
 
-                    detections.append(((x1, y1), (x2, y2)))
-                    if draw_rectangle:
-                        cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
+                if(dx == None and dy == None and dr == None):
+                    dx, dy, dr = 0,0,0
+                    self.model.create_warning("Couldn't find alignment markers. Warning: Tiling may fail.")
 
-                print(f"Detected {len(detections)} marker(s)")
-            except Exception as e:
-                print(f"Detection failed: {e}")
+                # store errors so next movement accomodates for them
+                error_x = round(dx*self.params.px_to_step_x) # scale pixels to number of steps  
+                error_y = round(dy*self.params.px_to_step_y) # scale pixels to number of steps 
+                print(f"transform is: {error_x}, {error_y}, with rotation {dr} (steps)")
 
-            return detections, display_image
+                # set src to dest
+                src_img = dest_img.copy()
 
-        def do_align_tiling(edge):
-            #edge = ['left', 'right', 'top']
-            h, w, _ = model.camera_image.shape
+            # fine-alignment
+            print("\nFine alignment")
+            src_img = self.model.camera_image.copy()
+            dest_img = self.params.align_image.copy()
+            print(f"Calling alignment_errors")
+            dx, dy, dr = snake_pattern_alignment_errors(model, dest_img, src_img, None, None, 0, 0, layer=layer, src_pattern=False, dest_pattern=True)
+            print(f"alignment_errors returned with {dx}, {dy}, {dr}")
+            
+            if(dx == None and dy == None and dr == None):
+                dx, dy, dr = 0,0,0
+                self.model.create_warning("Couldn't find alignment markers. Warning: Tiling may fail.")
 
-            # Detect markers on the left, right, and top edges
-            markers, _ = detect_alignment_markers_tiling(model.model, model.camera_image, edge)
-            if len(markers) == 0:
-                print("No markers detected.")
-                return
+            error_x = round(dx*self.params.px_to_step_x) # scale pixels to number of steps  
+            error_y = round(dy*self.params.px_to_step_y) # scale pixels to number of steps 
+            print(f"fine transform is: {error_x}, {error_y}, with rotation {dr} (steps)")
 
-            alignment = model.config.alignment
-            dx, dy = 0.0, 0.0
-            count_x, count_y = 0, 0
+            tries = 0
+            can_exit = False
+            while tries < 10:
 
-            for m in markers:
-                xy0, xy1 = m
-                x0, y0 = xy0
-                x1, y1 = xy1
-                x = (x0 + x1) / 2 / w
-                y = (y0 + y1) / 2 / h
+                # if close enough, just move the pattern digitally
+                if(can_exit and abs(error_x) <= self.params.step_error_threshold_x and abs(error_y) <= self.params.step_error_threshold_y):
+                    print("exiting slam loop and adjusting image position")
+                    self.model.set_image_position(error_x, error_y, dr)
+                    self.model.non_blocking_delay(0.5)
+                    dest_img = self.params.align_image.copy()
+                    return (self.model.camera_image.copy(), dest_img)
+                
+                # adjust
+                print(f"\ntry {tries}: move_relative error_x{-error_x}, and error_y={error_y}")
+                self.model.move_relative({'x': -error_x, 'y': error_y})
+                self.model.non_blocking_delay(0.5)
+                
+                # capture and detect
+                src_img = self.model.camera_image.copy()
+                print(f"Calling snake_pattern_alignment_errors")
+                dx, dy, dr = snake_pattern_alignment_errors(model, dest_img, src_img, None, None, 0, 0, layer=layer, src_pattern=False, dest_pattern=True)
+                print(f"snake_pattern_alignment_errors reuturned iwth {dx}, {dy}, {dr}")
+                
+                if(dx == None and dy == None and dr == None):
+                    print(f"moving back a stride...")
+                    # move back
+                    self.model.move_relative({'x': error_x, 'y': -error_y})
+                    self.model.non_blocking_delay(0.5)
+                    error_x+=5 # small adjustment in steps size
+                    error_y-=5 # small adjustment in steps size
+                    tries += 1
+                    can_exit = False
+                    continue
+                
+                # store errors so next movement accomodates for them
+                error_x = round(dx*self.params.px_to_step_x) # scale pixels to number of steps 
+                error_y = round(dy*self.params.px_to_step_y) # scale pixels to number of steps 
+                can_exit = True
+                print(f"error_x{error_x}, and error_y={error_y}")
 
-                # Horizontal alignment (left/right markers)
-                if x < 0.5:
-                    dx += alignment.x_scale_factor * (alignment.left_marker_x / w - x)
-                    count_x += 1
-                elif x > 0.5:
-                    dx += alignment.x_scale_factor * (alignment.right_marker_x / w - x)
-                    count_x += 1
+                tries += 1
+                if tries == 10:
+                    print(f"\nfine alignment did not converge at tile ({row},{col})")
 
-                # Vertical alignment (top markers only)
-                if y < 0.3:  # top region
-                    dy += alignment.y_scale_factor * (alignment.top_marker_y / h - y)
-                    count_y += 1
-
-            # Average corrections based on detected edges
-            if count_x > 0:
-                dx /= count_x
-            if count_y > 0:
-                dy /= count_y
-
-            # Move accordingly (if no top markers, dy=0)
-            #If a small amount of alignment is needed move the image otherwise move the stage since we have far more percision in moving the image than the stage
-            #The con of this is that large movements of the image result in cropping of the image
-            #TODO calibrate the stage move threshold
-            if(dx < 10 or dy < 10):
-                #move the image instead of the stage
-                model.set_image_position(dx, dy, t=0)
-            else:
-              model.move_relative({'x': dx, 'y': dy})
-              print(f"Alignment correction: dx={dx:.5f}, dy={dy:.5f} using {len(markers)} markers.")
-
-        #function that takes in an arbitrary sized image composed of 3840x2160 tiles
+            return (src_img, dest_img)
+        
+        # function that takes in an arbitrary sized image composed of 3840x2160 tiles
         #with shared alignment marks that are 200 pixels from the edge
         def split_image_with_overlap(image_path, 
-                                          tile_width=3840, 
-                                          tile_height=2160, 
-                                          overlap_x=200, 
-                                          overlap_y=200, 
-                                          output_dir="tiles"):
+                                    tile_width=3840, tile_height=2160, 
+                                    overlap_x=200, overlap_y=200, 
+                                    output_dir="tiles"):
+            
             img = Image.open(image_path)
             img_w, img_h = img.size
             self.overall_pattern_size_w = img_w
             self.overall_pattern_size_h = img_h
             os.makedirs(output_dir, exist_ok=True)
+            
+            ####################### Rachel Insertion ############################################
+            self.overlay_w_px = overlap_x # pixels_digital
+            self.overlay_h_px = overlap_y # pixels_digital
+            print(f"tile_width={tile_width}, tile_height={tile_height}, overlay={overlap_x},{overlap_y}")
+            ####################### Rachel Insertion ############################################
 
             stride_x = tile_width - overlap_x
             stride_y = tile_height - overlap_y
@@ -2643,6 +2849,12 @@ class TilingFrame:
             #Set amount of tiles for later use when exposing
             self.x_settings.amount_var = len(x_positions)
             self.y_settings.amount_var = len(y_positions)
+
+            # Rachel Insertions
+            self.params.num_rows = len(y_positions)
+            self.params.num_cols = len(x_positions)
+            self.params.prefix_path = os.path.join(output_dir, f"")
+
             #Crop and Save the tile images
             for tile_id_y, top in enumerate(y_positions):
                 for tile_id_x, left in enumerate(x_positions):
@@ -2653,60 +2865,11 @@ class TilingFrame:
                     tile = img.crop(box)
                     tile.save(os.path.join(output_dir, f"tile_{tile_id_y},{tile_id_x}.png"))
                     tile_count += 1
-
+            
             print("X amount = "+str(self.x_settings.amount_var))
             print("Y amount = "+str(self.y_settings.amount_var))
             print(f"Saved {tile_count} tiles to {output_dir}")
-
-        #function that patterns a single tile
-        def pattern_for_tile(self, model, x_start, x_dir, x_idx, x_offset, y_start, y_dir, y_idx, y_offset, y_idx_max, x_idx_max, tile_dir="tiles"):
-            #change image
-            image_path = tile_dir+"/tile_"+str(y_idx)+","+str(x_idx)+".png"
-            current_tile = Image.open(image_path)
-            model.set_pattern_image(current_tile, image_path)
-            #move to the next position if not the first tile
-            #the first tile is exposed where the operator(user of the stepper) places it
-            if(~(x_idx == 0 & y_idx == 0)):
-                self.model.move_absolute(
-                    {
-                        "x": x_start + x_dir * x_idx * x_offset,
-                        "y": y_start + y_dir * y_idx * y_offset,
-                    }
-                )
-            #Red autofocus
-            self.model.autofocus(blue_only=False)
-            
-            #align to previous alignment marks if not first tile
-            if(~(x_idx == 0 & y_idx == 0)):
-                if(x_idx !=0 & x_idx!=x_idx_max):
-                    if(y_idx % 2 == 0):
-                        do_align_tiling('left')
-                    else:
-                        do_align_tiling('right')
-                else:
-                    do_align_tiling('top')
-                
-            
-
-            #Do automatic offset for UV then autofocus
-            self.model.move_relative({"z": self.red_to_uv_offset})
-            self.model.non_blocking_delay(0.5)
-            self.model.enter_uv_mode(mode_switch_autofocus=False)
-            self.model.autofocus(blue_only=True)
-
-            #expose the image
-            self.model.begin_patterning()
-
-            #TODO Add second exposure of the alignment markers
-            # I tried doing this with a non blocking delay but didnt have success
-            # I think that loading a pattern of the alignment marks that is hardcoded into the software might be the best bet
-
-            #Offset back to red mode
-            self.model.enter_red_mode(mode_switch_autofocus=False)
-            self.model.move_relative({"z": -1 * self.red_to_uv_offset})
-
-
-
+        
         def segment():
             #create tile directory and segment images
             split_image_with_overlap(model.pattern_image_path)
@@ -2715,51 +2878,122 @@ class TilingFrame:
             image_path = "tiles/tile_"+str(0)+","+str(0)+".png"
             current_tile = Image.open(image_path)
             model.set_pattern_image(current_tile, image_path)
+            self.segmented = True
 
+        def wait():
+            while self.model.autofocus_busy:
+                self.model.non_blocking_delay(1.0)
 
         def on_begin():
-            model.set_red_focus_source(RedFocusSource.PATTERN)
+
+            positions = {}
+            print("Starting Tiling")
+            print("on_begin: setting red focus to be pattern")
+            self.model.set_red_focus_source(RedFocusSource.PATTERN)
+            print("doneset pattern")
+
+            print("on_begin storing align_image")
+            self.params.align_image = model.camera_image.copy()
+            print("on_begin done align_image")
+
+            src_img = model.camera_image.copy() # (1200, 1840, 3)            
+            dest_img = None
+            prev_row = 0
+            prev_col = 0
+
+            if self.layer.get() == 1:
+                self.model.on_event(Event.EXPOSURE_TIME_CHANGED, self.exposure_time)
+
+            overlay_w_steps = self.overlay_w_px * digital_to_cam_view + self.leeway_w_steps 
+            overlay_h_steps = self.overlay_h_px * digital_to_cam_view + self.leeway_h_steps 
+            print(f"overlay_w_steps: {overlay_w_steps}, overlay_h_steps:{overlay_h_steps}")
+
+            self.params.stride_x = int((self.projection_width_steps - overlay_w_steps) * self.params.ratio)
+            self.params.stride_y = int((self.projection_height_steps - overlay_h_steps) * self.params.ratio)
+
+            print(f"strides x,y: {self.params.stride_x}, {self.params.stride_y}\n")
+
+             # iterate row in order
+            for row in range(self.params.num_rows):
+
+                # iterate columns in snake order
+                range_order = range(self.params.num_cols)
+                if row % 2 == 1:
+                    range_order = range_order[::-1]
+
+                for col in range_order:
+
+                    # if first image, no need to move anywhere or align anywhere
+                    if not (row==0 and col==0):
+
+                        print(f"\nSlam_way_to_target: for {row}, {col} from {prev_row}, {prev_col}")
+                        self.model.autofocus(blue_only=False, search=6, start=self.model.stage_setpoint[2])
+                        wait()
+
+                        src_img = self.model.camera_image.copy()
+                        src_img, dest_img = slam_way_to_target(model.model, prev_row, prev_col, self.params.num_rows, self.params.num_cols, 
+                                                                                self.params.stride_x, self.params.stride_y, 
+                                                                                self.params.ratio, self.layer.get(), 
+                                                                                src_img, dest_img)
+
+                    # store location exposure
+                    prev_x, prev_y, _ = self.model.hardware.stage.get_position() 
+                    positions[f"{row}_{col}"] = (prev_x, prev_y) 
+
+                    pattern_path = f"{self.params.prefix_path}tile_{row},{col}.png"
+                    print(f"\nUploading pattern: {self.params.prefix_path}tile_{row},{col}.png")
+                    pattern_img = Image.open(f"{self.params.prefix_path}tile_{row},{col}.png")
+
+                    # focus and expose
+                    model.set_red_focus_source(RedFocusSource.PATTERN)
+                    model.set_pattern_image(pattern_img, pattern_path)
+
+                    if row == 0 and col == 0:
+                        model.move_relative({"z": -1 * self.red_to_uv_offset}) # first one starts from pattern
+                    else:
+                        model.move_relative({"z": -1 * (self.red_to_uv_offset - self.red_to_pattern_offset)})
+
+                    model.non_blocking_delay(2.0)
+                    model.enter_uv_mode(mode_switch_autofocus=False)
+
+                    # expose the image
+                    model.begin_patterning()
+                    # model.on_event(Event.PATTERNING_FINISHED)
+                    
+                    model.enter_red_mode(mode_switch_autofocus=False)
+                    model.move_relative({"z": (self.red_to_uv_offset)})
+                    model.non_blocking_delay(2.0)
+
+                    model.set_red_focus_source(RedFocusSource.SOLID)
+                    self.model.set_image_position(0, 0, 0)
+
+                    print(f"src_img captured, exposed tile # {row}_{col}")
+                    prev_row = row
+                    prev_col = col
             
-            x_amount = self.x_settings.amount_var
-            x_offset = int(self.x_settings.offset_var.get())
-            x_dir = 1 if x_amount > 0 else -1
-            x_amount = abs(x_amount)
+            print("Done Tiling")
+            self.segmented = False
 
-            y_amount = self.y_settings.amount_var
-            y_offset = int(self.y_settings.offset_var.get())
-            y_dir = 1 if y_amount > 0 else -1
-            y_amount = abs(y_amount)
-
-            x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
-            print(f"x_start {x_start}, y_start = {y_start}")
-          
-            #Move in Snake pattern with left to right on even rows and right to left on odd rows
-            for y_idx in range(y_amount):
-                if(y_idx %2 == 0):
-                  for x_idx in range(x_amount):
-                      pattern_for_tile(self, model, x_start, -x_dir, x_idx, x_offset, y_start, -y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
-                      print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
-                else:
-                    for x_idx in range(x_amount - 1, -1, -1):
-                      pattern_for_tile(self, model, x_start, -x_dir, x_idx, x_offset, y_start, -y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
-                      print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
+            print(positions)
+            return positions # steps
 
         #TODO IMPLEMENT ABORT
         def on_abort():
             pass
 
-        #Segment Images must be done before begining tiling
-        #TODO enforce above
         #Tiling check must be done before segment images if needed
         self.tiling_check_button = TilingCheckFrame(self.frame, model)
         self.tiling_check_button.frame.grid(row=0, column = 0)
-        self.segment_images_button = ttk.Button(self.frame, text="Segement Images", command=segment, state="enabled")
+        self.segment_images_button = ttk.Button(self.frame, text="Segement Images", command=segment, state="disabled" if self.segmented else "enabled")
         self.segment_images_button.grid(row=1, column=0)
         self.begin_tiling_button = ttk.Button(self.frame, text="Begin Tiling", command=on_begin, state="enabled")
         self.begin_tiling_button.grid(row=2, column=0)
-        self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
-        self.abort_tiling_button.grid(row=3, column=0)
 
+        self.layer_value = ttk.Entry(self.frame, textvariable=self.layer, state="normal")
+        self.layer_value.grid(row=4, column=0)
+        # TODO: add one please
+        # self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
+        # self.abort_tiling_button.grid(row=3, column=0)
 
 class ProjectorDisplayFrame:
     """Frame to display what the projector is currently showing"""
@@ -3002,8 +3236,10 @@ class MapFrame:
         self.frame = ttk.LabelFrame(parent)
         self.event_dispatcher = event_dispatcher
         
-        # Map dimensions in micrometers
-        self.map_size_um = 10000.0  # 1 cm * 1 cm
+        bounds = event_dispatcher.hardware.stage.get_bounds()
+        self.width_um = bounds["x"][1]
+        self.height_um = bounds["y"][1]
+        self.map_size_um = self.width_um * self.height_um
         
         # Canvas size in pixels
         self.canvas_size = 350
@@ -3215,6 +3451,7 @@ class LithographerGui:
             self.event_dispatcher.query_config()
             if self.event_dispatcher.hardware.stage.has_homing():
                 self.event_dispatcher.home_stage()
+                self.map._redraw_all()
             
             self.event_dispatcher.stage_setpoint = self.event_dispatcher.hardware.stage.get_position()
             print(f"Current GUI Location: {self.event_dispatcher.stage_setpoint}")
