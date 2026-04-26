@@ -24,54 +24,6 @@ step_to_projection_pixels_y = 100.0/160.0
 digital_to_cam_scale_w = 2.0469
 digital_to_cam_scale_h = 1.8
 
-################## Capture and Stitch Utility Functions ##################
-def stitching_preprocess(img):
-    """
-    pre-processing helper for all captured images
-    before capture nd stitch stage in layer 2+ tiling
-
-    Returns the image that has been pre-processed
-    """
-    def crop_image(img, h_start, h_end, w_start, w_end):
-        return img[h_start:h_end, w_start:w_end]
-    
-    preprocessed = img.copy()
-
-    gaussian_kernel_size = (5, 5)
-    preprocessed = cv.cvtColor(preprocessed, cv.COLOR_BGR2GRAY)
-    preprocessed = cv.GaussianBlur(preprocessed, gaussian_kernel_size, 0)
-    h, w = preprocessed.shape[:2]
-    margin_h = 150
-    margin_w = margin_h
-    preprocessed = crop_image(preprocessed, margin_h, h - margin_h, margin_w, w - margin_w)
-    return preprocessed
-
-def read_info_file(directory, info_file="info.txt"):
-    info_file_path = os.path.join(directory, info_file)
-    file = open(info_file_path, 'r')
-    content = file.read()
-    return json.loads(content)
-
-def read_tiles(directory, info):
-    rows = info['rows']
-    cols = info['cols']
-
-    imgs = []
-    img_paths = []
-    for row in range(rows):
-        row_imgs = []
-        row_paths = []
-        for col in range(cols):
-            img_path = os.path.join(directory, f"tile_{row}_{col}.png")
-            row_paths.append(f"tile_{row}_{col}.png")
-
-            img = cv.imread(img_path)
-            preprocessed = stitching_preprocess(img)
-            row_imgs.append(preprocessed)
-        imgs.append(row_imgs)
-        img_paths.append(row_paths)
-    return imgs, img_paths
-
 ################## Alignment and Detection Utility Functions ##################
 def rf_detr_preprocess(img, layer: int = 1):
     """
