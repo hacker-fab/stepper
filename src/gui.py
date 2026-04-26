@@ -15,6 +15,7 @@ from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, t
 from tkinter.ttk import Progressbar
 from typing import Callable, List, Optional
 from pycpd import RigidRegistration
+import onnxruntime as rt
 
 import cv2
 import numpy as np
@@ -235,7 +236,7 @@ class Chip:
 class EventDispatcher:
     hardware: Lithographer
     root: Tk
-    model: Optional[YOLO]
+    model: Optional[YOLO | rt.InferenceSession]
     camera: Optional[CameraModule]
     red_focus: ProcessedImage
     uv_focus: ProcessedImage
@@ -887,6 +888,24 @@ class EventDispatcher:
         self.set_autofocus_busy(False)
         print("Finished autofocus")
     
+    def get_model(self, path: str):
+        """
+        Based on which model we're using, we will feed the model
+        a different session. 'best.pt' indicates YOLO while the onx 
+        file indicates RF-DETR
+        
+        Note to developers: RF-DETR was trained on latent and developed patterns
+        while YOLO model was trained on developed patterns only
+        """
+        if "best" in path:
+            print("Using YOLO model")
+            self.model = YOLO(path)
+        else:
+            print("Using RF_DETR model")
+            session = rt.InferenceSession(path)
+            self.model = session
+        return True
+    
     def initialize_alignment(self, config: LithographerConfig):
         self.config = config
         self.realtime_detection = config.alignment.enabled
@@ -894,10 +913,10 @@ class EventDispatcher:
         try:
             print("loading model")
             model_path = config.alignment.model_path
-            self.model = YOLO(model_path)
+            self.get_model(model_path)
             print("loaded model")
         except Exception as e:
-            print(f"Failed to load YOLO model: {e}")
+            print(f"Failed to load alignment model: {e}")
 
     def set_snapshot_directory(self, directory: Path):
         self.snapshot_directory = directory
