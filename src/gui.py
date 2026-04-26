@@ -297,6 +297,8 @@ class EventDispatcher:
 
         # Detection model
         self.model = None
+        self.num_rows = None
+        self.num_cols = None
 
         # Image processing objects
         self.red_focus = ProcessedImage()
@@ -3670,24 +3672,24 @@ class LithographerGui:
 
 @dataclass
 class ImageCaptureSettings:
-    stride_x_um: int
-    stride_y_um: int
-    total_x_um: int
-    total_y_um: int
-    capture_folder: str
+    stride_x_um: int # x direction stride in um(steps) for stage movement during image capture
+    stride_y_um: int # y direction stride in um(steps) for stage movement during image capture
+    total_x_um: int  # total steps in x direction we need to move
+    total_y_um: int  # total steps in y direction we need to move
+    capture_folder: str # capture folder where we store all data + logs
 
 @dataclass
 class ImageStitchSettings:
-    num_rows: int
-    num_cols: int
-    output_folder: str
-    resize: float
-    debug: bool
-    threshold: int
+    num_rows: int # number of tile rows during pattern segmentation
+    num_cols: int # number of tile col during pattern segmentation
+    output_folder: str # output folder where we store the stitched image (set the same as capture_folder)
+    resize: float # resize factor of the stitched image before we save to the output folder (we do this to prevent it from being massive)
+    debug: bool # flag for debug print
+    threshold: int # error margin we allow before defaulting to expected_dx and expected_dy during stitching
 
 @dataclass
 class TilePreprocessSettings:
-    crop_margin_x_px: int
+    crop_margin_x_px: int # amount we crop to remove weird dark margin in camera snapshot
     crop_margin_y_px: int
     gaussian_kernel_size: tuple[int, int]
 
@@ -3710,6 +3712,10 @@ class ImageStitchingFrame:
         self.frame.columnconfigure(0, weight=1)
 
     def capture_and_stitch(self):
+        """
+        Outer wrapper function for doing capture & stitch
+        Calls on capture_helper to do capturing and stitch_helper to do stitching
+        """
         self.img = self.event_dispatcher.pattern_image
 
         # projection size
@@ -3744,10 +3750,14 @@ class ImageStitchingFrame:
         self.capture_button.config(state='disabled', text="Capturing...")
         self.frame.update()
         
+        # creates a capture folder to store all data collection and logs in
+        # logs will store tile -> stage position mapping, this is useful
+        # for the next step when we have to go to the initial position - alignment marker offset
         curr_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         capture_folder = f"data_collection_{curr_time}/"
         self.event_dispatcher.set_capture_folder(capture_folder)
 
+        # CAPTURE
         captures, captured_positions, num_rows, num_cols = self.capture_helper(
             settings=ImageCaptureSettings(
                 stride_x_um=self.stride_x_um,
@@ -3760,6 +3770,7 @@ class ImageStitchingFrame:
 
         print(f"number of captured images: {len(captures)} x {len(captures[0])}")
 
+        # preprocess the captured tiles
         preprocessed_imgs = self.preprocess_images(captures, settings=TilePreprocessSettings(
             crop_margin_x_px=self.crop_margin_x_px,
             crop_margin_y_px=self.crop_margin_y_px,
@@ -3787,7 +3798,7 @@ class ImageStitchingFrame:
             displayed_image = Image.fromarray(displayed_image)
             self.display_image(displayed_image)
             print("stitching complete!")
-            self.event_dispatcher.on_event(Event.STITCH_COMPLETED, stitched_image)
+            self.event_dispatcher.on_event(Event.STITCH_COMPLETED, stitched_image) # not used for now
         else:
             print("failed to stitch images")
             
@@ -3906,6 +3917,9 @@ class ImageStitchingFrame:
         return captured_imgs, captured_positions, num_rows, num_cols
 
     def preprocess_image(self, img, settings: TilePreprocessSettings):
+        """
+        Converts to grayscale, blurs, and crops weird camera margins
+        """
         img = np.array(img)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         img = cv2.GaussianBlur(img, settings.gaussian_kernel_size, 0)
@@ -3918,6 +3932,9 @@ class ImageStitchingFrame:
         return img
 
     def preprocess_images(self, imgs, settings: TilePreprocessSettings):
+        """
+        Loops through all tiles and preprocesses them
+        """
         result = []
         for row in range(0, len(imgs)):
             row_imgs = []
@@ -3930,6 +3947,11 @@ class ImageStitchingFrame:
         return img[h_start:h_end, w_start:w_end]
 
     def image_alignment(self, dst_img, src_img, display=False):
+        """
+        Image alignment based on SIFT features and RANSAC
+        Check opencv for more info, based off of example code
+        Returns the matrix to align src_img to dst_img
+        """
         sift = cv2.SIFT_create(
             contrastThreshold=0.04,
             edgeThreshold=10
@@ -4015,7 +4037,11 @@ class ImageStitchingFrame:
         return (M, error)
 
     def stitch_helper(self, imgs, stage_positions, settings: ImageStitchSettings):
-        # stich images in a snake like pattern
+        """
+        Stiches images in a snake like pattern
+        Calls the image alignment function on adjacent tiles and grabs the translation in x and y direction
+        Pastes into a canvas and saves to output directory
+        """
         rows = settings.num_rows
         cols = settings.num_cols
         curr_tile = None
