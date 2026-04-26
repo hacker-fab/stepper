@@ -16,6 +16,7 @@ from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, t
 from tkinter.ttk import Progressbar
 from typing import Callable, List, Optional
 import onnxruntime as rt
+from pycpd import RigidRegistration
 
 import cv2
 import numpy as np
@@ -34,6 +35,7 @@ from scipy.spatial.distance import cdist
 from stage_control.grbl_stage import GrblStage
 from stage_control.omm_stage import OMMStage
 from stage_control.stage_controller import StageController
+import matplotlib.pyplot as plt
 
 # importing tiling utilities
 from tiling_utils import CONFIDENCE_THRESHOLD, fetch_alignemnt_errors, match_alignment_markers_by_coordinates, rf_detr_preprocess, \
@@ -140,6 +142,7 @@ class Event(StrAutoEnum):
     PATTERNING_BUSY_CHANGED = auto()
     PATTERNING_FINISHED = auto()
     CHIP_CHANGED = auto()
+
 
 class MovementLock(StrAutoEnum):
     """Controls whether stage position can be manually adjusted"""
@@ -572,6 +575,17 @@ class EventDispatcher:
         self.pattern_image = img
         self.pattern_image_path = path
         self._refresh_pattern()
+    
+    def set_prev_pattern_image(self, img: Image.Image, path: str):
+        self.prev_pattern_image = img
+        self.prev_pattern_image_path = path
+
+    def set_stitched_image(self, img: Image.Image, path: str):
+        self.stitched_image = img
+        self.stitched_image_path = path
+
+    def set_capture_folder(self, capture_folder: str):
+        self.capture_folder = capture_folder
 
     def set_red_focus_image(self, img: Image.Image):
         self.red_focus_image = img
@@ -2146,6 +2160,160 @@ class UvModeFrame:
         self.patterning_frame = PatterningFrame(self.right_frame, event_dispatcher)
         self.patterning_frame.frame.grid(row=1, column=0)
 
+class StitchedPatternUploadFrame:
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        upload_type = "Stitched Pattern"
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Create container frame for centering
+        container = ttk.Frame(self.frame)
+        container.grid(row=0, column=0)
+        
+        # Main pattern upload section
+        self.upload_frame = ttk.LabelFrame(container, text=f"{upload_type} Upload")
+        self.upload_frame.grid(row=0, column=0)
+        
+        # Pattern selector (using existing ImageSelectFrame functionality)
+        self.pattern_selector = ImageSelectFrame(
+            self.upload_frame,
+            f"Select {upload_type}",
+            self._on_pattern_upload
+        )
+        self.pattern_selector.frame.grid(row=0, column=0)
+        
+        # Pattern info display
+        self.info_frame = ttk.LabelFrame(container, text=f"{upload_type} Information")
+        self.info_frame.grid(row=1, column=0)
+        
+        self.pattern_path_var = StringVar(value="No pattern loaded")
+        ttk.Label(self.info_frame, text=f"{upload_type}:").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.info_frame, textvariable=self.pattern_path_var, 
+                 foreground="blue").grid(row=0, column=1, sticky="w", padx=(10,0))
+        
+        # Pattern preview (larger than thumbnail)
+        self.preview_frame = ttk.LabelFrame(container, text=f"{upload_type} Preview")
+        self.preview_frame.grid(row=0, column=1, rowspan=2, padx=10)
+        
+        # Center the container
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_rowconfigure(0, weight=1)
+        
+        # Create larger preview image
+        preview_size = (320, 240)  # Larger than THUMBNAIL_SIZE
+        placeholder = Image.new("RGB", preview_size, "gray")
+        self.preview_photo = image_to_tk_image(placeholder)
+        self.preview_label = ttk.Label(self.preview_frame, image=self.preview_photo)
+        self.preview_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Upload instructions
+        instruction_text = ("Upload your stitched image using the selector above. "
+                          "This component is purely for testing and should be removed")
+        ttk.Label(self.upload_frame, text=instruction_text, 
+                 wraplength=400).grid(row=1, column=0, padx=5, pady=5)
+    
+    def _on_pattern_upload(self, _):
+        """Handle pattern upload"""
+        if self.pattern_selector.thumb.image:
+            print("image uploaded")
+            # Update the event dispatcher with the new pattern
+            self.event_dispatcher.set_stitched_image(
+                self.pattern_selector.thumb.image, 
+                self.pattern_selector.thumb.path
+            )
+            
+            # Update the info display
+            if self.pattern_selector.thumb.path:
+                print("path found")
+                filename = Path(self.pattern_selector.thumb.path).name
+                self.pattern_path_var.set(filename)
+            else:
+                print("pattern uploadded")
+                self.pattern_path_var.set("Pattern uploaded")
+            
+            # Update preview image
+            if self.pattern_selector.thumb.image:
+                print("update preview image")
+                preview_img = self.pattern_selector.thumb.image.copy()
+                preview_img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+                self.preview_photo = image_to_tk_image(preview_img)
+                self.preview_label.configure(image=self.preview_photo)
+
+class PreviousPatternUploadFrame:
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        upload_type = "Previous Layer Pattern"
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Create container frame for centering
+        container = ttk.Frame(self.frame)
+        container.grid(row=0, column=0)
+        
+        # Main pattern upload section
+        self.upload_frame = ttk.LabelFrame(container, text=f"{upload_type} Upload")
+        self.upload_frame.grid(row=0, column=0)
+        
+        # Pattern selector (using existing ImageSelectFrame functionality)
+        self.pattern_selector = ImageSelectFrame(
+            self.upload_frame,
+            f"Select {upload_type}",
+            self._on_pattern_upload
+        )
+        self.pattern_selector.frame.grid(row=0, column=0)
+        
+        # Pattern info display
+        self.info_frame = ttk.LabelFrame(container, text=f"{upload_type} Information")
+        self.info_frame.grid(row=1, column=0)
+        
+        self.pattern_path_var = StringVar(value="No pattern loaded")
+        ttk.Label(self.info_frame, text=f"{upload_type}:").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.info_frame, textvariable=self.pattern_path_var, 
+                 foreground="blue").grid(row=0, column=1, sticky="w", padx=(10,0))
+        
+        # Pattern preview (larger than thumbnail)
+        self.preview_frame = ttk.LabelFrame(container, text=f"{upload_type} Preview")
+        self.preview_frame.grid(row=0, column=1, rowspan=2, padx=10)
+        
+        # Center the container
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_rowconfigure(0, weight=1)
+        
+        # Create larger preview image
+        preview_size = (320, 240)  # Larger than THUMBNAIL_SIZE
+        placeholder = Image.new("RGB", preview_size, "gray")
+        self.preview_photo = image_to_tk_image(placeholder)
+        self.preview_label = ttk.Label(self.preview_frame, image=self.preview_photo)
+        self.preview_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Upload instructions
+        instruction_text = ("Upload your pattern image using the selector above. "
+                          "The previous layer pattern will be used to align with the stitched image")
+        ttk.Label(self.upload_frame, text=instruction_text, 
+                 wraplength=400).grid(row=1, column=0, padx=5, pady=5)
+    
+    def _on_pattern_upload(self, _):
+        """Handle pattern upload"""
+        if self.pattern_selector.thumb.image:
+            # Update the event dispatcher with the new pattern
+            self.event_dispatcher.set_prev_pattern_image(
+                self.pattern_selector.thumb.image, 
+                self.pattern_selector.thumb.path
+            )
+            
+            # Update the info display
+            if self.pattern_selector.thumb.path:
+                filename = Path(self.pattern_selector.thumb.path).name
+                self.pattern_path_var.set(filename)
+            else:
+                self.pattern_path_var.set("Pattern uploaded")
+            
+            # Update preview image
+            if self.pattern_selector.thumb.image:
+                preview_img = self.pattern_selector.thumb.image.copy()
+                preview_img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+                self.preview_photo = image_to_tk_image(preview_img)
+                self.preview_label.configure(image=self.preview_photo)
+
 class PatternUploadFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
@@ -2225,10 +2393,18 @@ class ModeSelectFrame:
         self.notebook = ttk.Notebook(parent)
 
         # Add Pattern Upload tab first
+        self.previous_layer_upload_frame = PreviousPatternUploadFrame(self.notebook, event_dispatcher)
+        self.notebook.add(self.previous_layer_upload_frame.frame, text="Previous Layer Upload")
+
+        self.stitched_image_upload_frame = StitchedPatternUploadFrame(self.notebook, event_dispatcher)
+        self.notebook.add(self.stitched_image_upload_frame.frame, text="Stitched Image Upload")
+
         self.pattern_upload_frame = PatternUploadFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.pattern_upload_frame.frame, text="Pattern Upload")
+        
         self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.red_mode_frame.frame, text="Red Light Alignment Mode")
+        
         self.uv_mode_frame = UvModeFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.uv_mode_frame.frame, text="UV Exposure Mode")
 
@@ -2249,9 +2425,13 @@ class ModeSelectFrame:
 
     def _current_tab(self):
         selected = self.notebook.select()
-        if "patternupload" in selected.lower() or self.notebook.index("current") == 0:
+        if "previouslayer" in selected.lower() or self.notebook.index("current") == 0:
+            return "prevpattern"
+        elif "stitchedimage" in selected.lower() or self.notebook.index("current") == 1:
+            return "stitchedpattern"
+        if "patternupload" in selected.lower() or self.notebook.index("current") == 2:
             return "pattern"
-        elif "redmode" in selected or self.notebook.index("current") == 1:
+        elif "redmode" in selected or self.notebook.index("current") == 3:
             return "red" 
         else:
             return "uv"
@@ -2879,9 +3059,11 @@ class TilingFrame:
             print("Y amount = "+str(self.y_settings.amount_var))
             print(f"Saved {tile_count} tiles to {output_dir}")
         
+            return (len(y_positions), len(x_positions))
+
         def segment():
             #create tile directory and segment images
-            split_image_with_overlap(model.pattern_image_path)
+            model.num_rows, model.num_cols = split_image_with_overlap(model.pattern_image_path)
             #load the first tile for operator placement
             model.set_red_focus_source(RedFocusSource.PATTERN)
             image_path = "tiles/tile_"+str(0)+","+str(0)+".png"
@@ -2997,6 +3179,12 @@ class TilingFrame:
         self.segment_images_button.grid(row=1, column=0)
         self.begin_tiling_button = ttk.Button(self.frame, text="Begin Tiling", command=on_begin, state="enabled")
         self.begin_tiling_button.grid(row=2, column=0)
+        self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
+        self.abort_tiling_button.grid(row=3, column=0)
+        self.image_stitch_button = ImageStitchingFrame(self.frame, model)
+        self.image_stitch_button.frame.grid(row=4, column=0)
+        self.multilayer_alignment_button = MultiLayerAlignFrame(self.frame, model)
+        self.multilayer_alignment_button.frame.grid(row=5, column=0)
 
         self.layer_value = ttk.Entry(self.frame, textvariable=self.layer, state="normal")
         self.layer_value.grid(row=4, column=0)
@@ -3480,6 +3668,558 @@ class LithographerGui:
         # if RUN_WITH_STAGE:
         # serial_port.close()
 
+@dataclass
+class ImageCaptureSettings:
+    stride_x_um: int
+    stride_y_um: int
+    total_x_um: int
+    total_y_um: int
+    capture_folder: str
+
+@dataclass
+class ImageStitchSettings:
+    num_rows: int
+    num_cols: int
+    output_folder: str
+    resize: float
+    debug: bool
+    threshold: int
+
+@dataclass
+class TilePreprocessSettings:
+    crop_margin_x_px: int
+    crop_margin_y_px: int
+    gaussian_kernel_size: tuple[int, int]
+
+class ImageStitchingFrame:
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+
+        self.capture_button = ttk.Button(
+            self.frame, 
+            text="Capture & Stitch", 
+            command=self.capture_and_stitch
+        )
+        self.capture_button.grid(row=0, column=0)
+
+        self.preview_label = ttk.Label(self.frame)
+        self.preview_label.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        
+        self.frame.rowconfigure(1, weight=1)
+        self.frame.columnconfigure(0, weight=1)
+
+    def capture_and_stitch(self):
+        self.img = self.event_dispatcher.pattern_image
+
+        # projection size
+        self.projection_width_um, self.projection_height_um = 1037, 583
+
+        # tile size
+        self.tile_width_px, self.tile_height_px = 3840, 2160
+
+        # camera capture size
+        self.snapshot_width_px, self.snapshot_height_px = 1920, 1080
+
+        # total image width and height in pixels
+        self.img_w_px = self.event_dispatcher.num_cols * self.tile_width_px 
+        self.img_h_px = self.event_dispatcher.num_rows * self.tile_height_px
+
+        self.img_w_um = self.event_dispatcher.num_cols * self.projection_width_um 
+        self.img_h_um = self.event_dispatcher.num_rows * self.projection_height_um
+
+        print(f"total image width (px): {self.img_w_px}, image height: {self.img_h_px}")
+        print(f"total image width (um): {self.img_w_um}, image height: {self.img_h_um}")
+
+        # overlay ratio that is used for alignment
+        # currently we need to move half-sized width and height
+        # so that there are enough features for alignment purposes
+        self.overlay_ratio = 0.5
+        self.stride_x_um = self.projection_width_um * (1 - self.overlay_ratio)
+        self.stride_y_um = self.projection_height_um * (1 - self.overlay_ratio)
+
+        # used for cropping out dark edges in camera capture
+        self.crop_margin_x_px, self.crop_margin_y_px = 150, 150
+
+        self.capture_button.config(state='disabled', text="Capturing...")
+        self.frame.update()
+        
+        curr_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        capture_folder = f"data_collection_{curr_time}/"
+        self.event_dispatcher.set_capture_folder(capture_folder)
+
+        captures, captured_positions, num_rows, num_cols = self.capture_helper(
+            settings=ImageCaptureSettings(
+                stride_x_um=self.stride_x_um,
+                stride_y_um=self.stride_y_um,
+                total_x_um=self.img_w_um,
+                total_y_um=self.img_h_um,
+                capture_folder=capture_folder
+            )
+        )
+
+        print(f"number of captured images: {len(captures)} x {len(captures[0])}")
+
+        preprocessed_imgs = self.preprocess_images(captures, settings=TilePreprocessSettings(
+            crop_margin_x_px=self.crop_margin_x_px,
+            crop_margin_y_px=self.crop_margin_y_px,
+            gaussian_kernel_size=(7, 7)
+        ))
+
+        # max difference between expected distance and calculated difference we can tolerate
+        # before falling back on the default values
+        threshold = 200
+        stitched_image = self.stitch_helper(
+            preprocessed_imgs,
+            captured_positions,
+            settings=ImageStitchSettings(
+                num_rows=num_rows,
+                num_cols=num_cols,
+                output_folder=capture_folder,
+                resize=0.2,
+                debug=True,
+                threshold=threshold
+            )
+        )
+        
+        if stitched_image is not None:
+            displayed_image = cv2.resize(stitched_image, (self.snapshot_width_px // 10, self.snapshot_height_px // 10))
+            displayed_image = Image.fromarray(displayed_image)
+            self.display_image(displayed_image)
+            print("stitching complete!")
+            self.event_dispatcher.on_event(Event.STITCH_COMPLETED, stitched_image)
+        else:
+            print("failed to stitch images")
+            
+        self.capture_button.config(state='normal', text="Capture & Stitch Chip Imges")
+
+    def display_image(self, pil_image):
+        display_img = pil_image.copy()
+        photo = ImageTk.PhotoImage(display_img)
+        self.preview_label.config(image=photo)
+        self.preview_label.image = photo
+
+    def capture_current_image(self):
+        # Get the camera view from the event dispatcher
+        if hasattr(self.event_dispatcher, 'camera_image') and self.event_dispatcher.camera_image is not None:
+            camera_image = self.event_dispatcher.camera_image
+            pil_image = Image.fromarray(camera_image)
+            return pil_image
+        else:
+            print("No camera image available")
+            return None
+
+    def capture_helper(self, settings: ImageCaptureSettings):
+        """
+        Take snapshots num_cols * num_rows times, move in snake pattern
+        Move in stride_x and y um in distance
+        Crop margins off to account for dark margins in camera snapshot
+        """
+
+        captured_imgs = []
+        captured_positions = []
+    
+        num_cols = int(settings.total_x_um // settings.stride_x_um)
+        num_rows = int(settings.total_y_um // settings.stride_y_um)
+        if num_cols * settings.stride_x_um < settings.total_x_um:
+            num_cols += 1
+        if num_rows * settings.stride_y_um < settings.total_y_um:
+            num_rows += 1
+        print("starting capture...")
+        print("num_cols, num_rows: ", num_cols, num_rows)
+        
+        # get stage positions (um)
+        orig_x, orig_y, orig_z = self.event_dispatcher.stage_setpoint
+        start_x = orig_x
+        start_y = orig_y
+
+        print(f"stage_set_point: {orig_x}, {orig_y}, {orig_z}")
+
+        # create folder to save captures, info and log file
+        os.mkdir(settings.capture_folder)
+        log_file_path = os.path.join(settings.capture_folder, "log.txt")
+        log_file = open(log_file_path, "w")
+        log_file.write(json.dumps({"rows": num_rows, "cols": num_cols}) + "\n")
+
+
+        # move in snake pattern with left to right on even rows
+        # and right to left on odd rows
+        for row in range(num_rows):
+            row_imgs = []
+            row_pos = []
+            current_y = start_y - row * settings.stride_y_um
+
+            if row % 2 == 0:
+                col_range = range(num_cols)
+                first_x = start_x
+            else:
+                col_range = range(num_cols - 1, -1, -1)
+                first_x = start_x + (num_cols - 1) * settings.stride_x_um
+
+            # move to the next row
+            self.event_dispatcher.move_absolute({
+                "x": first_x,
+                "y": current_y,
+                "z": orig_z
+            })
+            self.event_dispatcher.non_blocking_delay(2)
+            
+            # columns in this row
+            for idx, col in enumerate(col_range):
+                current_x = start_x + col * settings.stride_x_um
+                if idx > 0: # idx = 0 first one don't need to move
+                    self.event_dispatcher.move_absolute({
+                        "x": current_x,
+                        "y": current_y,
+                        "z": orig_z
+                    })
+                    self.event_dispatcher.non_blocking_delay(2.5)
+                
+                captured_img = self.capture_current_image()
+                row_imgs.append(captured_img)
+
+                # save capture and write to log file
+                tile_file = f"tile_{row}_{col}.png"
+                tile_path = os.path.join(settings.capture_folder, tile_file)
+                captured_img.save(tile_path)
+                log_file.write(f"{tile_file}: x={current_x}, y={current_y}\n")
+                
+                self.event_dispatcher.non_blocking_delay(0.5)
+                self.frame.update()
+                row_pos.append((current_x, current_y))
+
+            if row % 2 == 0:
+                captured_imgs.append(row_imgs)
+                captured_positions.append(row_pos)
+            else:
+                captured_imgs.append(row_imgs[::-1])
+                captured_positions.append(row_pos[::-1])
+        # Return to starting position
+        self.event_dispatcher.move_absolute({
+            "x": orig_x,
+            "y": orig_y,
+            "z": orig_z
+        })
+        self.event_dispatcher.non_blocking_delay(0.5)
+
+        print(captured_positions)
+        return captured_imgs, captured_positions, num_rows, num_cols
+
+    def preprocess_image(self, img, settings: TilePreprocessSettings):
+        img = np.array(img)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img = cv2.GaussianBlur(img, settings.gaussian_kernel_size, 0)
+        
+        # remove margins in camera view
+        h, w = img.shape[:2]
+        margin_h = settings.crop_margin_y_px
+        margin_w = settings.crop_margin_x_px
+        img = self.crop_image(img, margin_h, h - margin_h, margin_w, w - margin_w)
+        return img
+
+    def preprocess_images(self, imgs, settings: TilePreprocessSettings):
+        result = []
+        for row in range(0, len(imgs)):
+            row_imgs = []
+            for col in range(0, len(imgs[row])):
+                row_imgs.append(self.preprocess_image(imgs[row][col], settings))
+            result.append(row_imgs)
+        return result
+
+    def crop_image(self, img, h_start, h_end, w_start, w_end):
+        return img[h_start:h_end, w_start:w_end]
+
+    def image_alignment(self, dst_img, src_img, display=False):
+        sift = cv2.SIFT_create(
+            contrastThreshold=0.04,
+            edgeThreshold=10
+        )
+        src_keypoints, src_descriptors = sift.detectAndCompute(src_img, None)
+        dst_keypoints, dst_descriptors = sift.detectAndCompute(dst_img, None)
+
+        # Use kdtrees to find nearest neighbors
+        # trees: neighborhood size
+        # checks: more checks → searches more of the trees → more accurate matches
+        FLANN_INDEX_KDTREE = 1
+        NUM_TREES=100
+        NUM_CHECKS=100
+        index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=NUM_TREES)
+        search_params = dict(checks=NUM_CHECKS)
+        flann = cv2.FlannBasedMatcher(index_params, search_params)
+
+        # gets the two best matches
+        matches = flann.knnMatch(src_descriptors, dst_descriptors, k=2)
+
+        good = []
+        for m,n in matches:
+            # only keep the best match if it is significantly better than the 2nd best match
+            if m.distance < 0.8 * n.distance:
+                good.append(m)
+
+        # If we get lower than MIN_MATCH_COUNT matches
+        # it is probably not a good match -> abort
+        MIN_MATCH_COUNT = 4
+        if len(good) < MIN_MATCH_COUNT:
+            print(f"not enough matches were found: {len(good)} < {MIN_MATCH_COUNT}")
+            return (None, 0)
+
+        src_pts = np.float32([src_keypoints[m.queryIdx].pt for m in good]).reshape(-1,1,2)
+        dst_pts = np.float32([dst_keypoints[m.trainIdx].pt for m in good]).reshape(-1,1,2)
+
+        # Find homography M that transforms src_pts to dst_pts
+        # dst_pts = M * src_pts
+        # mask: Nx1 array --> 1: inlier, 0: outlier
+        M, mask = cv2.estimateAffinePartial2D(src_pts, dst_pts, cv2.RANSAC, ransacReprojThreshold=3, maxIters=2000, confidence=0.99, refineIters=10)
+
+        matchesMask = mask.ravel().tolist()
+
+        ################## Evaluation ##################
+
+        M = np.vstack([M, [0, 0, 1]])
+        print(M)
+
+        # inlier ratio
+        num_inliers = sum(matchesMask)
+        inlier_ratio = num_inliers / len(matchesMask)
+        print(f"Inlier ratio: {inlier_ratio}")
+
+        # apply homography on src points and calculate distance to dst points
+        # only considering inliers
+        src_pts = cv2.perspectiveTransform(src_pts, M)
+        error = 0
+        for i in range(0, len(matchesMask)):
+            if matchesMask[i] == 1: # inlier
+                [delta_x, delta_y] = src_pts[i][0] - dst_pts[i][0]
+                error += (np.pow(delta_x, 2) + np.pow(delta_y, 2))
+        error /= num_inliers
+        error = np.sqrt(error)
+        print(f"RMS error between inliers={error}")
+
+        if display:
+            # show boundary of src on dst after homography
+            h,w = src_img.shape[:2]
+            pts = np.float32([[0,0],[0,h-1],[w-1,h-1],[w-1,0]]).reshape(-1,1,2)
+            dst = cv2.perspectiveTransform(pts, M)
+            dst = np.int32(dst).reshape((-1, 1, 2))
+            dst_img = cv2.polylines(dst_img, [np.int32(dst)], True, 255, 8, cv2.LINE_AA)
+
+            # draw matches
+            draw_params = dict(matchColor = None, # draw matches in green color
+                            singlePointColor = None,
+                            matchesMask = matchesMask, # draw only inliers
+                            flags = cv2.DRAW_MATCHES_FLAGS_NOT_DRAW_SINGLE_POINTS)
+            img3 = cv2.drawMatches(src_img, src_keypoints, dst_img, dst_keypoints, good, None, **draw_params)
+            plt.imshow(img3, 'gray')
+            plt.show()
+
+        return (M, error)
+
+    def stitch_helper(self, imgs, stage_positions, settings: ImageStitchSettings):
+        # stich images in a snake like pattern
+        rows = settings.num_rows
+        cols = settings.num_cols
+        curr_tile = None
+        next_tile = None
+        positions = [[0] * cols for _ in range(rows)]
+        curr_pos = (0, 0)
+
+        # snake pattern stitching
+        for row in range(0, rows):
+            col_range = range(0, cols) if row % 2 == 0 else range(cols-1, -1, -1)
+            
+            for col in col_range:
+                if row == 0 and col == 0:
+                    curr_tile_info = (row, col)
+                    curr_tile = imgs[0][0]
+                    curr_tile_stage_pos = stage_positions[0][0]
+                    positions[row][col] = curr_pos
+                    continue
+
+                next_tile = imgs[row][col]
+                next_tile_info = (row, col)
+                next_tile_stage_pos = stage_positions[row][col]
+
+                expected_dx = (next_tile_stage_pos[0] - curr_tile_stage_pos[0]) * 1.668
+                expected_dy = (next_tile_stage_pos[1] - curr_tile_stage_pos[1]) * 1.576
+
+                print(f"curr_tile_info: {curr_tile_info}, next_tile_info: {next_tile_info}")
+                M, error = self.image_alignment(curr_tile, next_tile)
+
+                if M is None:
+                    # could not find an alignment use expected values
+                    print(f"alignment algorithm failed, using expected dx and dy")
+                    print(f"expected movement dx={expected_dx}, dy={expected_dy}")
+                    dx = expected_dx
+                    dy = expected_dy
+                else:
+                    dx = M[0][2]
+                    dy = -M[1][2] # accounting for difference between the stage y positive and canvas y positive
+
+                    prediction_error = math.ceil(math.sqrt((expected_dx - dx)**2 + (expected_dy - dy)**2))
+                    print(f"expected movement dx={expected_dx}, dy={expected_dy}")
+                    print(f"image alignment calculated move as dx={dx}, dy={dy}")
+
+                    if prediction_error > settings.threshold:
+                        print("prediction error exceeded threshold, using expected dx and dy")
+                        dx = expected_dx
+                        dy = expected_dy
+
+                curr_pos = (curr_pos[0] + dx, curr_pos[1] + dy)
+                positions[row][col] = curr_pos
+
+                curr_tile = next_tile
+                curr_tile_info = next_tile_info
+                curr_tile_stage_pos = next_tile_stage_pos
+
+
+        xs = []
+        ys = []
+
+        for row in range(0, rows):
+            for col in range(0, cols):
+                x, y = positions[row][col]
+                y = -y # account for the difference between y positive for stage and canvas
+                positions[row][col] = (x, y)
+                h, w = imgs[row][col].shape[:2]
+
+                if settings.debug:
+                    print(f"row: {row}, col: {col}, position:{(x, y)}")
+
+                xs.append(x + w)
+                xs.append(x)
+                ys.append(y + h)
+                ys.append(y)
+
+        canvas_w = int(max(xs) - min(xs))
+        canvas_h = int(max(ys) - min(ys))
+
+        print(f"canvas_w={canvas_w}, canvas_h={canvas_h}")
+
+        shift_w = int(min(xs))
+        shift_h = int(min(ys))
+
+        print(f"shift_w={shift_w}, shift_h={shift_h}")
+        canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
+        for row in range(rows):
+            for col in range(cols):
+                img = imgs[row][col]
+                h, w = img.shape[:2]
+                x, y = positions[row][col]
+                x = int(x) - shift_w
+                y = int(y) - shift_h
+                # shift into canvas coords
+                if settings.debug:
+                    print(f"position to paste in canvas: {(y, x)}, {y+h, x+w}")
+                canvas[y:y+h, x:x+w] = img
+
+        # resize and output
+        canvas = cv2.flip(canvas, 1)
+        canvas = cv2.resize(canvas, None, fx=settings.resize, fy=settings.resize)
+        output_path = os.path.join(settings.output_folder, "output.png")
+        cv2.imwrite(output_path, canvas)
+        return canvas
+
+class MultiLayerAlignFrame:    
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+            self.frame = ttk.Frame(parent)
+            self.event_dispatcher = event_dispatcher
+
+            self.capture_button = ttk.Button(
+                self.frame, 
+                text="Detect Alignment Markers",
+                command=self.detect_alignment_markers
+            )
+            self.capture_button.grid(row=0, column=0)
+
+            self.preview_label = ttk.Label(self.frame)
+            self.preview_label.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+            
+            self.frame.rowconfigure(1, weight=1)
+            self.frame.columnconfigure(0, weight=1)
+
+    def sort_stitched_alignment_markers(self, matches, stitched):
+        stitched_sorted = np.zeros(shape=(len(matches), 2))
+        for idx in range(len(stitched_sorted)):
+            stitched_sorted[matches[idx]] = stitched[idx]
+        return stitched_sorted
+
+    def detect_alignment_markers(self):
+        digital_pattern = self.event_dispatcher.prev_pattern_image
+        stitched_image = self.event_dispatcher.stitched_image
+
+        processed_digital_pattern, orig_h, orig_w = rf_detr_preprocess(digital_pattern, layer=2)
+        digital_marks = detect_marks_for_slam(processed_digital_pattern, self.event_dispatcher.model, orig_h, orig_w)
+
+        processed_stitched_pattern, orig_h, orig_w = rf_detr_preprocess(stitched_image, layer=2)
+        stitched_marks = detect_marks_for_slam(processed_stitched_pattern, self.event_dispatcher.model, orig_h, orig_w)
+
+        stitched_marks = np.array([mark["center"] for mark in stitched_marks]).astype(np.float32)
+        digital_marks = np.array([mark["center"] for mark in digital_marks]).astype(np.float32)
+
+        print(f"digital marks: {digital_marks}")
+        print(f"stitched marks: {stitched_marks}")
+
+        # sort in row-major order
+        sorted_digital_marks = np.array(sorted(digital_marks, key=lambda item: (item[1], item[0])))
+
+        print(f"number of markers detected: {len(stitched_marks)}")
+        print(f"number of markers detected: {len(digital_marks)}")
+
+        s, R_est, t_est, matches = self.align_stitched_to_digital(stitched_marks, sorted_digital_marks)
+        print(f"scale: {s}")
+        print(f"R_est: {R_est}")
+        print(f"t_est: {t_est}")
+        print(f"matches: {matches}")
+        sorted_stitched_marks = self.sort_stitched_alignment_markers(matches, stitched_marks)
+        print(f"sorted_stitched_marks: {sorted_stitched_marks}")
+        starting_mark = {"x": sorted_stitched_marks[0][0], "y": sorted_stitched_marks[0][1]}
+
+        x_scale = 1.0
+        y_scale = 1.0
+        captured_tile_positions = self.get_captured_tile_positions(self.event_dispatcher.capture_folder)
+        starting_tile = "tile_0_0.png"
+        starting_pos = captured_tile_positions[starting_tile]
+        self.event_dispatcher.move_absolute({"x": starting_pos[0], "y": starting_pos[1]})
+        self.event_dispatcher.move_relative({"x": -x_scale * starting_mark["x"], "y": -y_scale * starting_mark["y"]})
+        self.event_dispatcher.on_event(Event.START_TILING)
+
+    def get_captured_tile_positions(self, folder):
+        import re
+        data = {}
+        pattern = re.compile(r'(\S+): x=([0-9.]+), y=([0-9.]+)')
+        log_path = os.path.join(folder, "log.txt")
+        with open(log_path) as f:
+            for line in f:
+                match = pattern.search(line)
+                if match:
+                    filename = match.group(1)
+                    x = float(match.group(2))
+                    y = float(match.group(3))
+                    data[filename] = (x, y)
+        print(data)
+        return data
+
+    # Align markers in stitched image to those in digital image using CPD registration
+    def align_stitched_to_digital(self, stitched_marks_centers, digital_marks_centers):
+        digital = digital_marks_centers     # fixed target
+        stitched = stitched_marks_centers   # moving source
+        print(f"X (fixed,  digital):  {digital.shape} points")
+        print(f"Y (moving, stitched): {stitched.shape} points")
+
+        # CPD registration
+        reg = RigidRegistration(X=digital, Y=stitched)
+        transformed_stitched, (s, R_est, t_est) = reg.register()
+
+        matches = np.argmax(reg.P, axis=1) # matches[i] = index in X that Y[i] maps to
+
+        # TY  == s * Y @ R_est.T + t_est   (stitched marks in digital space)
+        print(f"Estimated scale : {s}")
+        print(f"Estimated rotation {R_est}")
+        print(f"Estimated translation: {t_est}")
+        print(f"Matches: {matches}")
+        print(transformed_stitched)
+
+        return (s, R_est, t_est, matches)
 
 def main():
 
