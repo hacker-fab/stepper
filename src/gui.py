@@ -140,6 +140,7 @@ class Event(StrAutoEnum):
     PATTERNING_FINISHED = auto()
     CHIP_CHANGED = auto()
     STITCH_COMPLETED = auto()
+    START_TILING = auto()
 
 
 class MovementLock(StrAutoEnum):
@@ -567,6 +568,13 @@ class EventDispatcher:
     def set_prev_pattern_image(self, img: Image.Image, path: str):
         self.prev_pattern_image = img
         self.prev_pattern_image_path = path
+
+    def set_stitched_image(self, img: Image.Image, path: str):
+        self.stitched_image = img
+        self.stitched_image_path = path
+
+    def set_capture_folder(self, capture_folder: str):
+        self.capture_folder = capture_folder
 
     def set_red_focus_image(self, img: Image.Image):
         self.red_focus_image = img
@@ -2140,6 +2148,85 @@ class UvModeFrame:
         self.patterning_frame = PatterningFrame(self.right_frame, event_dispatcher)
         self.patterning_frame.frame.grid(row=1, column=0)
 
+class StitchedPatternUploadFrame:
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        upload_type = "Stitched Pattern"
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Create container frame for centering
+        container = ttk.Frame(self.frame)
+        container.grid(row=0, column=0)
+        
+        # Main pattern upload section
+        self.upload_frame = ttk.LabelFrame(container, text=f"{upload_type} Upload")
+        self.upload_frame.grid(row=0, column=0)
+        
+        # Pattern selector (using existing ImageSelectFrame functionality)
+        self.pattern_selector = ImageSelectFrame(
+            self.upload_frame,
+            f"Select {upload_type}",
+            self._on_pattern_upload
+        )
+        self.pattern_selector.frame.grid(row=0, column=0)
+        
+        # Pattern info display
+        self.info_frame = ttk.LabelFrame(container, text=f"{upload_type} Information")
+        self.info_frame.grid(row=1, column=0)
+        
+        self.pattern_path_var = StringVar(value="No pattern loaded")
+        ttk.Label(self.info_frame, text=f"{upload_type}:").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.info_frame, textvariable=self.pattern_path_var, 
+                 foreground="blue").grid(row=0, column=1, sticky="w", padx=(10,0))
+        
+        # Pattern preview (larger than thumbnail)
+        self.preview_frame = ttk.LabelFrame(container, text=f"{upload_type} Preview")
+        self.preview_frame.grid(row=0, column=1, rowspan=2, padx=10)
+        
+        # Center the container
+        self.frame.grid_columnconfigure(0, weight=1)
+        self.frame.grid_rowconfigure(0, weight=1)
+        
+        # Create larger preview image
+        preview_size = (320, 240)  # Larger than THUMBNAIL_SIZE
+        placeholder = Image.new("RGB", preview_size, "gray")
+        self.preview_photo = image_to_tk_image(placeholder)
+        self.preview_label = ttk.Label(self.preview_frame, image=self.preview_photo)
+        self.preview_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Upload instructions
+        instruction_text = ("Upload your stitched image using the selector above. "
+                          "This component is purely for testing and should be removed")
+        ttk.Label(self.upload_frame, text=instruction_text, 
+                 wraplength=400).grid(row=1, column=0, padx=5, pady=5)
+    
+    def _on_pattern_upload(self, _):
+        """Handle pattern upload"""
+        if self.pattern_selector.thumb.image:
+            print("image uploaded")
+            # Update the event dispatcher with the new pattern
+            self.event_dispatcher.set_stitched_image(
+                self.pattern_selector.thumb.image, 
+                self.pattern_selector.thumb.path
+            )
+            
+            # Update the info display
+            if self.pattern_selector.thumb.path:
+                print("path found")
+                filename = Path(self.pattern_selector.thumb.path).name
+                self.pattern_path_var.set(filename)
+            else:
+                print("pattern uploadded")
+                self.pattern_path_var.set("Pattern uploaded")
+            
+            # Update preview image
+            if self.pattern_selector.thumb.image:
+                print("update preview image")
+                preview_img = self.pattern_selector.thumb.image.copy()
+                preview_img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+                self.preview_photo = image_to_tk_image(preview_img)
+                self.preview_label.configure(image=self.preview_photo)
+
 class PreviousPatternUploadFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         upload_type = "Previous Layer Pattern"
@@ -2297,6 +2384,9 @@ class ModeSelectFrame:
         self.previous_layer_upload_frame = PreviousPatternUploadFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.previous_layer_upload_frame.frame, text="Previous Layer Upload")
 
+        self.stitched_image_upload_frame = StitchedPatternUploadFrame(self.notebook, event_dispatcher)
+        self.notebook.add(self.stitched_image_upload_frame.frame, text="Stitched Image Upload")
+
         self.pattern_upload_frame = PatternUploadFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.pattern_upload_frame.frame, text="Pattern Upload")
         
@@ -2325,9 +2415,11 @@ class ModeSelectFrame:
         selected = self.notebook.select()
         if "previouslayer" in selected.lower() or self.notebook.index("current") == 0:
             return "prevpattern"
-        if "patternupload" in selected.lower() or self.notebook.index("current") == 1:
+        elif "stitchedimage" in selected.lower() or self.notebook.index("current") == 1:
+            return "stitchedpattern"
+        if "patternupload" in selected.lower() or self.notebook.index("current") == 2:
             return "pattern"
-        elif "redmode" in selected or self.notebook.index("current") == 2:
+        elif "redmode" in selected or self.notebook.index("current") == 3:
             return "red" 
         else:
             return "uv"
@@ -2805,6 +2897,8 @@ class TilingFrame:
         self.abort_tiling_button.grid(row=3, column=0)
         self.image_stitch_button = ImageStitchingFrame(self.frame, model)
         self.image_stitch_button.frame.grid(row=4, column=0)
+        self.multilayer_alignment_button = MultiLayerAlignFrame(self.frame, model)
+        self.multilayer_alignment_button.frame.grid(row=5, column=0)
 
 
 class ProjectorDisplayFrame:
@@ -3358,6 +3452,7 @@ class ImageStitchingFrame:
         
         curr_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         capture_folder = f"data_collection_{curr_time}/"
+        self.event_dispatcher.set_capture_folder(capture_folder)
 
         captures, captured_positions, num_rows, num_cols = self.capture_helper(
             settings=ImageCaptureSettings(
@@ -3748,6 +3843,12 @@ class MultiLayerAlignFrame:
             self.frame.rowconfigure(1, weight=1)
             self.frame.columnconfigure(0, weight=1)
 
+    def sort_stitched_alignment_markers(self, matches, stitched):
+        stitched_sorted = np.zeros(shape=(len(matches), 2))
+        for idx in range(len(stitched_sorted)):
+            stitched_sorted[matches[idx]] = stitched[idx]
+        return stitched_sorted
+
     def detect_alignment_markers(self):
         digital_pattern = self.event_dispatcher.prev_pattern_image
         stitched_image = self.event_dispatcher.stitched_image
@@ -3758,17 +3859,54 @@ class MultiLayerAlignFrame:
         processed_stitched_pattern, orig_h, orig_w = rf_detr_preprocess(stitched_image, layer=2)
         stitched_marks = detect_marks_for_slam(processed_stitched_pattern, self.event_dispatcher.model, orig_h, orig_w)
 
+        stitched_marks = np.array([mark["center"] for mark in stitched_marks]).astype(np.float32)
+        digital_marks = np.array([mark["center"] for mark in digital_marks]).astype(np.float32)
+
+        print(f"digital marks: {digital_marks}")
+        print(f"stitched marks: {stitched_marks}")
+
         # sort in row-major order
         sorted_digital_marks = np.array(sorted(digital_marks, key=lambda item: (item[1], item[0])))
 
         print(f"number of markers detected: {len(stitched_marks)}")
         print(f"number of markers detected: {len(digital_marks)}")
 
-        s, R_est, t_est, matches = self.align_stitched_to_digital(stitched_marks, sorted_digital_marks, True)
+        s, R_est, t_est, matches = self.align_stitched_to_digital(stitched_marks, sorted_digital_marks)
+        print(f"scale: {s}")
+        print(f"R_est: {R_est}")
+        print(f"t_est: {t_est}")
+        print(f"matches: {matches}")
         sorted_stitched_marks = self.sort_stitched_alignment_markers(matches, stitched_marks)
+        print(f"sorted_stitched_marks: {sorted_stitched_marks}")
+        starting_mark = {"x": sorted_stitched_marks[0][0], "y": sorted_stitched_marks[0][1]}
+
+        x_scale = 1.0
+        y_scale = 1.0
+        captured_tile_positions = self.get_captured_tile_positions(self.event_dispatcher.capture_folder)
+        starting_tile = "tile_0_0.png"
+        starting_pos = captured_tile_positions[starting_tile]
+        self.event_dispatcher.move_absolute({"x": starting_pos[0], "y": starting_pos[1]})
+        self.event_dispatcher.move_relative({"x": -x_scale * starting_mark["x"], "y": -y_scale * starting_mark["y"]})
+        self.event_dispatcher.on_event(Event.START_TILING)
+
+    def get_captured_tile_positions(self, folder):
+        import re
+        data = {}
+        pattern = re.compile(r'(\S+): x=([0-9.]+), y=([0-9.]+)')
+        log_path = os.path.join(folder, "log.txt")
+        with open(log_path) as f:
+            for line in f:
+                match = pattern.search(line)
+                if match:
+                    filename = match.group(1)
+                    x = float(match.group(2))
+                    y = float(match.group(3))
+                    data[filename] = (x, y)
+        print(data)
+        return data
 
     # Align markers in stitched image to those in digital image using CPD registration
-    def align_stitched_to_digital(stitched_marks_centers, digital_marks_centers):
+    def align_stitched_to_digital(self, stitched_marks_centers, digital_marks_centers):
         digital = digital_marks_centers     # fixed target
         stitched = stitched_marks_centers   # moving source
         print(f"X (fixed,  digital):  {digital.shape} points")
