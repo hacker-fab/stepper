@@ -3705,6 +3705,7 @@ class ImageStitchingFrame:
                 canvas[y:y+h, x:x+w] = img
 
         # resize and output
+        canvas = cv2.flip(canvas, 1)
         canvas = cv2.resize(canvas, None, fx=settings.resize, fy=settings.resize)
         output_path = os.path.join(settings.output_folder, "output.png")
         cv2.imwrite(output_path, canvas)
