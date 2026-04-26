@@ -38,7 +38,7 @@ from stage_control.stage_controller import StageController
 import matplotlib.pyplot as plt
 
 # importing tiling utilities
-from tiling_utils import CONFIDENCE_THRESHOLD, fetch_alignemnt_errors, match_alignment_markers_by_coordinates, rf_detr_preprocess, \
+from tiling_utils import CONFIDENCE_THRESHOLD, STITCHED_CONFIDENCE_THRESHOLD, digital_to_cam_scale_h, digital_to_cam_scale_w, fetch_alignemnt_errors, match_alignment_markers_by_coordinates, rf_detr_preprocess, \
                                             estimate_transform, detect_marks_for_slam, get_next_tile_vector, \
                                                 px_to_step_x, px_to_step_y, digital_to_cam_view, step_to_projection_pixels_x, step_to_projection_pixels_y
 
@@ -142,6 +142,8 @@ class Event(StrAutoEnum):
     PATTERNING_BUSY_CHANGED = auto()
     PATTERNING_FINISHED = auto()
     CHIP_CHANGED = auto()
+    STITCH_COMPLETED = auto()
+    START_TILING = auto()
 
 
 class MovementLock(StrAutoEnum):
@@ -2470,19 +2472,24 @@ class GlobalSettingsFrame:
         def auto_align():
 
             print("\Auto alignment")
-            event_dispatcher.set_red_focus_source(RedFocusSource.PATTERN)
-            event_dispatcher.set_red_focus_image(event_dispatcher.pattern_image)
-
-            pattern_img = event_dispatcher.camera_image.copy()
-            cv2.imwrite("align.png", pattern_img) 
-
-            event_dispatcher.non_blocking_delay(0.5)
-            event_dispatcher.set_red_focus_source(RedFocusSource.SOLID)
-
+            digital_img = event_dispatcher.pattern_image.copy()
             cam_img = event_dispatcher.camera_image.copy()
-            cv2.imwrite("cam.png", cam_img)
+            print(f"digital_type: {type(digital_img)}")
+            print(f"cam_type: {type(cam_img)}")
+            
+            """
+            digital_to_cam_scale_w 
+            digital_to_cam_scale_h
 
-            dx, dy, dr = fetch_alignemnt_errors(event_dispatcher.model, pattern_img, cam_img, 2)
+            
+
+            """
+            new_size = (
+                            cam_img.shape[0],
+                            cam_img.shape[1]
+                        )
+            digital_img = digital_img.resize(new_size, Image.Resampling.LANCZOS)
+            dx, dy, dr = fetch_alignemnt_errors(event_dispatcher.model, digital_img, cam_img, 2)
             print(f"fetch_alignemnt_errors returned with {dx}, {dy}, {dr}")
             
             if(dx == None and dy == None and dr == None):
@@ -2513,7 +2520,7 @@ class GlobalSettingsFrame:
                 # capture and detect
                 cam_img = event_dispatcher.camera_image.copy()
                 print(f"Calling fetch_alignemnt_errors")
-                dx, dy, dr = fetch_alignemnt_errors(event_dispatcher.model, cam_img, pattern_img, 2)
+                dx, dy, dr = fetch_alignemnt_errors(event_dispatcher.model, digital_img, cam_img, 2)
                 print(f"fetch_alignemnt_errors reuturned iwth {dx}, {dy}, {dr}")
                 
                 if(dx == None and dy == None and dr == None):
@@ -2573,8 +2580,7 @@ class GlobalSettingsFrame:
         self.alignbutton = ttk.Button(
             self.frame, 
             text="Align :)", 
-            #command=do_align, 
-            command=auto_align,
+            command=do_align, 
             state="disabled" if event_dispatcher.model is None else "normal",
         )
         self.alignbutton.grid(row=2, column=1)
@@ -3175,21 +3181,26 @@ class TilingFrame:
             pass
 
         #Tiling check must be done before segment images if needed
-        self.tiling_check_button = TilingCheckFrame(self.frame, model)
-        self.tiling_check_button.frame.grid(row=0, column = 0)
+        # self.tiling_check_button = TilingCheckFrame(self.frame, model)
+        # self.tiling_check_button.frame.grid(row=0, column = 0)
         self.segment_images_button = ttk.Button(self.frame, text="Segement Images", command=segment, state="disabled" if self.segmented else "enabled")
-        self.segment_images_button.grid(row=1, column=0)
+        self.segment_images_button.grid(row=0, column=0)
+        
+        self.layer_value = ttk.Entry(self.frame, textvariable=self.layer, state="normal")
+        self.layer_value.grid(row=1, column=0)
+        
         self.begin_tiling_button = ttk.Button(self.frame, text="Begin Tiling", command=on_begin, state="enabled")
         self.begin_tiling_button.grid(row=2, column=0)
+        
         self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
         self.abort_tiling_button.grid(row=3, column=0)
+        
         self.image_stitch_button = ImageStitchingFrame(self.frame, model)
         self.image_stitch_button.frame.grid(row=4, column=0)
+        
         self.multilayer_alignment_button = MultiLayerAlignFrame(self.frame, model)
         self.multilayer_alignment_button.frame.grid(row=5, column=0)
 
-        self.layer_value = ttk.Entry(self.frame, textvariable=self.layer, state="normal")
-        self.layer_value.grid(row=4, column=0)
         # TODO: add one please
         # self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
         # self.abort_tiling_button.grid(row=3, column=0)
@@ -3959,6 +3970,9 @@ class ImageStitchingFrame:
         src_keypoints, src_descriptors = sift.detectAndCompute(src_img, None)
         dst_keypoints, dst_descriptors = sift.detectAndCompute(dst_img, None)
 
+        src_descriptors = src_descriptors.astype(np.float32)
+        dst_descriptors = dst_descriptors.astype(np.float32)
+        
         # Use kdtrees to find nearest neighbors
         # trees: neighborhood size
         # checks: more checks → searches more of the trees → more accurate matches
@@ -4140,7 +4154,8 @@ class ImageStitchingFrame:
 
         # resize and output
         canvas = cv2.flip(canvas, 1)
-        canvas = cv2.resize(canvas, None, fx=settings.resize, fy=settings.resize)
+        self.event_dispatcher.stitched_image = canvas
+        # output_canvas = cv2.resize(output_canvas, None, fx=settings.resize, fy=settings.resize)
         output_path = os.path.join(settings.output_folder, "output.png")
         cv2.imwrite(output_path, canvas)
         return canvas
@@ -4165,7 +4180,7 @@ class MultiLayerAlignFrame:
 
     def sort_stitched_alignment_markers(self, matches, stitched):
         stitched_sorted = np.zeros(shape=(len(matches), 2))
-        for idx in range(len(stitched_sorted)):
+        for idx in range(len(matches)):
             stitched_sorted[matches[idx]] = stitched[idx]
         return stitched_sorted
 
@@ -4174,10 +4189,10 @@ class MultiLayerAlignFrame:
         stitched_image = self.event_dispatcher.stitched_image
 
         processed_digital_pattern, orig_h, orig_w = rf_detr_preprocess(digital_pattern, layer=2)
-        digital_marks = detect_marks_for_slam(processed_digital_pattern, self.event_dispatcher.model, orig_h, orig_w)
+        digital_marks = detect_marks_for_slam(processed_digital_pattern, self.event_dispatcher.model, orig_h, orig_w, threshold=STITCHED_CONFIDENCE_THRESHOLD)
 
         processed_stitched_pattern, orig_h, orig_w = rf_detr_preprocess(stitched_image, layer=2)
-        stitched_marks = detect_marks_for_slam(processed_stitched_pattern, self.event_dispatcher.model, orig_h, orig_w)
+        stitched_marks = detect_marks_for_slam(processed_stitched_pattern, self.event_dispatcher.model, orig_h, orig_w, threshold=STITCHED_CONFIDENCE_THRESHOLD)
 
         stitched_marks = np.array([mark["center"] for mark in stitched_marks]).astype(np.float32)
         digital_marks = np.array([mark["center"] for mark in digital_marks]).astype(np.float32)
@@ -4200,13 +4215,14 @@ class MultiLayerAlignFrame:
         print(f"sorted_stitched_marks: {sorted_stitched_marks}")
         starting_mark = {"x": sorted_stitched_marks[0][0], "y": sorted_stitched_marks[0][1]}
 
-        x_scale = 1.0
-        y_scale = 1.0
+        x_scale = px_to_step_x
+        y_scale = px_to_step_y
         captured_tile_positions = self.get_captured_tile_positions(self.event_dispatcher.capture_folder)
         starting_tile = "tile_0_0.png"
         starting_pos = captured_tile_positions[starting_tile]
         self.event_dispatcher.move_absolute({"x": starting_pos[0], "y": starting_pos[1]})
-        self.event_dispatcher.move_relative({"x": -x_scale * starting_mark["x"], "y": -y_scale * starting_mark["y"]})
+        # we should move in +x position and -y position to to put the upper left marker in the upper left corner
+        self.event_dispatcher.move_relative({"x": x_scale * starting_mark["x"], "y": -y_scale * starting_mark["y"]})
         self.event_dispatcher.on_event(Event.START_TILING)
 
     def get_captured_tile_positions(self, folder):
