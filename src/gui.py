@@ -37,7 +37,7 @@ from stage_control.stage_controller import StageController
 import matplotlib.pyplot as plt
 
 # importing tiling utilities
-from tiling_utils import CONFIDENCE_THRESHOLD, STITCHED_CONFIDENCE_THRESHOLD, digital_to_cam_scale_h, digital_to_cam_scale_w, fetch_alignemnt_errors, match_alignment_markers_by_coordinates, rf_detr_preprocess, \
+from tiling_utils import CONFIDENCE_THRESHOLD, STITCHED_CONFIDENCE_THRESHOLD, match_alignment_markers_by_coordinates, rf_detr_preprocess, \
                                             estimate_transform, detect_marks_for_slam, get_next_tile_vector, extract_rectangle, \
                                                 px_to_step_x, px_to_step_y, digital_to_cam_view, step_to_projection_pixels_x, step_to_projection_pixels_y
 

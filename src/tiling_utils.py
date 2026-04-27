@@ -198,10 +198,8 @@ def match_alignment_markers_by_coordinates(dest_marks, src_marks, src_marks_shif
             matched_dest.append(dest_marks[r])
             matched_src_shifted.append(src_marks_shifted[c])
             matched_src_original.append(src_marks[c])
-    
-<<<<<<< Updated upstream
-    print(f"error transform result (px): {round(dx)}, {round(dy)}, {d0}")
-    return (dx, dy, d0)   
+            
+    return (matched_dest, matched_src_original, matched_src_shifted)
 
 ########## Functions for Extracting Projection Rectangle ##########
 
@@ -350,9 +348,6 @@ def extract_rectangle(img, display=False):
 
     return extracted, corners
 
-=======
-    return (matched_dest, matched_src_original, matched_src_shifted)
->>>>>>> Stashed changes
 """    
 def do_align() function
     x_amount = self.x_settings.amount_var
