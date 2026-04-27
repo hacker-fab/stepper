@@ -30,7 +30,6 @@ from hardware import ImageProcessSettings, Lithographer, ProcessedImage
 from lib.gui import IntEntry, Thumbnail, FloatEntry
 from lib.img import image_to_tk_image
 from projector import TkProjector
-from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from stage_control.grbl_stage import GrblStage
 from stage_control.omm_stage import OMMStage
@@ -38,7 +37,7 @@ from stage_control.stage_controller import StageController
 import matplotlib.pyplot as plt
 
 # importing tiling utilities
-from tiling_utils import CONFIDENCE_THRESHOLD, STITCHED_CONFIDENCE_THRESHOLD, digital_to_cam_scale_h, digital_to_cam_scale_w, fetch_alignemnt_errors, match_alignment_markers_by_coordinates, rf_detr_preprocess, \
+from tiling_utils import CONFIDENCE_THRESHOLD, STITCHED_CONFIDENCE_THRESHOLD, match_alignment_markers_by_coordinates, rf_detr_preprocess, \
                                             estimate_transform, detect_marks_for_slam, get_next_tile_vector, extract_rectangle, \
                                                 px_to_step_x, px_to_step_y, digital_to_cam_view, step_to_projection_pixels_x, step_to_projection_pixels_y
 
@@ -212,10 +211,6 @@ class ExposureLog:
 @dataclass
 class TilingParameters:
     align_image: Image
-    t_w_px: str # not used
-    t_h_px: int # not used
-    overlay_x_px: int # not used
-    overlay_y_px: int # not used
     ratio: float
     stride_x: int
     stride_y: int
@@ -2469,99 +2464,25 @@ class GlobalSettingsFrame:
         self.realtime_detection_check.grid(row=1, column=0, columnspan=2)
         self.realtime_detection_var.trace_add("write", set_realtime_detection)
 
-        def auto_align():
-
-            print("\Auto alignment")
-            digital_img = event_dispatcher.pattern_image.copy()
-            cam_img = event_dispatcher.camera_image.copy()
-            print(f"digital_type: {type(digital_img)}")
-            print(f"cam_type: {type(cam_img)}")
-            
-            """
-            digital_to_cam_scale_w 
-            digital_to_cam_scale_h
-
-            
-
-            """
-            new_size = (
-                            cam_img.shape[0],
-                            cam_img.shape[1]
-                        )
-            digital_img = digital_img.resize(new_size, Image.Resampling.LANCZOS)
-            dx, dy, dr = fetch_alignemnt_errors(event_dispatcher.model, digital_img, cam_img, 2)
-            print(f"fetch_alignemnt_errors returned with {dx}, {dy}, {dr}")
-            
-            if(dx == None and dy == None and dr == None):
-                dx, dy, dr = 0,0,0
-                self.model.create_warning("Couldn't find alignment markers. Please align manually")
-                return
-
-            error_x = round(dx*px_to_step_x) # scale pixels to number of steps  
-            error_y = round(dy*px_to_step_y) # scale pixels to number of steps 
-            print(f"fine transform is: {error_x}, {error_y}, with rotation {dr} (steps)")
-
-            tries = 0
-            can_exit = False
-            while tries < 10:
-
-                # if close enough, just move the pattern digitally
-                if(can_exit and abs(error_x) <= 10 and abs(error_y) <= 10):
-                    event_dispatcher.set_image_position(error_x, error_y, dr)
-                    event_dispatcher.non_blocking_delay(0.5)
-                    print("Done auto-alignment. Setting image rotation and offset for patterning")
-                    return
-                
-                # adjust
-                print(f"\ntry {tries}: move_relative error_x{-error_x}, and error_y={error_y}")
-                event_dispatcher.move_relative({'x': -error_x, 'y': error_y})
-                event_dispatcher.non_blocking_delay(0.5)
-                
-                # capture and detect
-                cam_img = event_dispatcher.camera_image.copy()
-                print(f"Calling fetch_alignemnt_errors")
-                dx, dy, dr = fetch_alignemnt_errors(event_dispatcher.model, digital_img, cam_img, 2)
-                print(f"fetch_alignemnt_errors reuturned iwth {dx}, {dy}, {dr}")
-                
-                if(dx == None and dy == None and dr == None):
-                    print(f"moving back a stride...")
-                    # move back
-                    event_dispatcher.move_relative({'x': error_x, 'y': -error_y})
-                    event_dispatcher.non_blocking_delay(0.5)
-                    error_x+=5 # small adjustment in steps size
-                    error_y-=5 # small adjustment in steps size
-                    tries += 1
-                    can_exit = False
-                    continue
-                
-                # store errors so next movement accomodates for them
-                error_x = round(dx*px_to_step_x) # scale pixels to number of steps 
-                error_y = round(dy*px_to_step_y) # scale pixels to number of steps 
-                can_exit = True
-                print(f"error_x{error_x}, and error_y={error_y}")
-
-                tries += 1
-                if tries == 10:
-                    self.model.create_warning("Couldn't find alignment markers.Please align manually.")
-        
         def do_align():
             h, w, _ = event_dispatcher.camera_image.shape
-            markers, _ = detect_alignment_markers(event_dispatcher.model, event_dispatcher.camera_image)
+
+            # Replace detect_alignment_markers with your pipeline
+            img_input, orig_h, orig_w = rf_detr_preprocess(event_dispatcher.camera_image, layer=event_dispatcher.config.layer)
+            markers = detect_marks_for_slam(img_input, event_dispatcher.model, orig_h, orig_w)
+
             dx, dy = 0, 0
             if len(markers) == 0:
+                event_dispatcher.create_warning("No alignment markers detected. Please manually align.")
                 return
-            
+
             # Get alignment parameters from config
             alignment = event_dispatcher.config.alignment
-            
             for m in markers:
-                xy0, xy1 = m
-                x0, y0 = xy0
-                x1, y1 = xy1
-                # compute normalized centers of the bounding box
-                x = (x0 + x1) / 2 / w
-                y = (y0 + y1) / 2 / h
-                
+                cx, cy = m["center"]
+                x = cx / w
+                y = cy / h
+
                 if x > 0.5:
                     dx += alignment.x_scale_factor * (alignment.right_marker_x / w - x)
                 else:
@@ -2570,13 +2491,13 @@ class GlobalSettingsFrame:
                     dy += alignment.y_scale_factor * (alignment.bottom_marker_y / h - y)
                 else:
                     dy += alignment.y_scale_factor * (alignment.top_marker_y / h - y)
-            
+
             dx /= len(markers)
             dy /= len(markers)
-            event_dispatcher.move_relative({ 'x': dx, 'y': dy })
+            event_dispatcher.move_relative({'x': dx, 'y': dy})
 
             print(markers)
-        
+            
         self.alignbutton = ttk.Button(
             self.frame, 
             text="Align :)", 
@@ -2585,7 +2506,6 @@ class GlobalSettingsFrame:
         )
         self.alignbutton.grid(row=2, column=1)
 
-        # TODO: Fix this
         self.autofocus_button = ttk.Button(self.frame, text="Autofocus", command=lambda: event_dispatcher.autofocus(blue_only=event_dispatcher.in_uv()))
         self.autofocus_button.grid(row=2, column=0, sticky="ew")
 
@@ -2707,18 +2627,18 @@ class OffsetAmountFrame:
 class TilingFrame:
     def __init__(self, parent, model: EventDispatcher):
 
-        self.params = TilingParameters(None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        self.params = TilingParameters(None, None, None, None, None, None, None, None, None, None, None)
         
         # constants that we can tune
-        self.params.ratio = 0.5
-        self.red_to_uv_offset = 60
-        self.red_to_pattern_offset = 10
-        self.params.px_to_step_x = px_to_step_x
-        self.params.px_to_step_y = px_to_step_y
+        self.params.ratio = 0.5 # 1/ratio = number of steps in between current tile to next tile to take --> used to define stride size
+        self.red_to_uv_offset = 60  # offset between red mode and uv mode for z-stage (steps)
+        self.red_to_pattern_offset = 10 # offset between red mode and red pattern mode for z-stage (steps)
+        self.params.px_to_step_x = px_to_step_x # projection pixels to steps conversion (x)
+        self.params.px_to_step_y = px_to_step_y # projection pixels to steps conversion (y)
         self.params.step_error_threshold_x = 10
         self.params.step_error_threshold_y = 10
         self.leeway_w_steps = 10
-        self.leeway_h_steps = 10
+        self.leeway_h_steps = 10 # steps
         self.projection_width_steps = 1037 # steps 
         self.projection_height_steps = 583 # steps
 
@@ -3117,8 +3037,13 @@ class TilingFrame:
 
                 # iterate columns in snake order
                 range_order = range(self.params.num_cols)
-                if row % 2 == 1:
-                    range_order = range_order[::-1]
+
+                if self.layer.get() == 1:
+                    if row % 2 == 1:
+                        range_order = range_order[::-1]
+                else:
+                    if row % 2 == 0:
+                        range_order = range_order[::-1]
 
                 for col in range_order:
 
@@ -3171,6 +3096,7 @@ class TilingFrame:
                     prev_col = col
             
             print("Done Tiling")
+            self.model.on_event(Event.EXPOSURE_TIME_CHANGED, 8000)
             self.segmented = False
 
             print(positions)
@@ -3180,9 +3106,6 @@ class TilingFrame:
         def on_abort():
             pass
 
-        #Tiling check must be done before segment images if needed
-        # self.tiling_check_button = TilingCheckFrame(self.frame, model)
-        # self.tiling_check_button.frame.grid(row=0, column = 0)
         self.segment_images_button = ttk.Button(self.frame, text="Segement Images", command=segment, state="disabled" if self.segmented else "enabled")
         self.segment_images_button.grid(row=0, column=0)
         
