@@ -3926,9 +3926,9 @@ class ImageStitchingFrame:
         """
 
         # extract the projection rectangle from the camera view
-        img = extract_rectangle(img, display=False)
-
         img = np.array(img)
+        img, corners = extract_rectangle(img, display=False)
+
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         img = cv2.GaussianBlur(img, settings.gaussian_kernel_size, 0)
         
