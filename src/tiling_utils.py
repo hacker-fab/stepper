@@ -7,6 +7,7 @@ import numpy as np
 import onnxruntime as rt
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
+import matplotlib.pyplot as plt
 
 RF_DETR_IMPUT_SIZE = 704
 CONFIDENCE_THRESHOLD = 0.75
@@ -282,6 +283,153 @@ def fetch_alignemnt_errors(model, camera: Image, pattern: Image, layer=1) -> tup
     
     print(f"error transform result (px): {round(dx)}, {round(dy)}, {d0}")
     return (dx, dy, d0)   
+
+########## Functions for Extracting Projection Rectangle ##########
+
+def order_points(pts):
+    """Order corner points as: top-left, top-right, bottom-right, bottom-left."""
+    pts = pts.reshape(4, 2).astype(np.float32)
+    rect = np.zeros((4, 2), dtype=np.float32)
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]   # top-left
+    rect[2] = pts[np.argmax(s)]   # bottom-right
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]  # top-right
+    rect[3] = pts[np.argmax(diff)]  # bottom-left
+    return rect.astype(int)
+
+def find_rectangle_contour(binary, img_shape):
+    """
+    Find the contour that best represents a rectangle in the scene.
+    Returns the approximated 4-point contour or None.
+    """
+    h, w = img_shape[:2]
+    min_area = 0.02 * h * w
+    max_area = 0.98 * h * w
+
+    contours, _ = cv.findContours(binary, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    # Sort by area descending; try to find a 4-sided approximation
+    contours = sorted(contours, key=cv.contourArea, reverse=True)
+
+    for contour in contours[:5]:  # only inspect top-5 largest
+        area = cv.contourArea(contour)
+        if not (min_area < area < max_area):
+            continue
+
+        arc = cv.arcLength(contour, True)
+        # Try a range of epsilon values for robustness
+        for eps_factor in [0.02, 0.03, 0.04, 0.05, 0.07]:
+            approx = cv.approxPolyDP(contour, eps_factor * arc, True)
+            if len(approx) == 4:
+                # Verify it's convex and large enough
+                if cv.isContourConvex(approx):
+                    return approx
+
+        # If we can't get exactly 4 points, use convex hull and fit a quadrilateral
+        hull = cv.convexHull(contour)
+        arc = cv.arcLength(hull, True)
+        for eps_factor in [0.02, 0.03, 0.05, 0.08, 0.12]:
+            approx = cv.approxPolyDP(hull, eps_factor * arc, True)
+            if len(approx) == 4:
+                return approx
+
+    return None
+
+def extract_rectangle(img, display=False):
+    """
+    Extract the bright rectangular projection area from a camera image.
+    Uses brightness thresholding to isolate the lit projection region.
+
+    Returns
+    -------
+    extracted : np.ndarray  Simple crop of the detected rectangle (no dewarping)
+    corners   : np.ndarray  The 4 corner points [[x,y], ...] in top-left, top-right,
+                            bottom-right, bottom-left order. None if not found.
+    """
+    orig = img.copy()
+    h, w = img.shape[:2]
+
+    # --- 1. Isolate the bright region ---
+    # Convert to grayscale and aggressively blur to ignore inner content
+    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY) if len(img.shape) == 3 else img.copy()
+    blurred = cv.GaussianBlur(gray, (51, 51), 0)
+
+    # Otsu threshold — bright projection vs dark camera margins
+    _, bright_mask = cv.threshold(blurred, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
+
+    # Also try a fixed high-brightness threshold as a fallback candidate
+    _, bright_fixed = cv.threshold(blurred, 180, 255, cv.THRESH_BINARY)
+
+    # Pick whichever gives a larger foreground region (more likely to be the projection)
+    mask = bright_mask if cv.countNonZero(bright_mask) > cv.countNonZero(bright_fixed) else bright_fixed
+
+    # --- 2. Clean up the mask ---
+    kernel = cv.getStructuringElement(cv.MORPH_RECT, (15, 15))
+    mask = cv.morphologyEx(mask, cv.MORPH_CLOSE, kernel, iterations=3)
+    mask = cv.morphologyEx(mask, cv.MORPH_OPEN,  kernel, iterations=2)
+
+    # --- 3. Find the largest bright contour ---
+    contours, _ = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        print("No bright region found.")
+        return None, None
+
+    # Ignore contours that are too small or suspiciously fill the whole frame
+    valid = [c for c in contours
+             if 0.02 * h * w < cv.contourArea(c) < 0.97 * h * w]
+    if not valid:
+        valid = contours  # fall back to all contours
+
+    best = max(valid, key=cv.contourArea)
+
+    # --- 4. Approximate as a quadrilateral ---
+    approx = None
+    arc = cv.arcLength(best, True)
+    for eps in [0.02, 0.03, 0.04, 0.05, 0.07, 0.10]:
+        candidate = cv.approxPolyDP(best, eps * arc, True)
+        if len(candidate) == 4 and cv.isContourConvex(candidate):
+            approx = candidate
+            break
+
+    if approx is None:
+        # Fall back: use bounding rect of the convex hull
+        hull = cv.convexHull(best)
+        x, y, bw, bh = cv.boundingRect(hull)
+        approx = np.array([[[x, y]], [[x+bw, y]], [[x+bw, y+bh]], [[x, y+bh]]])
+
+    corners = order_points(approx)   # tl, tr, br, bl
+    tl, tr, br, bl = corners
+
+    # --- 5. Crop (axis-aligned bounding box of the 4 corners) ---
+    x1 = max(0, min(tl[0], bl[0]))
+    y1 = max(0, min(tl[1], tr[1]))
+    x2 = min(w, max(tr[0], br[0]))
+    y2 = min(h, max(bl[1], br[1]))
+    extracted = orig[y1:y2, x1:x2]
+
+    # --- 6. Optional display ---
+    if display:
+        vis = cv.cvtColor(orig, cv.COLOR_BGR2RGB)
+        cv.drawContours(vis, [approx], -1, (0, 255, 0), 3)
+        for pt in corners:
+            cv.circle(vis, tuple(pt), 8, (0, 0, 255), -1)
+        # Draw crop box
+        cv.rectangle(vis, (x1, y1), (x2, y2), (255, 165, 0), 2)
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        axes[0].imshow(vis)
+        axes[0].set_title("Detected rectangle  (green=contour, orange=crop)")
+        axes[0].axis("off")
+        axes[1].imshow(cv.cvtColor(extracted, cv.COLOR_BGR2RGB))
+        axes[1].set_title("Extracted")
+        axes[1].axis("off")
+        plt.tight_layout()
+        plt.show()
+
+    return extracted, corners
 
 """    
 def do_align() function

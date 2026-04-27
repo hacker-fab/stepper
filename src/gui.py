@@ -39,7 +39,7 @@ import matplotlib.pyplot as plt
 
 # importing tiling utilities
 from tiling_utils import CONFIDENCE_THRESHOLD, STITCHED_CONFIDENCE_THRESHOLD, digital_to_cam_scale_h, digital_to_cam_scale_w, fetch_alignemnt_errors, match_alignment_markers_by_coordinates, rf_detr_preprocess, \
-                                            estimate_transform, detect_marks_for_slam, get_next_tile_vector, \
+                                            estimate_transform, detect_marks_for_slam, get_next_tile_vector, extract_rectangle, \
                                                 px_to_step_x, px_to_step_y, digital_to_cam_view, step_to_projection_pixels_x, step_to_projection_pixels_y
 
 # TODO: Don't hardcode
@@ -3700,8 +3700,6 @@ class ImageStitchSettings:
 
 @dataclass
 class TilePreprocessSettings:
-    crop_margin_x_px: int # amount we crop to remove weird dark margin in camera snapshot
-    crop_margin_y_px: int
     gaussian_kernel_size: tuple[int, int]
 
 class ImageStitchingFrame:
@@ -3755,9 +3753,6 @@ class ImageStitchingFrame:
         self.stride_x_um = self.projection_width_um * (1 - self.overlay_ratio)
         self.stride_y_um = self.projection_height_um * (1 - self.overlay_ratio)
 
-        # used for cropping out dark edges in camera capture
-        self.crop_margin_x_px, self.crop_margin_y_px = 150, 150
-
         self.capture_button.config(state='disabled', text="Capturing...")
         self.frame.update()
         
@@ -3783,8 +3778,6 @@ class ImageStitchingFrame:
 
         # preprocess the captured tiles
         preprocessed_imgs = self.preprocess_images(captures, settings=TilePreprocessSettings(
-            crop_margin_x_px=self.crop_margin_x_px,
-            crop_margin_y_px=self.crop_margin_y_px,
             gaussian_kernel_size=(7, 7)
         ))
 
@@ -3931,15 +3924,16 @@ class ImageStitchingFrame:
         """
         Converts to grayscale, blurs, and crops weird camera margins
         """
+
+        # extract the projection rectangle from the camera view
+        img = extract_rectangle(img, display=False)
+
         img = np.array(img)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         img = cv2.GaussianBlur(img, settings.gaussian_kernel_size, 0)
         
         # remove margins in camera view
         h, w = img.shape[:2]
-        margin_h = settings.crop_margin_y_px
-        margin_w = settings.crop_margin_x_px
-        img = self.crop_image(img, margin_h, h - margin_h, margin_w, w - margin_w)
         return img
 
     def preprocess_images(self, imgs, settings: TilePreprocessSettings):
@@ -3953,9 +3947,6 @@ class ImageStitchingFrame:
                 row_imgs.append(self.preprocess_image(imgs[row][col], settings))
             result.append(row_imgs)
         return result
-
-    def crop_image(self, img, h_start, h_end, w_start, w_end):
-        return img[h_start:h_end, w_start:w_end]
 
     def image_alignment(self, dst_img, src_img, display=False):
         """
