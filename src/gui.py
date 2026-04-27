@@ -4144,7 +4144,7 @@ class ImageStitchingFrame:
                 canvas[y:y+h, x:x+w] = img
 
         # resize and output
-        canvas = cv2.flip(canvas, 1)
+        # canvas = cv2.flip(canvas, 1)
         self.event_dispatcher.stitched_image = canvas
         # output_canvas = cv2.resize(output_canvas, None, fx=settings.resize, fy=settings.resize)
         output_path = os.path.join(settings.output_folder, "output.png")
@@ -4176,7 +4176,7 @@ class MultiLayerAlignFrame:
         return stitched_sorted
 
     def detect_alignment_markers(self):
-        digital_pattern = self.event_dispatcher.prev_pattern_image
+        digital_pattern = cv2.flip(np.array(self.event_dispatcher.prev_pattern_image), 1)
         stitched_image = self.event_dispatcher.stitched_image
 
         processed_digital_pattern, orig_h, orig_w = rf_detr_preprocess(digital_pattern, layer=2)
@@ -4211,9 +4211,13 @@ class MultiLayerAlignFrame:
         captured_tile_positions = self.get_captured_tile_positions(self.event_dispatcher.capture_folder)
         starting_tile = "tile_0_0.png"
         starting_pos = captured_tile_positions[starting_tile]
+
+        # make up for the half width and height of the marker
+        padding_x = -50
+        padding_y = 45
         self.event_dispatcher.move_absolute({"x": starting_pos[0], "y": starting_pos[1]})
         # we should move in +x position and -y position to to put the upper left marker in the upper left corner
-        self.event_dispatcher.move_relative({"x": x_scale * starting_mark["x"], "y": -y_scale * starting_mark["y"]})
+        self.event_dispatcher.move_relative({"x": x_scale * starting_mark["x"] + padding_x, "y": -y_scale * starting_mark["y"] + padding_y})
         self.event_dispatcher.on_event(Event.START_TILING)
 
     def get_captured_tile_positions(self, folder):
