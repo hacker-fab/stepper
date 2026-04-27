@@ -181,106 +181,25 @@ def get_next_tile_vector(row:int, col:int, width:int, height:int, num_rows:int, 
     print(f"h_direction={h_direction}, v_direction={v_direction}, step_x={step_x}, step_y={step_y}")
     return (h_direction, v_direction, step_x, step_y)
 
-def match_alignment_markers_by_coordinates(dest_marks, src_marks, src_marks_shifted, img_h, img_w, purpose="tiling"):
+def match_alignment_markers_by_coordinates(dest_marks, src_marks, src_marks_shifted, img_h, img_w):
+    img_diagonal = np.sqrt(img_h**2 + img_w**2)
+    match_threshold = 0.1 * img_diagonal
+    dists = cdist(dest_marks, src_marks_shifted)
+    row_ind, col_ind = linear_sum_assignment(dists)
 
-    if purpose == "align":
-        digital_marks = dest_marks
-        camera_marks = src_marks
-        digital_marks = [(x / digital_to_cam_scale_w, y / digital_to_cam_scale_h) for x, y in digital_marks]
-        img_diagonal = np.sqrt(img_h**2 + img_w**2)
-        match_threshold = 0.4 * img_diagonal
-        dists = cdist(digital_marks, camera_marks)
-        row_ind, col_ind = linear_sum_assignment(dists)
-
-        matched_dest = []
-        matched_src_shifted = []   # shifted — for transform calculation
-        matched_src_original = []  # original — for graphing/visualization purposes
-        for r, c in zip(row_ind, col_ind):
-            dist = dists[r, c]
-            status = "✓" if dist < match_threshold else "✗ REJECTED"
-            print(f"  cam[{r}]={dest_marks[r]} → pat[{c}]={src_marks_shifted[c]}  dist={dist:.1f}px {status}")
-            if dist < match_threshold:
-                matched_dest.append(dest_marks[r])
-                matched_src_shifted.append(src_marks_shifted[c])
-                matched_src_original.append(src_marks[c])
-        
-        return (matched_dest, matched_src_original, matched_src_shifted)    
-    else:
-        img_diagonal = np.sqrt(img_h**2 + img_w**2)
-        match_threshold = 0.1 * img_diagonal
-        dists = cdist(dest_marks, src_marks_shifted)
-        row_ind, col_ind = linear_sum_assignment(dists)
-
-        matched_dest = []
-        matched_src_shifted = []   # shifted — for transform calculation
-        matched_src_original = []  # original — for graphing/visualization purposes
-        for r, c in zip(row_ind, col_ind):
-            dist = dists[r, c]
-            status = "✓" if dist < match_threshold else "✗ REJECTED"
-            print(f"  cam[{r}]={dest_marks[r]} → pat[{c}]={src_marks_shifted[c]}  dist={dist:.1f}px {status}")
-            if dist < match_threshold:
-                matched_dest.append(dest_marks[r])
-                matched_src_shifted.append(src_marks_shifted[c])
-                matched_src_original.append(src_marks[c])
-        
-        return (matched_dest, matched_src_original, matched_src_shifted)
-
-######################## Auto-Alignment Feature Functions ########################
-def fetch_alignemnt_errors(model, camera: Image, pattern: Image, layer=1) -> tuple[float, float, float]:
-    """
-    Takes in 2 images:
-    - `camera`: image of current state
-    - `pattern`: image of digital pattern projected onto chip
-
-    Preconditions:
-    - imgs must be of same size (or scaled to same size for convenience)
-    - step_size is given in stepper steps
-
-    Match camera detections to pattern detections by nearest-neighbor
-    after normalizing for scale/translation.Then calculates transform
-    Returns list of tuple(dx, dy, rotation degree) pairs (pixels)
-    """
-    assert camera is not None and pattern is not None, "Error: one or both images are None"
-    # pre-processing
-    camera_processed, d_h, d_w = rf_detr_preprocess(camera, layer)
-    digital_processed, s_h, s_w = rf_detr_preprocess(pattern, layer+1)
-
-    # intermediate check
-    assert camera_processed.shape == digital_processed.shape, "Error: images are differently sized, exiting function"
-
-    # detect raw alignment marks -> raw marks are in pixels
-    detected_digital_nmarks = detect_marks_for_slam(digital_processed, model, d_h, d_w, CONFIDENCE_THRESHOLD) # assume returning [dict{}]
-    detected_cam_marks = detect_marks_for_slam(camera_processed, model, s_h, s_w, CONFIDENCE_THRESHOLD) # assume returning [dict{}]
-
-    # detection failed: no correction needed, just default to trusting stage steps
-    if len(detected_cam_marks) == 0 or len(detected_digital_nmarks) == 0:
-        print("Early exit: No markers detected in one or both images")
-        return (None, None, None)
-
-    # take centroids of each set of marks
-    digital_marks = [mark["center"] for mark in detected_digital_nmarks]
-    cam_marks = [mark["center"] for mark in detected_cam_marks]
-
-    # match coordinates to closest coordinates -> match-finder alg
-    img_h, img_w = d_h, d_w
-    matched_dest, _, matched_src = match_alignment_markers_by_coordinates(digital_marks, cam_marks, cam_marks, img_h, img_w, purpose="align")
-    print("\nmatched_dest_marks", matched_dest)
-    print("matched_src_shifted_marks", matched_src)
-
-    # check if we should proceed with error correction
-    if len(matched_dest) < 1:
-        print(f"Warning: {len(matched_dest)} valid match(es) found, need at least 2 for rotation. Skipping correction.")
-        return (0, 0, 0)
-
-    # calculate transform in pixels and rotation
-    dx, dy, d0 = estimate_transform(np.array(matched_dest), np.array(matched_src))
-    print(f"calculated estimate_transform, {dx}, {dy}, {d0}")
-    if len(matched_dest) == 1:
-        d0 = 0.0
-    if abs(d0) >= 90.0:
-        model.create_warning(f"Error: chip is rotated from previous layer. Please correct rotation and re-pattern. Skipping errors")
-        return (0, 0, 0)
+    matched_dest = []
+    matched_src_shifted = []   # shifted — for transform calculation
+    matched_src_original = []  # original — for graphing/visualization purposes
+    for r, c in zip(row_ind, col_ind):
+        dist = dists[r, c]
+        status = "✓" if dist < match_threshold else "✗ REJECTED"
+        print(f"  cam[{r}]={dest_marks[r]} → pat[{c}]={src_marks_shifted[c]}  dist={dist:.1f}px {status}")
+        if dist < match_threshold:
+            matched_dest.append(dest_marks[r])
+            matched_src_shifted.append(src_marks_shifted[c])
+            matched_src_original.append(src_marks[c])
     
+<<<<<<< Updated upstream
     print(f"error transform result (px): {round(dx)}, {round(dy)}, {d0}")
     return (dx, dy, d0)   
 
@@ -431,6 +350,9 @@ def extract_rectangle(img, display=False):
 
     return extracted, corners
 
+=======
+    return (matched_dest, matched_src_original, matched_src_shifted)
+>>>>>>> Stashed changes
 """    
 def do_align() function
     x_amount = self.x_settings.amount_var
