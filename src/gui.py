@@ -4141,6 +4141,11 @@ class MultiLayerAlignFrame:
         self.event_dispatcher.move_absolute({"x": starting_pos[0], "y": starting_pos[1]})
         # we should move in +x position and -y position to to put the upper left marker in the upper left corner
         self.event_dispatcher.move_relative({"x": x_scale * starting_mark["x"] + padding_x, "y": -y_scale * starting_mark["y"] + padding_y})
+
+        # set new image position
+        angle_deg = np.degrees(np.arctan2(R_est[1, 0], R_est[0, 0]))
+        image_x, image_y, image_t = self.event_dispatcher.image_position()
+        self.event_dispatcher.set_image_position(image_x, image_y, image_t + angle_deg)
         self.event_dispatcher.on_event(Event.START_TILING)
 
     def get_captured_tile_positions(self, folder):
