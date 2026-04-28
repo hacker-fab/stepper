@@ -4144,7 +4144,7 @@ class MultiLayerAlignFrame:
 
         # set new image position
         angle_deg = np.degrees(np.arctan2(R_est[1, 0], R_est[0, 0]))
-        image_x, image_y, image_t = self.event_dispatcher.image_position()
+        image_x, image_y, image_t = self.event_dispatcher.image_position
         self.event_dispatcher.set_image_position(image_x, image_y, image_t + angle_deg)
         self.event_dispatcher.on_event(Event.START_TILING)
 
