@@ -1,0 +1,476 @@
+from PIL import Image
+import cv2 as cv
+import os
+import json
+import math
+import numpy as np
+import onnxruntime as rt
+from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
+import matplotlib.pyplot as plt
+
+RF_DETR_IMPUT_SIZE = 704
+CONFIDENCE_THRESHOLD = 0.75
+STITCHED_CONFIDENCE_THRESHOLD = 0.4
+
+# digital pattern pixels to step size scalar
+px_to_step_x = 1.0/1.576
+px_to_step_y = 1.0/1.668
+digital_to_cam_view = 0.5
+
+# image set position scale (steps to pixels scalar)
+step_to_projection_pixels_x = 100.0/220.0
+step_to_projection_pixels_y = 100.0/160.0
+
+# auto_align scale (digital to projection scalar)
+digital_to_cam_scale_w = 2.0469
+digital_to_cam_scale_h = 1.8
+
+################## Alignment and Detection Utility Functions ##################
+def rf_detr_preprocess(img, layer: int = 1):
+    """
+    pre-processes any type of image and prepares it
+    for alignment marker detection.
+
+    Returns the pre-processed image, the original image
+    width and the original image height in pixels
+    """
+    def clahe(img_cleaned):
+        clahe_obj = cv.createCLAHE(clipLimit=30.0, tileGridSize=(15, 18))
+
+        if len(img_cleaned.shape) == 3:
+            gray = cv.cvtColor(img_cleaned, cv.COLOR_RGB2GRAY)
+        else:
+            gray = img_cleaned
+
+        return clahe_obj.apply(gray)
+
+    if img is None:
+        raise Exception("Error: image is None")
+
+    # Convert PIL to numpy
+    if isinstance(img, Image.Image):
+        img = img.convert('RGB')
+        img = np.array(img)
+
+    processed = img.copy()
+    if processed.ndim == 4:
+        processed = processed[0].transpose(1, 2, 0)
+    elif processed.ndim == 2:
+        processed = cv.cvtColor(processed, cv.COLOR_GRAY2BGR)
+
+    # Strip alpha channel if present (RGBA -> RGB)
+    if processed.ndim == 3 and processed.shape[2] == 4:
+        processed = processed[:, :, :3]
+
+    if layer == 1:
+        print("Latent image! Must be pre-processed")
+        processed = clahe(processed)                                    # -> grayscale (H, W)
+        processed = cv.cvtColor(processed, cv.COLOR_GRAY2BGR)         # -> (H, W, 3)
+        processed = np.array(processed)
+
+    orig_h, orig_w = processed.shape[:2]
+    img_resized = cv.resize(processed, (RF_DETR_IMPUT_SIZE, RF_DETR_IMPUT_SIZE))
+    img_input = img_resized.transpose(2, 0, 1)
+    img_input = np.expand_dims(img_input, 0).astype(np.float32) / 255.0
+    return img_input, orig_h, orig_w
+
+def estimate_transform(dest: np.ndarray, src: np.ndarray) -> tuple[float, float, float]:
+    """
+    Given matched point pairs, estimate (dx, dy, rotation_degrees)
+    using least-squares rigid body fit.
+
+    Precondition: dest and src are of same size
+    Assumption made: user does not tilt the chip by more than 90 degrees
+    because sth is wrong with chip placement if that's the case and
+    user should benefit from reloading the chip on the stage
+
+    dst_pts: (K, 2) — camera-detected positions (after step shift)
+    src_pts: (K, 2) — pattern expected positions
+    """
+
+    # --- Translation: avg x,y offset ---
+    assert dest.shape == src.shape, "dest and src sized differently"
+
+    delta = dest - src
+    dx = float(np.mean(delta[:, 0]))
+    dy = float(np.mean(delta[:, 1]))
+
+    dest_centroid = dest - dest.mean(axis=0)
+    src_centroid = src - src.mean(axis=0)
+
+    angles = []
+    for s, d in zip(dest_centroid, src_centroid):
+        cross = s[0]*d[1] - s[1]*d[0]
+        dot   = s[0]*d[0] + s[1]*d[1]
+        angle = np.arctan2(cross, dot)
+        angles.append(angle)
+
+    rotation_deg = float(np.degrees(np.mean(angles)))
+    return (dx, dy, rotation_deg)
+
+def detect_marks_for_slam(img, session, orig_h, orig_w, threshold=0.77) -> list[dict]:
+    """
+    Detects alignment markers for tiling SLAM algorithm
+    Returns an array of dictionary coordinates such that
+    - `arr[i] = {"center": (x,y), "left":(x,y), "right":(x,y), "top":(x,y), "bottom":(x,y)}`
+    """
+    vis = img.copy()
+    assert ((vis.shape[1]) <= 3), "bad image color dimensions"
+
+    # Run inference with our weights
+    input_name = session.get_inputs()[0].name
+    boxes, scores = session.run(None, {input_name: img})
+
+    # collect good matches
+    boxes = boxes[0]
+    scores = scores[0]
+
+    markers = []
+    for i in range(len(boxes)):
+        class_id = np.argmax(scores[i])
+        confidence = 1 / (1 + np.exp(-scores[i][class_id]))
+        if confidence > threshold:
+            x, y, w, h = boxes[i]
+
+            # fetch centers, and scale back to orig_img size
+            cx = int(x * orig_w)
+            cy = int(y * orig_h)
+            bw = int(w * orig_w)
+            bh = int(h * orig_h)
+
+            marker = {
+                "center": (cx, cy),
+                "left":   (cx - bw // 2, cy),
+                "right":  (cx + bw // 2, cy),
+                "top":    (cx, cy - bh // 2),
+                "bottom": (cx, cy + bh // 2)
+            }
+            markers.append(marker)
+    return markers
+
+################## Snake Pattern Tiling Functions ##################
+def get_next_tile_vector(row:int, col:int, width:int, height:int, num_rows:int, num_cols:int, num_steps:int, error_x:int=0, error_y:int = 0):
+    """
+    determine next step direction and size (in steps)
+    Arguments:
+        - row: current row
+        - col: current column
+        - width: total amount of steps to take horizontally (steps)
+        - height: total amount of steps to take vertically (steps)
+        - num_rows, num_cols: number of columns
+        - num_steps: how many steps of movement
+        - error_x=0: x step-errors from previous step (steps)
+        - error_y=0: y step-errors from previous step (steps)
+
+    Returns: tuple(h_direction, v_direction, step_x, step_y) --> units: (steps)
+    """           
+    is_row_transition = ((col == 0 and row % 2 == 1) or (col == num_cols-1 and row % 2 == 0))
+    if is_row_transition == True: # moving to different row
+        v_direction = 'down'
+        h_direction = None
+    else: # moving to different column
+        h_direction = 'right' if (row % 2 == 0) else 'left'
+        v_direction = None
+    print(f"width={width}, error_x={error_x}, num_steps={num_steps}, height={height}, error_y={error_y}")
+    step_x = math.floor(width - error_x) if h_direction is not None else 0
+    # for some reason moving in this direction causes overstep?
+    if h_direction == 'left':
+        step_x -= 10
+    step_y = math.floor(height + error_y) if v_direction is not None else 0
+    print(f"h_direction={h_direction}, v_direction={v_direction}, step_x={step_x}, step_y={step_y}")
+    return (h_direction, v_direction, step_x, step_y)
+
+def match_alignment_markers_by_coordinates(dest_marks, src_marks, src_marks_shifted, img_h, img_w):
+    img_diagonal = np.sqrt(img_h**2 + img_w**2)
+    match_threshold = 0.1 * img_diagonal
+    dists = cdist(dest_marks, src_marks_shifted)
+    row_ind, col_ind = linear_sum_assignment(dists)
+
+    matched_dest = []
+    matched_src_shifted = []   # shifted — for transform calculation
+    matched_src_original = []  # original — for graphing/visualization purposes
+    for r, c in zip(row_ind, col_ind):
+        dist = dists[r, c]
+        status = "✓" if dist < match_threshold else "✗ REJECTED"
+        print(f"  cam[{r}]={dest_marks[r]} → pat[{c}]={src_marks_shifted[c]}  dist={dist:.1f}px {status}")
+        if dist < match_threshold:
+            matched_dest.append(dest_marks[r])
+            matched_src_shifted.append(src_marks_shifted[c])
+            matched_src_original.append(src_marks[c])
+            
+    return (matched_dest, matched_src_original, matched_src_shifted)
+
+########## Functions for Extracting Projection Rectangle ##########
+
+def order_points(pts):
+    """Order corner points as: top-left, top-right, bottom-right, bottom-left."""
+    pts = pts.reshape(4, 2).astype(np.float32)
+    rect = np.zeros((4, 2), dtype=np.float32)
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]   # top-left
+    rect[2] = pts[np.argmax(s)]   # bottom-right
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]  # top-right
+    rect[3] = pts[np.argmax(diff)]  # bottom-left
+    return rect.astype(int)
+
+def find_rectangle_contour(binary, img_shape):
+    """
+    Find the contour that best represents a rectangle in the scene.
+    Returns the approximated 4-point contour or None.
+    """
+    h, w = img_shape[:2]
+    min_area = 0.02 * h * w
+    max_area = 0.98 * h * w
+
+    contours, _ = cv.findContours(binary, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    # Sort by area descending; try to find a 4-sided approximation
+    contours = sorted(contours, key=cv.contourArea, reverse=True)
+
+    for contour in contours[:5]:  # only inspect top-5 largest
+        area = cv.contourArea(contour)
+        if not (min_area < area < max_area):
+            continue
+
+        arc = cv.arcLength(contour, True)
+        # Try a range of epsilon values for robustness
+        for eps_factor in [0.02, 0.03, 0.04, 0.05, 0.07]:
+            approx = cv.approxPolyDP(contour, eps_factor * arc, True)
+            if len(approx) == 4:
+                # Verify it's convex and large enough
+                if cv.isContourConvex(approx):
+                    return approx
+
+        # If we can't get exactly 4 points, use convex hull and fit a quadrilateral
+        hull = cv.convexHull(contour)
+        arc = cv.arcLength(hull, True)
+        for eps_factor in [0.02, 0.03, 0.05, 0.08, 0.12]:
+            approx = cv.approxPolyDP(hull, eps_factor * arc, True)
+            if len(approx) == 4:
+                return approx
+
+    return None
+
+def extract_rectangle(img, display=False):
+    """
+    Extract the bright rectangular projection area from a camera image.
+    Uses brightness thresholding to isolate the lit projection region.
+
+    Returns
+    -------
+    extracted : np.ndarray  Simple crop of the detected rectangle (no dewarping)
+    corners   : np.ndarray  The 4 corner points [[x,y], ...] in top-left, top-right,
+                            bottom-right, bottom-left order. None if not found.
+    """
+    orig = img.copy()
+    h, w = img.shape[:2]
+
+    # --- 1. Isolate the bright region ---
+    # Convert to grayscale and aggressively blur to ignore inner content
+    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY) if len(img.shape) == 3 else img.copy()
+    blurred = cv.GaussianBlur(gray, (51, 51), 0)
+
+    # Otsu threshold — bright projection vs dark camera margins
+    _, bright_mask = cv.threshold(blurred, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
+
+    # Also try a fixed high-brightness threshold as a fallback candidate
+    _, bright_fixed = cv.threshold(blurred, 180, 255, cv.THRESH_BINARY)
+
+    # Pick whichever gives a larger foreground region (more likely to be the projection)
+    mask = bright_mask if cv.countNonZero(bright_mask) > cv.countNonZero(bright_fixed) else bright_fixed
+
+    # --- 2. Clean up the mask ---
+    kernel = cv.getStructuringElement(cv.MORPH_RECT, (15, 15))
+    mask = cv.morphologyEx(mask, cv.MORPH_CLOSE, kernel, iterations=3)
+    mask = cv.morphologyEx(mask, cv.MORPH_OPEN,  kernel, iterations=2)
+
+    # --- 3. Find the largest bright contour ---
+    contours, _ = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        print("No bright region found.")
+        return None, None
+
+    # Ignore contours that are too small or suspiciously fill the whole frame
+    valid = [c for c in contours
+             if 0.02 * h * w < cv.contourArea(c) < 0.97 * h * w]
+    if not valid:
+        valid = contours  # fall back to all contours
+
+    best = max(valid, key=cv.contourArea)
+
+    # --- 4. Approximate as a quadrilateral ---
+    approx = None
+    arc = cv.arcLength(best, True)
+    for eps in [0.02, 0.03, 0.04, 0.05, 0.07, 0.10]:
+        candidate = cv.approxPolyDP(best, eps * arc, True)
+        if len(candidate) == 4 and cv.isContourConvex(candidate):
+            approx = candidate
+            break
+
+    if approx is None:
+        # Fall back: use bounding rect of the convex hull
+        hull = cv.convexHull(best)
+        x, y, bw, bh = cv.boundingRect(hull)
+        approx = np.array([[[x, y]], [[x+bw, y]], [[x+bw, y+bh]], [[x, y+bh]]])
+
+    corners = order_points(approx)   # tl, tr, br, bl
+    tl, tr, br, bl = corners
+
+    # --- 5. Crop (axis-aligned bounding box of the 4 corners) ---
+    x1 = max(0, min(tl[0], bl[0]))
+    y1 = max(0, min(tl[1], tr[1]))
+    x2 = min(w, max(tr[0], br[0]))
+    y2 = min(h, max(bl[1], br[1]))
+    extracted = orig[y1:y2, x1:x2]
+
+    # --- 6. Optional display ---
+    if display:
+        vis = cv.cvtColor(orig, cv.COLOR_BGR2RGB)
+        cv.drawContours(vis, [approx], -1, (0, 255, 0), 3)
+        for pt in corners:
+            cv.circle(vis, tuple(pt), 8, (0, 0, 255), -1)
+        # Draw crop box
+        cv.rectangle(vis, (x1, y1), (x2, y2), (255, 165, 0), 2)
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        axes[0].imshow(vis)
+        axes[0].set_title("Detected rectangle  (green=contour, orange=crop)")
+        axes[0].axis("off")
+        axes[1].imshow(cv.cvtColor(extracted, cv.COLOR_BGR2RGB))
+        axes[1].set_title("Extracted")
+        axes[1].axis("off")
+        plt.tight_layout()
+        plt.show()
+
+    return extracted, corners
+
+"""    
+def do_align() function
+    x_amount = self.x_settings.amount_var
+    x_offset = int(self.x_settings.offset_var.get())
+    x_dir = 1 if x_amount > 0 else -1
+    x_amount = abs(x_amount)
+
+    y_amount = self.y_settings.amount_var
+    y_offset = int(self.y_settings.offset_var.get())
+    y_dir = 1 if y_amount > 0 else -1
+    y_amount = abs(y_amount)
+
+    x_start, y_start = self.model.stage_setpoint[0], self.model.stage_setpoint[1]
+    print(f"x_start {x_start}, y_start = {y_start}")
+
+    # Move in Snake pattern with left to right on even rows and right to left on odd rows
+    for y_idx in range(y_amount):
+        if(y_idx %2 == 0):
+          for x_idx in range(x_amount):
+              pattern_for_tile(self, model, x_start, -x_dir, x_idx, x_offset, y_start, -y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
+              print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
+        else:
+            for x_idx in range(x_amount - 1, -1, -1):
+              pattern_for_tile(self, model, x_start, -x_dir, x_idx, x_offset, y_start, -y_dir, y_idx, y_offset, y_idx_max=y_amount, x_idx_max=x_amount)
+              print("Patterned x_idx:" + str(x_idx) + " y_idx: "+str(y_idx))
+
+def detect_alignment_markers_yolo(yolo_model, image, draw_rectangle=False, edge=None, edge_fraction=0.25):
+    #Detects alignment markers and optionally filters detections by image edge(s).
+    #yolo_model: YOLO model
+    #image: image to detect on 
+    #draw_rectangle: If True, draw rectangles
+    #edge: 'left', 'right', 'top', or a list like ['left', 'right'] where markers are expected
+                                            #none means that markers are expect on all edges
+    #edge_fraction: Fraction of width/height considered as edge region
+    
+    detections = []
+    display_image = image.copy()
+    try:
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        original_height, original_width = image_rgb.shape[:2]
+        resized = cv2.resize(image_rgb, (640, 640))
+        results = yolo_model(resized)
+        boxes = results[0].boxes
+
+        if isinstance(edge, str):
+            edge = [edge]  # allow single string or list
+
+        for box in boxes:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            x1 = int(x1 * original_width / 640)
+            x2 = int(x2 * original_width / 640)
+            y1 = int(y1 * original_height / 640)
+            y2 = int(y2 * original_height / 640)
+            x_center = (x1 + x2) / 2
+            y_center = (y1 + y2) / 2
+
+            # If edge filtering is enabled
+            if edge is not None:
+                if 'left' in edge and x_center > original_width * edge_fraction:
+                    continue
+                if 'right' in edge and x_center < original_width * (1 - edge_fraction):
+                    continue
+                if 'top' in edge and y_center > original_height * edge_fraction:
+                    continue
+
+            detections.append(((x1, y1), (x2, y2)))
+            if draw_rectangle:
+                cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
+        print(f"Detected {len(detections)} marker(s)")
+    except Exception as e:
+        print(f"Detection failed: {e}")
+
+    return detections, display_image
+    
+def do_align_tiling(edge):
+    #edge = ['left', 'right', 'top']
+    h, w, _ = model.camera_image.shape
+
+    # Detect markers on the left, right, and top edges
+    markers, _ = detect_alignment_markers_yolo(model.model, model.camera_image, edge)
+    if len(markers) == 0:
+        print("No markers detected.")
+        return
+
+    alignment = model.config.alignment
+    dx, dy = 0.0, 0.0
+    count_x, count_y = 0, 0
+
+    for m in markers:
+        xy0, xy1 = m
+        x0, y0 = xy0
+        x1, y1 = xy1
+        x = (x0 + x1) / 2 / w
+        y = (y0 + y1) / 2 / h
+
+        # Horizontal alignment (left/right markers)
+        if x < 0.5:
+            dx += alignment.x_scale_factor * (alignment.left_marker_x / w - x)
+            count_x += 1
+        elif x > 0.5:
+            dx += alignment.x_scale_factor * (alignment.right_marker_x / w - x)
+            count_x += 1
+
+        # Vertical alignment (top markers only)
+        if y < 0.3:  # top region
+            dy += alignment.y_scale_factor * (alignment.top_marker_y / h - y)
+            count_y += 1
+
+    # Average corrections based on detected edges
+    if count_x > 0:
+        dx /= count_x
+    if count_y > 0:
+        dy /= count_y
+
+    # Move accordingly (if no top markers, dy=0)
+    #If a small amount of alignment is needed move the image otherwise move the stage since we have far more percision in moving the image than the stage
+    #The con of this is that large movements of the image result in cropping of the image
+    #TODO calibrate the stage move threshold
+    if(dx < 10 or dy < 10):
+        #move the image instead of the stage
+        model.set_image_position(dx, dy, t=0)
+    else:
+        model.move_relative({'x': dx, 'y': dy})
+        print(f"Alignment correction: dx={dx:.5f}, dy={dy:.5f} using {len(markers)} markers.")
+"""

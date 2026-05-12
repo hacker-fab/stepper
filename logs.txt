@@ -1,0 +1,591 @@
+Starting Tiling
+on_begin: setting red focus to be pattern
+_refresh_red_focus: size: (0.0, 0.0, 0.0), posterization: None, projector size: (2560, 1440), border size = 0.0
+doneset pattern
+on_begin storing align_image
+on_begin done align_image
+overlay_w_steps: 110.0, overlay_h_steps:110.0
+strides x,y: 463, 236
+
+resolved position: (3.46, 2.6, 0.33), Idle: True
+
+Uploading pattern: tiles\tile_0,0.png
+_refresh_red_focus: size: (0.0, 0.0, 0.0), posterization: None, projector size: (2560, 1440), border size = 0.0
+_refresh_red_focus: size: (0.0, 0.0, 0.0), posterization: None, projector size: (2560, 1440), border size = 0.0
+Moving by: {'z': -60} | Current position: 3460.0, 2600.0, 330.0
+moving relative {'z': -60}
+set_shown_image(clear)
+Patterning at  (3460.0, 2600.0, 270.0)
+Patterning 1 tiles for 30000ms
+Total time: 30s
+Saving image stepper_captures\uv_mode_entry_2026-04-25_09-46-52.png
+set_shown_image(clear)
+Leaving previous layer empty because select var is ''
+enter_red_mode
+set_shown_image(red_focus)
+Moving by: {'z': 60} | Current position: 3460.0, 2600.0, 270.0
+moving relative {'z': 60}
+src_img captured, exposed tile # 0_0
+
+Slam_way_to_target: for 0, 1 from 0, 0
+width=463, error_x=0, num_steps=2, height=236, error_y=0
+h_direction=right, v_direction=None, step_x=463, step_y=0
+
+next tile vector returned: h_direction=right, v_direction=None, step_x=463, step_y=0
+moving a stride...
+Moving by: {'x': -463, 'y': 0} | Current position: 3460.0, 2600.0, 330.0
+moving relative {'x': -463, 'y': 0}
+Starting Autofocus...
+Moving to position: {'z': 281}
+Current position: 2997.0, 2600.0, 330.0
+moving absolute {'z': 281}
+focus average: 452.10970260363655
+Moving to position: {'z': 283}
+Current position: 2997.0, 2600.0, 281
+moving absolute {'z': 283}
+focus average: 443.3931685265223
+Moving to position: {'z': 285}
+Current position: 2997.0, 2600.0, 283
+moving absolute {'z': 285}
+focus average: 442.746774016903
+Moving to position: {'z': 287}
+Current position: 2997.0, 2600.0, 285
+moving absolute {'z': 287}
+focus average: 451.5799677061852
+Fine grain sampling done, best focus is: 452.10970260363655
+Moving to position: {'z': 281}
+Current position: 2997.0, 2600.0, 287
+moving absolute {'z': 281}
+Autofocus Complete.
+Finished autofocus
+
+Calling alignment_errors with h=right, v=None, dx_step 463 and dy_step 0, layer 1
+step size calculations (pixels): dir_x right, dir_y None, step_size_x_px 730, step_size_y_px 0
+Latent image! Must be pre-processed
+Latent image! Must be pre-processed
+detected src mark count:  6 detected dest mark count:  2
+raw dest_marks: [(963, 1038), (943, 184)]
+raw src_marks: [(186, 1068), (1728, 167), (172, 202), (331, 1065), (1751, 1006), (340, 199)]
+shift size (px): step_dx 730, step_dy=0
+new src_marks that are shifted: [(916, 1068), (2458, 167), (902, 202), (1061, 1065), (2481, 1006), (1070, 199)]
+
+  cam[0]=(963, 1038) → pat[0]=(916, 1068)  dist=55.8px ✓
+  cam[1]=(943, 184) → pat[2]=(902, 202)  dist=44.8px ✓
+
+matched_dest_marks [(963, 1038), (943, 184)]
+matched_src_shifted_marks [(916, 1068), (902, 202)]
+calculated estimate_transform, 44.0, -24.0, 0.415397268150253
+error transform result (px): 44, -24, 0.415397268150253
+alignment_errors returned with derivatives (pixels): 44, -24, 0.415397268150253
+transform is: 27, -15, with rotation 0.415397268150253 (steps)
+width=463, error_x=27, num_steps=2, height=236, error_y=-15
+h_direction=right, v_direction=None, step_x=436, step_y=0
+
+next tile vector returned: h_direction=right, v_direction=None, step_x=436, step_y=0
+moving a stride...
+Moving by: {'x': -436, 'y': 0} | Current position: 2997.0, 2600.0, 281
+moving relative {'x': -436, 'y': 0}
+Starting Autofocus...
+Moving to position: {'z': 281}
+Current position: 2561.0, 2600.0, 281
+moving absolute {'z': 281}
+focus average: 417.522989307617
+Moving to position: {'z': 283}
+Current position: 2561.0, 2600.0, 281
+moving absolute {'z': 283}
+focus average: 424.77204059661534
+Moving to position: {'z': 285}
+Current position: 2561.0, 2600.0, 283
+moving absolute {'z': 285}
+focus average: 410.4396852070359
+Moving to position: {'z': 287}
+Current position: 2561.0, 2600.0, 285
+moving absolute {'z': 287}
+focus average: 418.09100261238194
+Fine grain sampling done, best focus is: 424.77204059661534
+Moving to position: {'z': 283}
+Current position: 2561.0, 2600.0, 287
+moving absolute {'z': 283}
+Autofocus Complete.
+Finished autofocus
+
+Calling alignment_errors with h=right, v=None, dx_step 436 and dy_step 0, layer 1
+step size calculations (pixels): dir_x right, dir_y None, step_size_x_px 687, step_size_y_px 0
+Latent image! Must be pre-processed
+Latent image! Must be pre-processed
+detected src mark count:  2 detected dest mark count:  1
+raw dest_marks: [(1685, 1020)]
+raw src_marks: [(963, 1038), (943, 184)]
+shift size (px): step_dx 687, step_dy=0
+new src_marks that are shifted: [(1650, 1038), (1630, 184)]
+
+  cam[0]=(1685, 1020) → pat[0]=(1650, 1038)  dist=39.4px ✓
+
+matched_dest_marks [(1685, 1020)]
+matched_src_shifted_marks [(1650, 1038)]
+calculated estimate_transform, 35.0, -18.0, 0.0
+error transform result (px): 35, -18, 0.0
+alignment_errors returned with derivatives (pixels): 35, -18, 0.0
+transform is: 22, -11, with rotation 0.0 (steps)
+
+Fine alignment
+Calling alignment_errors
+step size calculations (pixels): dir_x None, dir_y None, step_size_x_px 0, step_size_y_px 0
+Latent image! Must be pre-processed
+detected src mark count:  1 detected dest mark count:  4
+raw dest_marks: [(178, 1068), (1757, 1064), (1751, 197), (173, 202)]
+raw src_marks: [(1685, 1019)]
+shift size (px): step_dx 0, step_dy=0
+new src_marks that are shifted: [(1685, 1019)]
+
+  cam[1]=(1757, 1064) → pat[0]=(1685, 1019)  dist=84.9px ✓
+
+matched_dest_marks [(1757, 1064)]
+matched_src_shifted_marks [(1685, 1019)]
+calculated estimate_transform, 72.0, 45.0, 0.0
+error transform result (px): 72, 45, 0.0
+alignment_errors returned with 72, 45, 0.0
+fine transform is: 45, 26, with rotation 0.0 (steps)
+
+try 0: move_relative error_x-45, and error_y=26
+Moving by: {'x': -45, 'y': 26} | Current position: 2561.0, 2600.0, 283
+moving relative {'x': -45, 'y': 26}
+Calling snake_pattern_alignment_errors
+step size calculations (pixels): dir_x None, dir_y None, step_size_x_px 0, step_size_y_px 0
+Latent image! Must be pre-processed
+detected src mark count:  2 detected dest mark count:  4
+raw dest_marks: [(178, 1068), (1757, 1064), (1751, 197), (173, 202)]
+raw src_marks: [(1748, 1052), (1732, 196)]
+shift size (px): step_dx 0, step_dy=0
+new src_marks that are shifted: [(1748, 1052), (1732, 196)]
+
+  cam[1]=(1757, 1064) → pat[0]=(1748, 1052)  dist=15.0px ✓
+  cam[2]=(1751, 197) → pat[1]=(1732, 196)  dist=19.0px ✓
+
+matched_dest_marks [(1757, 1064), (1751, 197)]
+matched_src_shifted_marks [(1748, 1052), (1732, 196)]
+calculated estimate_transform, 14.0, 6.5, -0.6743201996538467
+error transform result (px): 14, 6, -0.6743201996538467
+snake_pattern_alignment_errors reuturned iwth 14, 6, -0.6743201996538467
+error_x8, and error_y=3
+exiting slam loop and adjusting image position
+invoked: set_image_position
+_refresh_red_focus: size: (8, 3, -0.6743201996538467), posterization: None, projector size: (2560, 1440), border size = 0.0
+resolved position: (2.516, 2.626, 0.283), Idle: True
+
+Uploading pattern: tiles\tile_0,1.png
+_refresh_red_focus: size: (8, 3, -0.6743201996538467), posterization: None, projector size: (2560, 1440), border size = 0.0
+_refresh_red_focus: size: (8, 3, -0.6743201996538467), posterization: None, projector size: (2560, 1440), border size = 0.0
+Moving by: {'z': -60} | Current position: 2516.0, 2626.0, 283
+moving relative {'z': -60}
+set_shown_image(clear)
+Patterning at  (2516.0, 2626.0, 223)
+Patterning 1 tiles for 30000ms
+Total time: 30s
+Saving image stepper_captures\uv_mode_entry_2026-04-25_09-47-56.png
+set_shown_image(clear)
+Leaving previous layer empty because select var is ''
+enter_red_mode
+set_shown_image(red_focus)
+Moving by: {'z': 60} | Current position: 2516.0, 2626.0, 223
+moving relative {'z': 60}
+_refresh_red_focus: size: (8, 3, -0.6743201996538467), posterization: None, projector size: (2560, 1440), border size = 0.0
+invoked: set_image_position
+_refresh_red_focus: size: (0, 0, 0), posterization: None, projector size: (2560, 1440), border size = 0.0
+src_img captured, exposed tile # 0_1
+
+Slam_way_to_target: for 1, 1 from 0, 1
+Starting Autofocus...
+Moving to position: {'z': 279}
+Current position: 2516.0, 2626.0, 283
+moving absolute {'z': 279}
+focus average: 406.913805774179
+Moving to position: {'z': 281}
+Current position: 2516.0, 2626.0, 279
+moving absolute {'z': 281}
+focus average: 409.81244379215815
+Moving to position: {'z': 283}
+Current position: 2516.0, 2626.0, 281
+moving absolute {'z': 283}
+focus average: 426.30864568873966
+Moving to position: {'z': 285}
+Current position: 2516.0, 2626.0, 283
+moving absolute {'z': 285}
+focus average: 419.5642777897826
+Moving to position: {'z': 287}
+Current position: 2516.0, 2626.0, 285
+moving absolute {'z': 287}
+focus average: 408.59050440082893
+Moving to position: {'z': 289}
+Current position: 2516.0, 2626.0, 287
+moving absolute {'z': 289}
+focus average: 411.3502741013962
+Fine grain sampling done, best focus is: 426.30864568873966
+Moving to position: {'z': 283}
+Current position: 2516.0, 2626.0, 289
+moving absolute {'z': 283}
+Autofocus Complete.
+Finished autofocus
+width=463, error_x=0, num_steps=2, height=236, error_y=0
+h_direction=None, v_direction=down, step_x=0, step_y=236
+
+next tile vector returned: h_direction=None, v_direction=down, step_x=0, step_y=236
+moving a stride...
+Moving by: {'x': 0, 'y': -236} | Current position: 2516.0, 2626.0, 283
+moving relative {'x': 0, 'y': -236}
+Starting Autofocus...
+Moving to position: {'z': 281}
+Current position: 2516.0, 2390.0, 283
+moving absolute {'z': 281}
+focus average: 409.08118791708813
+Moving to position: {'z': 283}
+Current position: 2516.0, 2390.0, 281
+moving absolute {'z': 283}
+focus average: 420.84081638312165
+Moving to position: {'z': 285}
+Current position: 2516.0, 2390.0, 283
+moving absolute {'z': 285}
+focus average: 401.91911885801693
+Moving to position: {'z': 287}
+Current position: 2516.0, 2390.0, 285
+moving absolute {'z': 287}
+focus average: 424.51677910472546
+Fine grain sampling done, best focus is: 424.51677910472546
+Moving to position: {'z': 287}
+Current position: 2516.0, 2390.0, 287
+moving absolute {'z': 287}
+Autofocus Complete.
+Finished autofocus
+
+Calling alignment_errors with h=None, v=down, dx_step 0 and dy_step 236, layer 1
+step size calculations (pixels): dir_x None, dir_y down, step_size_x_px 0, step_size_y_px 394
+Latent image! Must be pre-processed
+Latent image! Must be pre-processed
+detected src mark count:  2 detected dest mark count:  1
+raw dest_marks: [(1730, 742)]
+raw src_marks: [(1732, 1034), (1725, 181)]
+shift size (px): step_dx 0, step_dy=-394
+new src_marks that are shifted: [(1732, 640), (1725, -213)]
+
+  cam[0]=(1730, 742) → pat[0]=(1732, 640)  dist=102.0px ✓
+
+matched_dest_marks [(1730, 742)]
+matched_src_shifted_marks [(1732, 640)]
+calculated estimate_transform, -2.0, 102.0, 0.0
+error transform result (px): -2, 102, 0.0
+alignment_errors returned with derivatives (pixels): -2, 102, 0.0
+transform is: -2, 61, with rotation 0.0 (steps)
+width=463, error_x=-2, num_steps=2, height=236, error_y=61
+h_direction=None, v_direction=down, step_x=0, step_y=297
+
+next tile vector returned: h_direction=None, v_direction=down, step_x=0, step_y=297
+moving a stride...
+Moving by: {'x': 0, 'y': -297} | Current position: 2516.0, 2390.0, 287
+moving relative {'x': 0, 'y': -297}
+Starting Autofocus...
+Moving to position: {'z': 281}
+Current position: 2516.0, 2093.0, 287
+moving absolute {'z': 281}
+focus average: 365.1458821388456
+Moving to position: {'z': 283}
+Current position: 2516.0, 2093.0, 281
+moving absolute {'z': 283}
+focus average: 363.4007064475798
+Moving to position: {'z': 285}
+Current position: 2516.0, 2093.0, 283
+moving absolute {'z': 285}
+focus average: 391.6524454330518
+Moving to position: {'z': 287}
+Current position: 2516.0, 2093.0, 285
+moving absolute {'z': 287}
+focus average: 373.32025148879785
+Fine grain sampling done, best focus is: 391.6524454330518
+Moving to position: {'z': 285}
+Current position: 2516.0, 2093.0, 287
+moving absolute {'z': 285}
+Autofocus Complete.
+Finished autofocus
+
+Calling alignment_errors with h=None, v=down, dx_step 0 and dy_step 297, layer 1
+step size calculations (pixels): dir_x None, dir_y down, step_size_x_px 0, step_size_y_px 495
+Latent image! Must be pre-processed
+Latent image! Must be pre-processed
+detected src mark count:  1 detected dest mark count:  1
+raw dest_marks: [(1720, 199)]
+raw src_marks: [(1730, 742)]
+shift size (px): step_dx 0, step_dy=-495
+new src_marks that are shifted: [(1730, 247)]
+
+  cam[0]=(1720, 199) → pat[0]=(1730, 247)  dist=49.0px ✓
+
+matched_dest_marks [(1720, 199)]
+matched_src_shifted_marks [(1730, 247)]
+calculated estimate_transform, -10.0, -48.0, 0.0
+error transform result (px): -10, -48, 0.0
+alignment_errors returned with derivatives (pixels): -10, -48, 0.0
+transform is: -7, -29, with rotation 0.0 (steps)
+
+Fine alignment
+Calling alignment_errors
+step size calculations (pixels): dir_x None, dir_y None, step_size_x_px 0, step_size_y_px 0
+Latent image! Must be pre-processed
+detected src mark count:  1 detected dest mark count:  4
+raw dest_marks: [(178, 1068), (1757, 1064), (1751, 197), (173, 202)]
+raw src_marks: [(1721, 199)]
+shift size (px): step_dx 0, step_dy=0
+new src_marks that are shifted: [(1721, 199)]
+
+  cam[2]=(1751, 197) → pat[0]=(1721, 199)  dist=30.1px ✓
+
+matched_dest_marks [(1751, 197)]
+matched_src_shifted_marks [(1721, 199)]
+calculated estimate_transform, 30.0, -2.0, 0.0
+error transform result (px): 30, -2, 0.0
+alignment_errors returned with 30, -2, 0.0
+fine transform is: 19, -2, with rotation 0.0 (steps)
+
+try 0: move_relative error_x-19, and error_y=-2
+Moving by: {'x': -19, 'y': -2} | Current position: 2516.0, 2093.0, 285
+moving relative {'x': -19, 'y': -2}
+Calling snake_pattern_alignment_errors
+step size calculations (pixels): dir_x None, dir_y None, step_size_x_px 0, step_size_y_px 0
+Latent image! Must be pre-processed
+detected src mark count:  1 detected dest mark count:  4
+raw dest_marks: [(178, 1068), (1757, 1064), (1751, 197), (173, 202)]
+raw src_marks: [(1746, 196)]
+shift size (px): step_dx 0, step_dy=0
+new src_marks that are shifted: [(1746, 196)]
+
+  cam[2]=(1751, 197) → pat[0]=(1746, 196)  dist=5.1px ✓
+
+matched_dest_marks [(1751, 197)]
+matched_src_shifted_marks [(1746, 196)]
+calculated estimate_transform, 5.0, 1.0, 0.0
+error transform result (px): 5, 1, 0.0
+snake_pattern_alignment_errors reuturned iwth 5, 1, 0.0
+error_x3, and error_y=0
+exiting slam loop and adjusting image position
+invoked: set_image_position
+_refresh_red_focus: size: (3, 0, 0.0), posterization: None, projector size: (2560, 1440), border size = 0.0
+resolved position: (2.497, 2.091, 0.285), Idle: True
+
+Uploading pattern: tiles\tile_1,1.png
+_refresh_red_focus: size: (3, 0, 0.0), posterization: None, projector size: (2560, 1440), border size = 0.0
+_refresh_red_focus: size: (3, 0, 0.0), posterization: None, projector size: (2560, 1440), border size = 0.0
+Moving by: {'z': -60} | Current position: 2497.0, 2091.0, 285
+moving relative {'z': -60}
+set_shown_image(clear)
+Patterning at  (2497.0, 2091.0, 225)
+Patterning 1 tiles for 30000ms
+Total time: 30s
+Saving image stepper_captures\uv_mode_entry_2026-04-25_09-49-05.png
+set_shown_image(clear)
+Leaving previous layer empty because select var is ''
+enter_red_mode
+set_shown_image(red_focus)
+Moving by: {'z': 60} | Current position: 2497.0, 2091.0, 225
+moving relative {'z': 60}
+_refresh_red_focus: size: (3, 0, 0.0), posterization: None, projector size: (2560, 1440), border size = 0.0
+invoked: set_image_position
+_refresh_red_focus: size: (0, 0, 0), posterization: None, projector size: (2560, 1440), border size = 0.0
+src_img captured, exposed tile # 1_1
+
+Slam_way_to_target: for 1, 0 from 1, 1
+Starting Autofocus...
+Moving to position: {'z': 279}
+Current position: 2497.0, 2091.0, 285
+moving absolute {'z': 279}
+focus average: 378.24301000261056
+Moving to position: {'z': 281}
+Current position: 2497.0, 2091.0, 279
+moving absolute {'z': 281}
+focus average: 388.9153938971111
+Moving to position: {'z': 283}
+Current position: 2497.0, 2091.0, 281
+moving absolute {'z': 283}
+focus average: 370.288189108137
+Moving to position: {'z': 285}
+Current position: 2497.0, 2091.0, 283
+moving absolute {'z': 285}
+focus average: 382.34315388515887
+Moving to position: {'z': 287}
+Current position: 2497.0, 2091.0, 285
+moving absolute {'z': 287}
+focus average: 368.33457230910113
+Moving to position: {'z': 289}
+Current position: 2497.0, 2091.0, 287
+moving absolute {'z': 289}
+focus average: 409.7631536150184
+Fine grain sampling done, best focus is: 409.7631536150184
+Moving to position: {'z': 289}
+Current position: 2497.0, 2091.0, 289
+moving absolute {'z': 289}
+Autofocus Complete.
+Finished autofocus
+width=463, error_x=0, num_steps=2, height=236, error_y=0
+h_direction=left, v_direction=None, step_x=453, step_y=0
+
+next tile vector returned: h_direction=left, v_direction=None, step_x=453, step_y=0
+moving a stride...
+Moving by: {'x': 453, 'y': 0} | Current position: 2497.0, 2091.0, 289
+moving relative {'x': 453, 'y': 0}
+Starting Autofocus...
+Moving to position: {'z': 281}
+Current position: 2950.0, 2091.0, 289
+moving absolute {'z': 281}
+focus average: 371.93874713917916
+Moving to position: {'z': 283}
+Current position: 2950.0, 2091.0, 281
+moving absolute {'z': 283}
+focus average: 395.10127510861435
+Moving to position: {'z': 285}
+Current position: 2950.0, 2091.0, 283
+moving absolute {'z': 285}
+focus average: 367.34015118660363
+Moving to position: {'z': 287}
+Current position: 2950.0, 2091.0, 285
+moving absolute {'z': 287}
+focus average: 390.9758160687347
+Fine grain sampling done, best focus is: 395.10127510861435
+Moving to position: {'z': 283}
+Current position: 2950.0, 2091.0, 287
+moving absolute {'z': 283}
+Autofocus Complete.
+Finished autofocus
+
+Calling alignment_errors with h=left, v=None, dx_step 453 and dy_step 0, layer 1
+step size calculations (pixels): dir_x left, dir_y None, step_size_x_px 714, step_size_y_px 0
+Latent image! Must be pre-processed
+Latent image! Must be pre-processed
+detected src mark count:  1 detected dest mark count:  1
+raw dest_marks: [(1005, 198)]
+raw src_marks: [(1749, 186)]
+shift size (px): step_dx -714, step_dy=0
+new src_marks that are shifted: [(1035, 186)]
+
+  cam[0]=(1005, 198) → pat[0]=(1035, 186)  dist=32.3px ✓
+
+matched_dest_marks [(1005, 198)]
+matched_src_shifted_marks [(1035, 186)]
+calculated estimate_transform, -30.0, 12.0, 0.0
+error transform result (px): -30, 12, 0.0
+alignment_errors returned with derivatives (pixels): -30, 12, 0.0
+transform is: -20, 7, with rotation 0.0 (steps)
+width=463, error_x=-20, num_steps=2, height=236, error_y=7
+h_direction=left, v_direction=None, step_x=473, step_y=0
+
+next tile vector returned: h_direction=left, v_direction=None, step_x=473, step_y=0
+moving a stride...
+Moving by: {'x': 473, 'y': 0} | Current position: 2950.0, 2091.0, 283
+moving relative {'x': 473, 'y': 0}
+Starting Autofocus...
+Moving to position: {'z': 281}
+Current position: 3423.0, 2091.0, 283
+moving absolute {'z': 281}
+focus average: 275.19687219586876
+Moving to position: {'z': 283}
+Current position: 3423.0, 2091.0, 281
+moving absolute {'z': 283}
+focus average: 273.73323953718557
+Moving to position: {'z': 285}
+Current position: 3423.0, 2091.0, 283
+moving absolute {'z': 285}
+focus average: 276.214677324146
+Moving to position: {'z': 287}
+Current position: 3423.0, 2091.0, 285
+moving absolute {'z': 287}
+focus average: 277.46881261906594
+Fine grain sampling done, best focus is: 277.46881261906594
+Moving to position: {'z': 287}
+Current position: 3423.0, 2091.0, 287
+moving absolute {'z': 287}
+Autofocus Complete.
+Finished autofocus
+
+Calling alignment_errors with h=left, v=None, dx_step 473 and dy_step 0, layer 1
+step size calculations (pixels): dir_x left, dir_y None, step_size_x_px 745, step_size_y_px 0
+Latent image! Must be pre-processed
+Latent image! Must be pre-processed
+detected src mark count:  1 detected dest mark count:  2
+raw dest_marks: [(203, 203), (1754, 160)]
+raw src_marks: [(1005, 198)]
+shift size (px): step_dx -745, step_dy=0
+new src_marks that are shifted: [(260, 198)]
+
+  cam[0]=(203, 203) → pat[0]=(260, 198)  dist=57.2px ✓
+
+matched_dest_marks [(203, 203)]
+matched_src_shifted_marks [(260, 198)]
+calculated estimate_transform, -57.0, 5.0, 0.0
+error transform result (px): -57, 5, 0.0
+alignment_errors returned with derivatives (pixels): -57, 5, 0.0
+transform is: -37, 2, with rotation 0.0 (steps)
+
+Fine alignment
+Calling alignment_errors
+step size calculations (pixels): dir_x None, dir_y None, step_size_x_px 0, step_size_y_px 0
+Latent image! Must be pre-processed
+detected src mark count:  2 detected dest mark count:  4
+raw dest_marks: [(178, 1068), (1757, 1064), (1751, 197), (173, 202)]
+raw src_marks: [(204, 203), (1756, 162)]
+shift size (px): step_dx 0, step_dy=0
+new src_marks that are shifted: [(204, 203), (1756, 162)]
+
+  cam[2]=(1751, 197) → pat[1]=(1756, 162)  dist=35.4px ✓
+  cam[3]=(173, 202) → pat[0]=(204, 203)  dist=31.0px ✓
+
+matched_dest_marks [(1751, 197), (173, 202)]
+matched_src_shifted_marks [(1756, 162), (204, 203)]
+calculated estimate_transform, -18.0, 17.0, -1.331715814899703
+error transform result (px): -18, 17, -1.331715814899703
+alignment_errors returned with -18, 17, -1.331715814899703
+fine transform is: -12, 10, with rotation -1.331715814899703 (steps)
+
+try 0: move_relative error_x12, and error_y=10
+Moving by: {'x': 12, 'y': 10} | Current position: 3423.0, 2091.0, 287
+moving relative {'x': 12, 'y': 10}
+Calling snake_pattern_alignment_errors
+step size calculations (pixels): dir_x None, dir_y None, step_size_x_px 0, step_size_y_px 0
+Latent image! Must be pre-processed
+detected src mark count:  2 detected dest mark count:  4
+raw dest_marks: [(178, 1068), (1757, 1064), (1751, 197), (173, 202)]
+raw src_marks: [(183, 203), (1737, 167)]
+shift size (px): step_dx 0, step_dy=0
+new src_marks that are shifted: [(183, 203), (1737, 167)]
+
+  cam[2]=(1751, 197) → pat[1]=(1737, 167)  dist=33.1px ✓
+  cam[3]=(173, 202) → pat[0]=(183, 203)  dist=10.0px ✓
+
+matched_dest_marks [(1751, 197), (173, 202)]
+matched_src_shifted_marks [(1737, 167), (183, 203)]
+calculated estimate_transform, 2.0, 14.5, -1.1455330359699116
+error transform result (px): 2, 14, -1.1455330359699116
+snake_pattern_alignment_errors reuturned iwth 2, 14, -1.1455330359699116
+error_x1, and error_y=8
+exiting slam loop and adjusting image position
+invoked: set_image_position
+_refresh_red_focus: size: (1, 8, -1.1455330359699116), posterization: None, projector size: (2560, 1440), border size = 0.0
+resolved position: (3.435, 2.101, 0.287), Idle: True
+
+Uploading pattern: tiles\tile_1,0.png
+_refresh_red_focus: size: (1, 8, -1.1455330359699116), posterization: None, projector size: (2560, 1440), border size = 0.0
+_refresh_red_focus: size: (1, 8, -1.1455330359699116), posterization: None, projector size: (2560, 1440), border size = 0.0
+Moving by: {'z': -60} | Current position: 3435.0, 2101.0, 287
+moving relative {'z': -60}
+set_shown_image(clear)
+Patterning at  (3435.0, 2101.0, 227)
+Patterning 1 tiles for 30000ms
+Total time: 30s
+Saving image stepper_captures\uv_mode_entry_2026-04-25_09-50-14.png
+set_shown_image(clear)
+Leaving previous layer empty because select var is ''
+enter_red_mode
+set_shown_image(red_focus)
+Moving by: {'z': 60} | Current position: 3435.0, 2101.0, 227
+moving relative {'z': 60}
+_refresh_red_focus: size: (1, 8, -1.1455330359699116), posterization: None, projector size: (2560, 1440), border size = 0.0
+invoked: set_image_position
+_refresh_red_focus: size: (0, 0, 0), posterization: None, projector size: (2560, 1440), border size = 0.0
+src_img captured, exposed tile # 1_0
+Done Tiling
+{'0_0': (3460.0, 2600.0), '0_1': (2516.0, 2626.0), '1_1': (2497.0, 2091.0), '1_0': (3435.0, 2101.0)}
