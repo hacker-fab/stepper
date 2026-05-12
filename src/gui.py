@@ -2,945 +2,38 @@ import json
 import os
 import queue
 import shutil
-import time
-import PIL
 import toml
 
 import tkinter
-from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum, auto
+from enum import Enum
 from functools import partial
 from pathlib import Path
+from pycpd import RigidRegistration
 from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.ttk import Progressbar
-from typing import Callable, List, Optional
-import onnxruntime as rt
-from pycpd import RigidRegistration
+from typing import Optional
 
 import cv2
 import numpy as np
 import serial
 import math
-from PIL import Image, ImageOps, ImageTk
-from ultralytics import YOLO
+from PIL import ImageTk
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
-from hardware import ImageProcessSettings, Lithographer, ProcessedImage
+
 from lib.gui import IntEntry, Thumbnail, FloatEntry
 from lib.img import image_to_tk_image
+import matplotlib.pyplot as plt
 from projector import TkProjector
-from scipy.spatial.distance import cdist
 from stage_control.grbl_stage import GrblStage
 from stage_control.omm_stage import OMMStage
 from stage_control.stage_controller import StageController
-import matplotlib.pyplot as plt
 
-# importing tiling utilities
-from tiling_utils import CONFIDENCE_THRESHOLD, STITCHED_CONFIDENCE_THRESHOLD, match_alignment_markers_by_coordinates, rf_detr_preprocess, \
-                                            estimate_transform, detect_marks_for_slam, get_next_tile_vector, extract_rectangle, \
-                                                px_to_step_x, px_to_step_y, digital_to_cam_view, step_to_projection_pixels_x, step_to_projection_pixels_y
-
-# TODO: Don't hardcode
-THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
-#The values set here are not used and instead come from the config file
-DEFAULT_RED_EXPOSURE: float = 4167.0
-DEFAULT_UV_EXPOSURE: float = 25000.0
-
-def fetch_focus_score(camera_image, blue_only, ddepth=cv2.CV_64F, kernel_size=5, log=False):
-    """ fetch_focus_score: computes the laplacian focal score after some
-    pre-processing of the camera image. The key is to detect the edges better
-    than other parts of the image that might not be suitable to be focused on. """
-
-    camera_image = camera_image.copy()
-    camera_image[:, :, 1] = 0  # green should never be used for focus
-    if blue_only:
-      camera_image[:, :, 0] = 0  # disable red
-
-    src = camera_image
-    src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
-    # Remove noise by blurring with a Gaussian filter
-    src = cv2.GaussianBlur(src, (3, 3), 0)
-
-    # Apply Laplace function
-    src = cv2.Laplacian(src, ddepth, ksize=kernel_size)
-
-    return src.var()
-
-def compute_focus_score(camera_image, blue_only, save=False):
-    camera_image = camera_image.copy()
-    camera_image[:, :, 1] = 0  # green should never be used for focus
-    if blue_only:
-      camera_image[:, :, 0] = 0  # disable red
-    img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
-    img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
-    mean = np.sum(img) / (img.shape[0] * img.shape[1])
-    img_lapl = (np.abs(cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1)) + np.abs(cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=1))) / mean
-    if save:
-        print('saved focus: ', np.min(img_lapl), np.max(img_lapl))
-        cv2.imwrite(save, img_lapl * 255.0 / 5.0)
-    return img_lapl.var() / mean
-
-def detect_alignment_markers(model, image, draw_rectangle=False):
-    detections = []
-    display_image = image.copy()
-    try:
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        original_height, original_width = image_rgb.shape[:2]
-        resized = cv2.resize(image_rgb, (640, 640))
-        results = model(resized)
-        boxes = results[0].boxes
-        for box in boxes:
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-            x1 = int(x1 * original_width / 640)
-            x2 = int(x2 * original_width / 640)
-            y1 = int(y1 * original_height / 640)
-            y2 = int(y2 * original_height / 640)
-            detections.append(((x1, y1), (x2, y2)))
-            print('mark at ', (x1 + x2) / 2, (y1 + y2) / 2)
-            if draw_rectangle:
-                cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 5)
-    except Exception as e:
-        print(f"Detection failed: {e}")
-
-    return detections, display_image 
-
-class StrAutoEnum(str, Enum):
-    """Base class for string-valued enums that use auto()"""
-
-    def _generate_next_value_(name, *_):
-        return name.lower()
-
-class ShownImage(StrAutoEnum):
-    """The type of image currently being displayed by the projector"""
-
-    CLEAR = auto()
-    PATTERN = auto()
-    FLATFIELD = auto()
-    RED_FOCUS = auto()
-    UV_FOCUS = auto()
-
-class PatterningStatus(StrAutoEnum):
-    """The current state of the patterning process"""
-
-    IDLE = auto()
-    PATTERNING = auto()
-    ABORTING = auto()
-
-class Event(StrAutoEnum):
-    """Events that can be dispatched to listeners"""
-
-    SNAPSHOT = auto()
-    SHOWN_IMAGE_CHANGED = auto()
-    STAGE_POSITION_CHANGED = auto()
-    IMAGE_ADJUST_CHANGED = auto()
-    PATTERN_IMAGE_CHANGED = auto()
-    MOVEMENT_LOCK_CHANGED = auto()
-    EXPOSURE_TIME_CHANGED = auto()
-    EXPOSURE_PATTERN_PROGRESS_CHANGED = auto()
-    PATTERNING_BUSY_CHANGED = auto()
-    PATTERNING_FINISHED = auto()
-    CHIP_CHANGED = auto()
-    STITCH_COMPLETED = auto()
-    START_TILING = auto()
-
-
-class MovementLock(StrAutoEnum):
-    """Controls whether stage position can be manually adjusted"""
-
-    UNLOCKED = auto()  # X, Y, and Z are free to move
-    XY_LOCKED = auto() # Only Z (focus) is free to move to avoid smearing UV focus pattern
-    LOCKED = auto()  # No positions can move to avoid disrupting patterning
-
-class RedFocusSource(StrAutoEnum):
-    """The source image to use for red focus mode"""
-
-    IMAGE = auto()  # Uses the dedicated red focus image
-    SOLID = auto()  # Shows a solid red screen
-    PATTERN = auto()  # Uses the blue channel from the pattern image
-    INV_PATTERN = auto()  # Uses the inverse of the blue channel from the pattern image
-
-@dataclass
-class AlignmentConfig:
-    enabled: bool
-    model_path: str
-    right_marker_x: float
-    left_marker_x: float
-    top_marker_y: float
-    bottom_marker_y: float
-    x_scale_factor: float
-    y_scale_factor: float
-
-@dataclass
-class LithographerConfig:
-    stage: StageController
-    camera: CameraModule
-    camera_scale: float
-    red_exposure: float
-    uv_exposure: float
-    alignment: AlignmentConfig
-
-@dataclass
-class ExposureLog:
-    time: datetime
-    path: str
-    coords: tuple[float, float, float]
-    duration: float # ms
-    aborted: bool
-
-    def to_disk(self):
-        return {
-            "time": str(self.time),
-            "path": self.path,
-            "coords": self.coords,
-            "duration": self.duration,
-            "aborted": self.aborted,
-        }
-
-    @classmethod
-    def from_disk(cls, d):
-        return cls(
-            datetime.fromisoformat(d["time"]),
-            d["path"],
-            d["coords"],
-            d["duration"],
-            d["aborted"],
-        )
-
-# This serves as configurations for the Tiling Feature
-@dataclass
-class TilingParameters:
-    align_image: Image
-    ratio: float
-    stride_x: int
-    stride_y: int
-    num_rows: int
-    num_cols: int
-    prefix_path: str
-    px_to_step_x: float
-    px_to_step_y: float
-    step_error_threshold_x: int
-    step_error_threshold_y: int
-
-@dataclass
-class ChipLayer:
-    exposures: List[ExposureLog]
-
-    def to_disk(self):
-        return {"exposures": [ex.to_disk() for ex in self.exposures]}
-
-    @classmethod
-    def from_disk(cls, d):
-        return cls([ExposureLog.from_disk(ex) for ex in d["exposures"]])
-
-@dataclass
-class Chip:
-    layers: List[ChipLayer]
-
-    def to_disk(self):
-        return {"layers": [layer.to_disk() for layer in self.layers]}
-
-    @classmethod
-    def from_disk(cls, d):
-        return cls([ChipLayer.from_disk(layer) for layer in d["layers"]])
-
-class EventDispatcher:
-    hardware: Lithographer
-    root: Tk
-    model: Optional[YOLO | rt.InferenceSession]
-    camera: Optional[CameraModule]
-    red_focus: ProcessedImage
-    uv_focus: ProcessedImage
-    pattern: ProcessedImage
-    pattern_image: Image.Image
-    red_focus_image: Image.Image
-    uv_focus_image: Image.Image
-    solid_red_image: Image.Image
-    image_adjust_position: tuple[float, float, float]
-    border_size: float
-    posterize_strength: Optional[int]
-    red_focus_source: RedFocusSource
-    stage_setpoint: tuple[float, float, float]
-    shown_image: ShownImage
-    autofocus_busy: bool
-    patterning_busy: bool
-    autofocus_on_mode_switch: bool
-    realtime_detection: bool
-    first_autofocus: bool
-    should_abort: bool
-    exposure_time: int
-    patterning_progress: float # ranges from 0.0 to 1.0
-    red_exposure_time: float
-    uv_exposure_time: float
-    exposure_history: List[ExposureLog]
-    chip: Chip
-    auto_snapshot_on_uv: bool
-    snapshot_directory: Path
-    listeners: dict[Event, List[Callable]]
-
-    def __init__(
-        self, 
-        stage: StageController,
-        proj: TkProjector,
-        root: Tk,
-        camera: Optional[CameraModule],
-        red_exposure: float,
-        uv_exposure: float,
-    ):
-        # Hardware components
-        self.hardware = Lithographer(stage, proj)
-        self.camera = camera
-        self.root = root
-
-        # Detection model
-        self.model = None
-        self.num_rows = None
-        self.num_cols = None
-
-        # Image processing objects
-        self.red_focus = ProcessedImage()
-        self.uv_focus = ProcessedImage()
-        self.pattern = ProcessedImage()
-
-        # Source images
-        self.pattern_image = Image.new("RGB", (1, 1), "black")
-        self.red_focus_image = Image.new("RGB", (1, 1), "black")
-        self.uv_focus_image = Image.new("RGB", (1, 1), "black")
-        self.solid_red_image = Image.new("RGB", (1, 1), "red")
-
-        # Image settings
-        self.image_adjust_position = (0.0, 0.0, 0.0)
-        self.border_size = 0.0
-        self.posterize_strength = None
-        self.red_focus_source = RedFocusSource.IMAGE
-
-        # Stage control
-        self.stage_setpoint = (0.0,0.0,0.0)
-
-        # Status flags
-        self.shown_image = ShownImage.CLEAR
-        self.autofocus_busy = False
-        self.patterning_busy = False
-        self.autofocus_on_mode_switch = False
-        self.realtime_detection = False
-        self.first_autofocus = True
-        self.should_abort = False
-
-        # Exposure settings and progress
-        self.exposure_time = 8000
-        self.patterning_progress = 0.0
-        self.red_exposure_time = red_exposure
-        self.uv_exposure_time = uv_exposure
-
-        # History and logging
-        self.exposure_history = []
-        self.chip = Chip([ChipLayer([])])
-
-        # Snapshot settings
-        self.auto_snapshot_on_uv = True
-        self.snapshot_directory = Path("stepper_captures")
-        self.snapshot_directory.mkdir(exist_ok=True)
-
-        # Event handling
-        self.listeners = dict()
-        self.add_event_listener(Event.SHOWN_IMAGE_CHANGED, lambda: self._update_projector())
-
-    def load_chip(self, path: str):
-        print(f"Loading chip at {path!r}")
-        with open(path, "r") as f:
-            d = json.load(f)
-        self.chip = Chip.from_disk(d)
-        self.on_event(Event.CHIP_CHANGED)
-
-    def new_chip(self):
-        # TODO: Prompt user to save old chip??
-        self.chip = Chip([ChipLayer([])])
-        self.on_event(Event.CHIP_CHANGED)
-
-    def add_chip_layer(self):
-        self.chip.layers.append(ChipLayer([]))
-        self.on_event(Event.CHIP_CHANGED)
-
-    def save_chip(self, path: str):
-        with open(path, "w") as f:
-            json.dump(self.chip.to_disk(), f)
-
-    def delete_chip_exposure(self, layer: int, ex: int):
-        self.chip.layers[layer].exposures.pop(ex)
-        print(f"Deleted exposure {layer} {ex}")
-        self.on_event(Event.CHIP_CHANGED)
-
-    @property
-    def current_image(self) -> Optional[Image.Image]:
-        match self.shown_image:
-            case ShownImage.CLEAR:
-                return None
-            case ShownImage.RED_FOCUS:
-                return self.red_focus.processed()
-            case ShownImage.UV_FOCUS:
-                return self.uv_focus.processed()
-            case ShownImage.PATTERN:
-                return self.pattern.processed()
-
-    def _update_projector(self):
-        img = self.current_image
-        if img is None:
-            self.hardware.projector.clear()
-        else:
-            self.hardware.projector.show(img)
-
-    def _refresh_pattern(self):
-        self.pattern.update(
-            image=self.pattern_image,
-            settings=ImageProcessSettings(
-                posterization=self.posterize_strength,
-                color_channels=(False, False, True),
-                flatfield=None,
-                size=self.hardware.projector.size(),
-                image_adjust=self.image_adjust_position,
-                border_size=self.border_size,
-            ),
-        )
-
-        if self.red_focus_source in (RedFocusSource.PATTERN, RedFocusSource.INV_PATTERN):
-            self._refresh_red_focus()
-
-        # TODO:
-        # Image adjust, resizing, and flatfield correction are performed *AFTER SLICING*
-
-        self.on_event(Event.PATTERN_IMAGE_CHANGED)
-
-    def set_red_focus_source(self, source: RedFocusSource):
-        self.red_focus_source = source
-        self._refresh_red_focus()
-
-    def _red_focus_source(self) -> Image.Image:
-        match self.red_focus_source:
-            case RedFocusSource.IMAGE:
-                return self.red_focus_image
-            case RedFocusSource.SOLID:
-                return self.solid_red_image
-            case RedFocusSource.PATTERN:
-                return self.pattern_image.getchannel("B").convert("RGBA")
-            case RedFocusSource.INV_PATTERN:
-                return ImageOps.invert(self.pattern_image.getchannel("B")).convert("RGBA")
-
-    def _refresh_red_focus(self):
-        if self.hardware.projector.size() != self.solid_red_image.size:
-            self.solid_red_image = Image.new("RGB", self.hardware.projector.size(), "red")
-
-        img = self._red_focus_source()
-        print(f"_refresh_red_focus: size: {self.image_adjust_position}, posterization: {self.posterize_strength}, projector size: {self.hardware.projector.size()}, border size = {self.border_size}")
-        self.red_focus.update(
-            image=img,
-            settings=ImageProcessSettings(
-                posterization=self.posterize_strength,
-                flatfield=None,
-                color_channels=(True, False, False),
-                size=self.hardware.projector.size(),
-                image_adjust=self.image_adjust_position,
-                border_size=self.border_size,
-            ),
-        )
-
-        if self.shown_image == ShownImage.RED_FOCUS:
-            self.on_event(Event.SHOWN_IMAGE_CHANGED)
-
-    def _refresh_uv_focus(self):
-        self.uv_focus.update(
-            image=self.uv_focus_image,
-            settings=ImageProcessSettings(
-                posterization=self.posterize_strength,
-                flatfield=None,
-                color_channels=(False, False, True),
-                size=self.hardware.projector.size(),
-                image_adjust=self.image_adjust_position,
-                border_size=0.0,
-            ),
-        )
-
-        if self.shown_image == ShownImage.UV_FOCUS:
-            self.on_event(Event.SHOWN_IMAGE_CHANGED)
-
-    def set_posterize_strength(self, strength: Optional[int]):
-        self.posterize_strength = strength
-        self._refresh_red_focus()
-        self._refresh_uv_focus()
-        self._refresh_pattern()
-
-    def set_border_size(self, border_size: float):
-        self.border_size = border_size
-        self._refresh_red_focus()
-        self._refresh_uv_focus()
-        self._refresh_pattern()
-
-    def set_shown_image(self, shown_image: ShownImage):
-        print(f"set_shown_image({shown_image})")
-        self.shown_image = shown_image
-        self.on_event(Event.SHOWN_IMAGE_CHANGED)
-
-    def create_warning(self, msg: str):
-        print(f"Warning: {msg}")
-        messagebox.showwarning("Warning: ", msg)
-
-    def move_absolute(self, coords: dict[str, float]):
-        # 0  to  -($13X - $27)   in WPos space
-        if(self.hardware.stage.has_homing()): # debugging statements
-            print(f"Moving to position: {coords}")
-            print(f"Current position: {self.stage_setpoint[0]}, {self.stage_setpoint[1]}, {self.stage_setpoint[2]}")
-        
-        # find new coordinates -> some nuance exists between work and gui positioning
-        # in work position, the x moves in negative direction (away from home) and y moves in positive direction (away from home)
-        x = coords.get("x", self.stage_setpoint[0])
-        y = coords.get("y", self.stage_setpoint[1])
-        z = coords.get("z", self.stage_setpoint[2])
-        set_point = (x, y, z)
-
-        if self.hardware.stage.has_homing():
-            ok, msg = self._check_bounds(set_point)
-            if not ok:
-                self.create_warning(msg)
-                return False
-
-        try:
-            self.hardware.stage.move_absolute(coords)
-            self.stage_setpoint = set_point
-            self.on_event(Event.STAGE_POSITION_CHANGED)
-            return True
-        
-        except(RuntimeError) as e:
-            self.create_warning(f"{str(e)}. Please remove your chip, restart the program.")
-            return False
-
-        except(Exception) as e:
-            self.create_warning(f"{str(e)}. Please remove your chip, restart the program.")
-            self.stage_setpoint = self.hardware.stage.get_position()
-            self.on_event(Event.STAGE_POSITION_CHANGED) 
-            return False
-
-        
-    def _check_bounds(self, set_point):
-        bounds = self.hardware.stage.get_bounds()
-
-        if bounds is None:
-            return True  # no homing, no bounds enforced
-        
-        axes = [('x', 0), ('y', 1), ('z', 2)]
-        for name, i in axes:
-            lo, hi = bounds[name]
-            val = set_point[i]
-            if not (lo <= val <= hi):
-                return False, (f"Moving {name.upper()} to {val} prohibited. "
-                            f"Boundaries are [{lo}, {hi}]")
-        return True, None
-
-    def move_relative(self, coords: dict[str, float]):
-
-        if(self.hardware.stage.has_homing()): # debugging statements
-            print(f"Moving by: {coords} | Current position: {self.stage_setpoint[0]}, {self.stage_setpoint[1]}, {self.stage_setpoint[2]}")
-        # find new coordinates -> some nuance exists between work and gui positioning
-        # in work position, the x moves in negative direction (away from home) and y moves in positive direction (away from home
-        x = self.stage_setpoint[0] + coords.get("x", 0)
-        y = self.stage_setpoint[1] + coords.get("y", 0)
-        z = self.stage_setpoint[2] + coords.get("z", 0)
-        set_point = (x, y, z)
-        
-        # if soft limits and max travel set, then enforce boundaries
-        if(self.hardware.stage.has_homing()):
-            ok, msg = self._check_bounds(set_point)
-            if not ok:
-                self.create_warning(msg)
-                return
-
-        try:
-            self.hardware.stage.move_relative(coords)
-            self.stage_setpoint = set_point
-            self.on_event(Event.STAGE_POSITION_CHANGED)
-
-        except(RuntimeError) as e:
-            self.create_warning(f"{str(e)}. Please remove your chip, restart the program.")
-
-        except(Exception) as e:
-            self.create_warning(f"{str(e)}. Please remove your chip, restart the program.")
-            self.stage_setpoint = self.hardware.stage.get_position()
-            self.on_event(Event.STAGE_POSITION_CHANGED) 
-
-    def set_use_solid_red(self, use: bool):
-        self.use_solid_red = use
-        self.set_shown_image(ShownImage.RED_FOCUS)
-        self._refresh_red_focus()
-
-    def set_pattern_image(self, img: Image.Image, path: str):
-        self.pattern_image = img
-        self.pattern_image_path = path
-        self._refresh_pattern()
-    
-    def set_prev_pattern_image(self, img: Image.Image, path: str):
-        self.prev_pattern_image = img
-        self.prev_pattern_image_path = path
-
-    def set_stitched_image(self, img: Image.Image, path: str):
-        self.stitched_image = img
-        self.stitched_image_path = path
-
-    def set_capture_folder(self, capture_folder: str):
-        self.capture_folder = capture_folder
-
-    def set_red_focus_image(self, img: Image.Image):
-        self.red_focus_image = img
-        self._refresh_red_focus()
-
-    def set_uv_focus_image(self, img: Image.Image):
-        self.uv_focus_image = img
-        self._refresh_uv_focus()
-
-    def set_patterning_busy(self, busy: bool):
-        self.patterning_busy = busy
-        self.on_event(Event.MOVEMENT_LOCK_CHANGED)
-        self.on_event(Event.PATTERNING_BUSY_CHANGED)
-
-    def set_progress(self, pattern_progress: float, exposure_progress: float):
-        self.patterning_progress = pattern_progress
-        self.exposure_progress = exposure_progress
-        self.on_event(Event.EXPOSURE_PATTERN_PROGRESS_CHANGED)
-    
-    def set_latest_image(self, camera_image):
-        self.camera_image = camera_image
-
-    def set_autofocus_busy(self, busy):
-        self.autofocus_busy = busy
-        self.on_event(Event.MOVEMENT_LOCK_CHANGED)
-
-    def abort_patterning(self):
-        self.should_abort = True
-        print("Aborting patterning")
-
-    def in_uv(self):
-        return self.shown_image in (ShownImage.PATTERN, ShownImage.UV_FOCUS)
-
-    def home_stage(self):
-        """
-        Homing stage resets Machine position (Mpos) and sets Work Position (WPos)
-        of current state post-homing to (0, 0, 0), which means set_point must 
-        be updated to reflect the work position
-        """
-        self.hardware.stage.home()
-        self.hardware.stage.set_on_start_location()
-        print(f"Post Homing Location: {self.hardware.stage.get_on_start_location()}")
-        print("Homing Complete.")
-
-        self.on_event(Event.STAGE_POSITION_CHANGED)
-    
-    def query_config(self):
-        self.hardware.stage.get_position()
-        print("Query Config Complete.")
-
-    def set_image_position(self, x, y, t):
-        print("invoked: set_image_position")
-        self.image_adjust_position = (x, y, t)
-        self._refresh_red_focus()
-        self._refresh_uv_focus()
-        self._refresh_pattern()
-        self.on_event(Event.IMAGE_ADJUST_CHANGED)
-
-    @property
-    def image_position(self):
-        return self.image_adjust_position
-
-    @property
-    def movement_lock(self):
-        if self.patterning_busy or self.autofocus_busy:
-            return MovementLock.LOCKED
-        # elif (self.shown_image == ShownImage.UV_FOCUS or self.shown_image == ShownImage.PATTERN):
-        #     return MovementLock.XY_LOCKED
-        else:
-            return MovementLock.UNLOCKED
-
-    def on_event(self, event: Event, *args, **kwargs):
-        if event not in self.listeners:
-            return
-
-        for listener in self.listeners[event]:
-            listener(*args, **kwargs)
-
-    def on_event_cb(self, event: Event, *args, **kwargs):
-        return lambda: self.on_event(event, *args, **kwargs)
-
-    def add_event_listener(self, event: Event, listener: Callable):
-        if event not in self.listeners:
-            self.listeners[event] = []
-        self.listeners[event].append(listener)
-
-    def begin_patterning(self):
-        # TODO: Update patterning preview
-
-        print("Patterning at ", self.stage_setpoint)
-        duration = self.exposure_time
-        print(f"Patterning 1 tiles for {duration}ms\nTotal time: {str(round((duration) / 1000))}s")
-
-        # TODO: Image slicing.
-        # Note that flatfield correction and image adjustment should be applied *after* slicing
-        img = self.pattern.processed()
-
-        self.set_patterning_busy(True)
-        self.hardware.projector.show(img)
-        end_time = time.time() + duration / 1000.0
-        while time.time() < end_time:
-            progress = 1.0 - ((end_time - time.time()) * 1000 / duration)
-            self.set_progress(0.0, progress)
-            self.root.update()
-            if self.should_abort:
-                break
-        self.set_shown_image(ShownImage.CLEAR)
-        self.root.update()  # Force image to stop being displayed ASAP
-        self.set_progress(1.0, 1.0)
-
-        log = ExposureLog(
-            datetime.now(),
-            self.pattern_image_path,
-            self.stage_setpoint,
-            duration,
-            self.should_abort,
-        )
-        self.exposure_history.append(log)
-        self.chip.layers[-1].exposures.append(log)
-
-        self.on_event(Event.CHIP_CHANGED)
-        self.set_patterning_busy(False)
-
-        if self.should_abort:
-            print("Patterning aborted")
-            self.should_abort = False
-
-    def non_blocking_delay(self, t: float):
-        start = time.time()
-        while time.time() - start < t:
-            self.root.update()
-
-    def enter_red_mode(self, mode_switch_autofocus=True):
-        print("enter_red_mode")
-        self.set_shown_image(ShownImage.RED_FOCUS)
-        self.camera.setExposureTime(self.red_exposure_time)
-        if mode_switch_autofocus and self.autofocus_on_mode_switch:
-            self.autofocus(blue_only=False)
-        self.on_event(Event.MOVEMENT_LOCK_CHANGED)
-
-    def enter_uv_mode(self, mode_switch_autofocus=True):
-        if self.auto_snapshot_on_uv:
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            filename = self.snapshot_directory / f"uv_mode_entry_{timestamp}.png"
-            self.on_event(Event.SNAPSHOT, str(filename))
-
-        self.camera.setExposureTime(self.uv_exposure_time)
-        if (
-            mode_switch_autofocus
-            and not self.autofocus_busy
-            and self.autofocus_on_mode_switch
-        ):
-            # UV mode usually needs about -70 to be in focus compared to red mode
-            #self.move_relative({"z": -85.0})
-            pass
-
-        # self.set_shown_image(ShownImage.UV_FOCUS)
-        self.set_shown_image(ShownImage.CLEAR) # enter uv mode: don't project uv
-
-        if mode_switch_autofocus and self.autofocus_on_mode_switch:
-            self.non_blocking_delay(2.0)
-            self.autofocus(blue_only=True)
-        
-        self.on_event(Event.MOVEMENT_LOCK_CHANGED)
-
-    def autofocus(self, blue_only, log=False, search=20, start=None):
-        if not self.camera:
-            print("No camera connected, skipping autofocus")
-            return
-
-        if self.first_autofocus:
-            # TODO: Fix this spuriously triggering
-            self.first_autofocus = False
-            return
-
-        if self.autofocus_busy:
-            print("Skipping nested autofocus!")
-            return
-         
-        if log:
-            try:
-                os.mkdir('aftest')
-            except FileExistsError:
-                pass
-            log_file = open('aftest/log.csv', 'w')
-                
-        if self.hardware.stage.has_homing():
-
-            counter = 0
-            def sample():
-                def one_sample():
-                    return fetch_focus_score(self.camera_image, blue_only=blue_only, log=True)
-                focus_score = sum([one_sample() for _ in range(3)])/3
-                print("focus average:", focus_score)
-                nonlocal counter
-                if log:
-                    log_file.write(f'{counter},{focus_score}\n')
-                    cv2.imwrite(f'aftest/img{counter}.png', self.camera_image, log=True)
-                counter += 1
-                return focus_score
-            
-            print("Starting Autofocus...")
-            best_score = -1.0
-            best_z = 0
-            if start == None:
-                z_base = self.hardware.stage.get_autofocus()
-            else:
-                z_base = start
-
-            # account for uv mode, where z-focus is different
-            if blue_only == True:
-                z_base -= 50.0
-                if(self.move_absolute({"z": z_base})) == False:
-                    self.create_warning("Failed autofocus, z-stage can't go past boundary limits")
-                    self.set_autofocus_busy(False)
-                    return
-                self.non_blocking_delay(1.0)
-
-            else:
-                for i in range(-search, search, 2):
-                    if not (self.move_absolute({"z": (z_base+i)})):
-                        self.create_warning("Failed autofocus, z-stage can't go past boundary limits")
-                        self.set_autofocus_busy(False)
-                        return
-                    self.non_blocking_delay(0.5)
-                    new_score = sample()
-                    # always check for optimal scores
-                    if (new_score > best_score):
-                        best_score = new_score
-                        best_z = self.stage_setpoint[2]
-                
-                print(f"Fine grain sampling done, best focus is: {best_score}")
-                self.move_absolute({"z":best_z})
-                self.non_blocking_delay(1.0)
-
-        else:
-            counter = 0
-            def sample_focus():
-                def do_thing():
-                    self.non_blocking_delay(0.1)
-                    return compute_focus_score(self.camera_image, blue_only=blue_only)
-                focus_score = sorted([do_thing() for _ in range(3)])[1]
-                nonlocal counter
-                if log:
-                    log_file.write(f'{counter},{focus_score}\n')
-                    cv2.imwrite(f'aftest/img{counter}.png', self.camera_image)
-                counter += 1
-                return focus_score
-              
-            self.set_autofocus_busy(True)
-            self.non_blocking_delay(1.0)
-            mid_score = sample_focus()
-            self.move_relative({"z": -20.0})
-            self.non_blocking_delay(1.0)
-            neg_score = sample_focus()
-            self.move_relative({"z": 40.0})
-            self.non_blocking_delay(1.0)
-            pos_score = sample_focus()
-            self.move_relative({"z": -20.0})
-            self.non_blocking_delay(1.0)
-
-            last_focus = mid_score
-
-            if neg_score < mid_score < pos_score:
-                # Improved focus is in the +Z direction
-                for i in range(30):
-                    self.move_relative({"z": 10.0})
-                    self.non_blocking_delay(0.5)
-                    new_score = sample_focus()
-                    if last_focus > new_score:
-                        print(f"Successful +Z coarse autofocus {i}")
-                        last_focus = new_score
-                        break
-                    last_focus = new_score
-
-                for i in range(10):
-                    self.move_relative({"z": -2.0})
-                    self.non_blocking_delay(0.5)
-                    new_score = sample_focus()
-                    if last_focus > new_score:
-                        print(f"Successful -Z fine autofocus {i}")
-                        break
-                    last_focus = new_score
-            elif neg_score > mid_score > pos_score:
-                # Improved focus is in the -Z direction
-                for i in range(30):
-                    self.move_relative({"z": -10.0})
-                    self.non_blocking_delay(0.5)
-                    new_score = sample_focus()
-                    if last_focus > new_score:
-                        print(f"Successful -Z coarse autofocus {i}")
-                        break
-                    last_focus = new_score
-
-                for i in range(10):
-                    self.move_relative({"z": 2.0})
-                    self.non_blocking_delay(0.5)
-                    new_score = sample_focus()
-                    if last_focus > new_score:
-                        print(f"Successful +Z fine autofocus {i}")
-                        break
-                    last_focus = new_score
-            elif neg_score < mid_score and pos_score < mid_score:
-                # We are very close to already being in focus
-                print(f"Almost in focus! (neg {neg_score} mid {mid_score} pos {pos_score})")
-                self.move_relative({"z": -20.0})
-                self.non_blocking_delay(0.5)
-
-                for i in range(30):
-                    self.move_relative({"z": 2.0})
-                    self.non_blocking_delay(0.5)
-                    new_score = sample_focus()
-                    if last_focus > new_score:
-                        print(f"Successful +Z fine autofocus {i}")
-                        break
-                    last_focus = new_score
-            else:
-                print("Autofocus is confused!")
-
-        print("Autofocus Complete.")
-        self.set_autofocus_busy(False)
-        print("Finished autofocus")
-    
-    def get_model(self, path: str):
-        """
-        Based on which model we're using, we will feed the model
-        a different session. 'best.pt' indicates YOLO while the onx 
-        file indicates RF-DETR
-        
-        Note to developers: RF-DETR was trained on latent and developed patterns
-        while YOLO model was trained on developed patterns only
-        """
-        if "best" in path:
-            print("Using YOLO model")
-            self.model = YOLO(path)
-        else:
-            print("Using RF_DETR model")
-            session = rt.InferenceSession(path)
-            self.model = session
-        return True
-
-    def initialize_alignment(self, config: LithographerConfig):
-        self.config = config
-        self.realtime_detection = config.alignment.enabled
-        # Attempt loading the model even if detection is off by default
-        try:
-            print("loading model")
-            model_path = config.alignment.model_path
-            self.get_model(model_path)
-            print("loaded model")
-        except Exception as e:
-            print(f"Failed to load alignment model: {e}")
-
-    def set_snapshot_directory(self, directory: Path):
-        self.snapshot_directory = directory
-        self.snapshot_directory.mkdir(exist_ok=True)
+# importing utilities
+from lib.globals import *
+from tiling_utils import *
+from lib.structs import *
 
 class SnapshotFrame:
     """
@@ -1036,7 +129,6 @@ class CameraFrame:
                 filename = self.snapshots_pending.get_nowait()
                 print(f"Saving image {filename}")
                 fetch_focus_score(image, blue_only=False)
-                fetch_focus_score(image, blue_only=False)
                 img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 cv2.imwrite(filename, img)
             except queue.Empty:
@@ -1074,7 +166,7 @@ class CameraFrame:
     def gui_camera_preview(self, camera_image, dimensions):
         model = self.event_dispatcher.model
         if model and self.event_dispatcher.realtime_detection:
-            _, camera_image = detect_alignment_markers(model, camera_image, draw_rectangle=True)
+            _, camera_image = detect_markers(model, camera_image, draw_rectangle=True)
         self.event_dispatcher.set_latest_image(camera_image)
         resized_img = cv2.resize(camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale)
         gui_img = image_to_tk_image(Image.fromarray(resized_img, mode="RGB"))
@@ -1086,9 +178,9 @@ class StagePositionFrame:
         self.frame = ttk.Frame(parent)
         self.event_dispatcher = event_dispatcher
         
-        # Position display at top
-        self.position_frame = ttk.LabelFrame(self.frame, text="Current Position (µm)")
-        self.position_frame.grid(row=0, column=0, columnspan=2, pady=5, sticky="ew")
+        # # Position display at top
+        # self.position_frame = ttk.LabelFrame(self.frame, text="Current Position (µm)")
+        # self.position_frame.grid(row=0, column=0, columnspan=2, pady=5, sticky="ew")
         
         self.position_intputs = []
         # Track all interactive widgets for locking
@@ -1310,6 +402,8 @@ class StagePositionFrame:
     
     def _on_xy_click(self, event):
         """Handle clicks on the XY canvas"""
+
+        # TODO: check for movement lock
         canvas_size = 255
         center = canvas_size // 2
         
@@ -1606,6 +700,8 @@ class PredefinedImageSelector:
         if dir_path:  # User didn't cancel            
             self.predefined_images.append((filename, dir_path))
             self.image_dropdown['values'] = [name for name, _ in self.predefined_images]
+            self.image_dropdown.set(filename)
+            self._load_image(dir_path)
 
     def _load_selected(self):
         """Called when Load Selected button is clicked"""
@@ -1713,8 +809,6 @@ class UvFocusFrame: # crosses
             self.frame,
             "UV Focus",
             self._on_uv_focus_change,
-            # lambda t: event_dispatcher.set_uv_focus_image(self.uv_focus_image),
-            # import_command in ImageSelectFrame --> on_select in PredefinedImageSelector
             predefined_images=uv_focus_predefined
         )
         self.uv_focus_frame.frame.grid(row=1, column=0, padx=5, pady=5)
@@ -2036,6 +1130,7 @@ class PatterningFrame:
         self.thumb_image = image_to_tk_image(img.resize(THUMBNAIL_SIZE))
         self.preview_tile.configure(image=self.thumb_image)  # type:ignore
 
+##################### MODE FRAME CLASSES ###########################
 class RedModeFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent, name="redmodeframe")
@@ -2158,85 +1253,6 @@ class UvModeFrame:
         self.exposure_frame.frame.grid(row=0, column=0)
         self.patterning_frame = PatterningFrame(self.right_frame, event_dispatcher)
         self.patterning_frame.frame.grid(row=1, column=0)
-
-class StitchedPatternUploadFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
-        upload_type = "Stitched Pattern"
-        self.frame = ttk.Frame(parent)
-        self.event_dispatcher = event_dispatcher
-        
-        # Create container frame for centering
-        container = ttk.Frame(self.frame)
-        container.grid(row=0, column=0)
-        
-        # Main pattern upload section
-        self.upload_frame = ttk.LabelFrame(container, text=f"{upload_type} Upload")
-        self.upload_frame.grid(row=0, column=0)
-        
-        # Pattern selector (using existing ImageSelectFrame functionality)
-        self.pattern_selector = ImageSelectFrame(
-            self.upload_frame,
-            f"Select {upload_type}",
-            self._on_pattern_upload
-        )
-        self.pattern_selector.frame.grid(row=0, column=0)
-        
-        # Pattern info display
-        self.info_frame = ttk.LabelFrame(container, text=f"{upload_type} Information")
-        self.info_frame.grid(row=1, column=0)
-        
-        self.pattern_path_var = StringVar(value="No pattern loaded")
-        ttk.Label(self.info_frame, text=f"{upload_type}:").grid(row=0, column=0, sticky="w")
-        ttk.Label(self.info_frame, textvariable=self.pattern_path_var, 
-                 foreground="blue").grid(row=0, column=1, sticky="w", padx=(10,0))
-        
-        # Pattern preview (larger than thumbnail)
-        self.preview_frame = ttk.LabelFrame(container, text=f"{upload_type} Preview")
-        self.preview_frame.grid(row=0, column=1, rowspan=2, padx=10)
-        
-        # Center the container
-        self.frame.grid_columnconfigure(0, weight=1)
-        self.frame.grid_rowconfigure(0, weight=1)
-        
-        # Create larger preview image
-        preview_size = (320, 240)  # Larger than THUMBNAIL_SIZE
-        placeholder = Image.new("RGB", preview_size, "gray")
-        self.preview_photo = image_to_tk_image(placeholder)
-        self.preview_label = ttk.Label(self.preview_frame, image=self.preview_photo)
-        self.preview_label.grid(row=0, column=0, padx=5, pady=5)
-        
-        # Upload instructions
-        instruction_text = ("Upload your stitched image using the selector above. "
-                          "This component is purely for testing and should be removed")
-        ttk.Label(self.upload_frame, text=instruction_text, 
-                 wraplength=400).grid(row=1, column=0, padx=5, pady=5)
-    
-    def _on_pattern_upload(self, _):
-        """Handle pattern upload"""
-        if self.pattern_selector.thumb.image:
-            print("image uploaded")
-            # Update the event dispatcher with the new pattern
-            self.event_dispatcher.set_stitched_image(
-                self.pattern_selector.thumb.image, 
-                self.pattern_selector.thumb.path
-            )
-            
-            # Update the info display
-            if self.pattern_selector.thumb.path:
-                print("path found")
-                filename = Path(self.pattern_selector.thumb.path).name
-                self.pattern_path_var.set(filename)
-            else:
-                print("pattern uploadded")
-                self.pattern_path_var.set("Pattern uploaded")
-            
-            # Update preview image
-            if self.pattern_selector.thumb.image:
-                print("update preview image")
-                preview_img = self.pattern_selector.thumb.image.copy()
-                preview_img.thumbnail((320, 240), Image.Resampling.LANCZOS)
-                self.preview_photo = image_to_tk_image(preview_img)
-                self.preview_label.configure(image=self.preview_photo)
 
 class PreviousPatternUploadFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -2395,9 +1411,6 @@ class ModeSelectFrame:
         self.previous_layer_upload_frame = PreviousPatternUploadFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.previous_layer_upload_frame.frame, text="Previous Layer Upload")
 
-        self.stitched_image_upload_frame = StitchedPatternUploadFrame(self.notebook, event_dispatcher)
-        self.notebook.add(self.stitched_image_upload_frame.frame, text="Stitched Image Upload")
-
         self.pattern_upload_frame = PatternUploadFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.pattern_upload_frame.frame, text="Pattern Upload")
         
@@ -2416,12 +1429,6 @@ class ModeSelectFrame:
 
         self.notebook.bind("<<NotebookTabChanged>>", lambda _: on_tab_change())
 
-        # def on_tab_event(evt):
-        #  self.notebook.select(1 if evt == Event.EnterUvMode else 0)
-
-        # event_dispatcher.add_event_listener(Event.EnterRedMode, lambda: on_tab_event(Event.EnterRedMode))
-        # event_dispatcher.add_event_listener(Event.EnterUvMode, lambda: on_tab_event(Event.EnterUvMode))
-
     def _current_tab(self):
         selected = self.notebook.select()
         if "previouslayer" in selected.lower() or self.notebook.index("current") == 0:
@@ -2434,6 +1441,7 @@ class ModeSelectFrame:
             return "red" 
         else:
             return "uv"
+################## END MODE FRAME CLASSES ###########################
 
 class GlobalSettingsFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher, enable_detection: bool = False):
@@ -2610,6 +1618,10 @@ class ExposureHistoryFrame:
         self.text["state"] = "disabled"
 
 class OffsetAmountFrame:
+    # HOW TO USE:
+        # Subtraction amounts are there to tune the offset for the alignment markers
+        # self.x_settings = OffsetAmountFrame(self.frame, "X", 1037-54) #Move amount between exposures in X
+        # self.y_settings = OffsetAmountFrame(self.frame, "Y", 539-27)  #Move amount between exposures in y
     def __init__(self, parent, label, default_offset):
         self.frame = ttk.LabelFrame(parent, text=label)
 
@@ -2624,6 +1636,83 @@ class OffsetAmountFrame:
         self.amount_spinbox = ttk.Spinbox(self.frame, from_=-20, to=20, textvariable=self.amount_var, width=3)
         self.amount_spinbox.grid(row=0, column=3)
 
+class ProjectorDisplayFrame:
+    """Frame to display what the projector is currently showing"""
+    
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        self.frame = ttk.Frame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        # Main label frame
+        self.display_frame = ttk.LabelFrame(self.frame, text="Projector Output")
+        self.display_frame.grid(row=0, column=0)
+        
+        # Create placeholder image
+        # Using a similar size to camera preview for consistency
+        self.display_size = (320, 180)
+        placeholder = Image.new("RGB", self.display_size, "black")
+        self.photo = image_to_tk_image(placeholder)
+        
+        # Display label
+        self.label = ttk.Label(self.display_frame, image=self.photo, relief="solid", borderwidth=2)
+        self.label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Status label showing current mode
+        self.status_var = StringVar(value="Status: Clear")
+        self.status_label = ttk.Label(self.display_frame, textvariable=self.status_var)
+        self.status_label.grid(row=1, column=0, padx=5, pady=5)
+        
+        # Listen for projector changes
+        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, self._update_display)
+        event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, self._update_display)
+        event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, self._update_display)
+        event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, self._update_display)
+        
+        # Force initial update
+        # self.event_dispatcher.root.after(100, self._update_display)
+        
+    def _update_display(self):
+        """Update the display when projector content changes"""
+        shown_image = self.event_dispatcher.shown_image
+        
+        # Update status text
+        status_map = {
+            ShownImage.CLEAR: "Status: Clear (No Output)",
+            ShownImage.PATTERN: "Status: Pattern (UV Exposure)",
+            ShownImage.FLATFIELD: "Status: Flatfield Correction",
+            ShownImage.RED_FOCUS: "Status: Red Focus Mode",
+            ShownImage.UV_FOCUS: "Status: UV Focus Pattern",
+        }
+        self.status_var.set(status_map.get(shown_image, "Status: Unknown"))
+        
+        # Get the appropriate processed image based on mode
+        # Note: When patterning, we check patterning_busy flag as well
+        img = None
+        if shown_image == ShownImage.RED_FOCUS:
+            img = self.event_dispatcher.red_focus.processed()
+        # pattern case above uv focus case: when set_patterning_busy(True) is called,
+        # shown_image is never changed to PATTERN during patterning - it stays as UV_FOCUS
+        elif shown_image == ShownImage.PATTERN or self.event_dispatcher.patterning_busy:
+            img = self.event_dispatcher.pattern.processed()
+        elif shown_image == ShownImage.UV_FOCUS:
+            img = self.event_dispatcher.uv_focus.processed()
+        elif shown_image == ShownImage.FLATFIELD:
+            # Flatfield might not be implemented, use pattern as fallback
+            img = self.event_dispatcher.pattern.processed()
+        
+        # Update image
+        if img is None or (shown_image == ShownImage.CLEAR and not self.event_dispatcher.patterning_busy):
+            # Show black placeholder when clear
+            placeholder = Image.new("RGB", self.display_size, "black")
+            self.photo = image_to_tk_image(placeholder)
+        else:
+            display_img = img.copy()
+            display_img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
+            self.photo = image_to_tk_image(display_img)
+        
+        self.label.configure(image=self.photo)
+
+############# MULTI-LAYER TILING CLASSES ##################
 class TilingFrame:
     def __init__(self, parent, model: EventDispatcher):
 
@@ -2641,14 +1730,11 @@ class TilingFrame:
         self.leeway_h_steps = 10 # steps
         self.projection_width_steps = 1037 # steps 
         self.projection_height_steps = 583 # steps
-
-        self.overall_pattern_size_w = 0
-        self.overall_pattern_size_h = 0
         self.overlay_w_px = 0
         self.overlay_h_px = 0
 
         self.segmented = False
-        self.exposure_time = 30000
+        self.exposure_time = 20000
         self.model = model
 
         """
@@ -2682,9 +1768,6 @@ class TilingFrame:
         #Height 5.832 mm
         # Move in X = 10.368 mm / 10 = 1037um
         # Move in Y = 5.832 mm / 10 = 538.2 um ~ 539 um
-        # Subtraction amounts are there to tune the offset for the alignment markers
-        self.x_settings = OffsetAmountFrame(self.frame, "X", 1037-54) #Move amount between exposures in X
-        self.y_settings = OffsetAmountFrame(self.frame, "Y", 539-27)  #Move amount between exposures in y
         
         def snake_pattern_alignment_errors(model, dest_img, src_img, 
                         dir_x=None, dir_y=None, step_x:int=0, step_y:int=0, layer=1, 
@@ -2925,8 +2008,6 @@ class TilingFrame:
             
             img = Image.open(image_path)
             img_w, img_h = img.size
-            self.overall_pattern_size_w = img_w
-            self.overall_pattern_size_h = img_h
             os.makedirs(output_dir, exist_ok=True)
             
             ####################### Rachel Insertion ############################################
@@ -3082,7 +2163,7 @@ class TilingFrame:
 
                     # expose the image
                     model.begin_patterning()
-                    # model.on_event(Event.PATTERNING_FINISHED)
+                    model.on_event(Event.CHIP_CHANGED)
                     
                     model.enter_red_mode(mode_switch_autofocus=False)
                     model.move_relative({"z": (self.red_to_uv_offset)})
@@ -3127,82 +2208,6 @@ class TilingFrame:
         # TODO: add one please
         # self.abort_tiling_button = ttk.Button(self.frame, text="Abort Tiling", command=on_abort, state="disabled")
         # self.abort_tiling_button.grid(row=3, column=0)
-
-class ProjectorDisplayFrame:
-    """Frame to display what the projector is currently showing"""
-    
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
-        self.frame = ttk.Frame(parent)
-        self.event_dispatcher = event_dispatcher
-        
-        # Main label frame
-        self.display_frame = ttk.LabelFrame(self.frame, text="Projector Output")
-        self.display_frame.grid(row=0, column=0)
-        
-        # Create placeholder image
-        # Using a similar size to camera preview for consistency
-        self.display_size = (320, 180)
-        placeholder = Image.new("RGB", self.display_size, "black")
-        self.photo = image_to_tk_image(placeholder)
-        
-        # Display label
-        self.label = ttk.Label(self.display_frame, image=self.photo, relief="solid", borderwidth=2)
-        self.label.grid(row=0, column=0, padx=5, pady=5)
-        
-        # Status label showing current mode
-        self.status_var = StringVar(value="Status: Clear")
-        self.status_label = ttk.Label(self.display_frame, textvariable=self.status_var)
-        self.status_label.grid(row=1, column=0, padx=5, pady=5)
-        
-        # Listen for projector changes
-        event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, self._update_display)
-        event_dispatcher.add_event_listener(Event.PATTERN_IMAGE_CHANGED, self._update_display)
-        event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, self._update_display)
-        event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, self._update_display)
-        
-        # Force initial update
-        # self.event_dispatcher.root.after(100, self._update_display)
-        
-    def _update_display(self):
-        """Update the display when projector content changes"""
-        shown_image = self.event_dispatcher.shown_image
-        
-        # Update status text
-        status_map = {
-            ShownImage.CLEAR: "Status: Clear (No Output)",
-            ShownImage.PATTERN: "Status: Pattern (UV Exposure)",
-            ShownImage.FLATFIELD: "Status: Flatfield Correction",
-            ShownImage.RED_FOCUS: "Status: Red Focus Mode",
-            ShownImage.UV_FOCUS: "Status: UV Focus Pattern",
-        }
-        self.status_var.set(status_map.get(shown_image, "Status: Unknown"))
-        
-        # Get the appropriate processed image based on mode
-        # Note: When patterning, we check patterning_busy flag as well
-        img = None
-        if shown_image == ShownImage.RED_FOCUS:
-            img = self.event_dispatcher.red_focus.processed()
-        # pattern case above uv focus case: when set_patterning_busy(True) is called,
-        # shown_image is never changed to PATTERN during patterning - it stays as UV_FOCUS
-        elif shown_image == ShownImage.PATTERN or self.event_dispatcher.patterning_busy:
-            img = self.event_dispatcher.pattern.processed()
-        elif shown_image == ShownImage.UV_FOCUS:
-            img = self.event_dispatcher.uv_focus.processed()
-        elif shown_image == ShownImage.FLATFIELD:
-            # Flatfield might not be implemented, use pattern as fallback
-            img = self.event_dispatcher.pattern.processed()
-        
-        # Update image
-        if img is None or (shown_image == ShownImage.CLEAR and not self.event_dispatcher.patterning_busy):
-            # Show black placeholder when clear
-            placeholder = Image.new("RGB", self.display_size, "black")
-            self.photo = image_to_tk_image(placeholder)
-        else:
-            display_img = img.copy()
-            display_img.thumbnail(self.display_size, Image.Resampling.LANCZOS)
-            self.photo = image_to_tk_image(display_img)
-        
-        self.label.configure(image=self.photo)
 
 class TilingCheckFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -3363,305 +2368,6 @@ class TilingCheckFrame:
         stitched_image = stitched_image.convert('RGB')
 
         return stitched_image
-
-class MapFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
-        self.frame = ttk.LabelFrame(parent)
-        self.event_dispatcher = event_dispatcher
-        
-        bounds = event_dispatcher.hardware.stage.get_bounds()
-        self.width_um = bounds["x"][1]
-        self.height_um = bounds["y"][1]
-        self.map_size_um = self.width_um * self.height_um
-        
-        # Canvas size in pixels
-        self.canvas_size = 350
-        
-        # Pattern dimensions: from DLP projector datasheet
-        self.pattern_w = 1037
-        self.pattern_h = 583
-        
-        # canvas with plain background
-        self.canvas = tkinter.Canvas(
-            self.frame, 
-            width=self.canvas_size, 
-            height=self.canvas_size,
-            bg='#3F9490',
-        )
-        self.canvas.grid(row=0, column=0, padx=5, pady=5)
-        
-        # coordinates of exposed patterns (list of tuples: (x, y))
-        self.pattern_markers = []
-        
-        event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, self._on_position_changed)
-        event_dispatcher.add_event_listener(Event.PATTERNING_FINISHED, self._on_pattern_exposed)
-        event_dispatcher.add_event_listener(Event.CHIP_CHANGED, self._on_chip_changed)
-        
-        self._redraw_all()
-    
-    def _um_to_pixels(self, um_x, um_y):
-        """
-        Convert micrometer coordinates to canvas pixel coordinates.
-        (0, 0) in micrometers is at the center of the canvas.
-        """
-        scale = self.canvas_size / self.map_size_um
-        
-        # Add half map size to shift origin to center
-        pixel_x = (um_x + self.map_size_um / 2) * scale
-        pixel_y = (um_y + self.map_size_um / 2) * scale
-        
-        return pixel_x, pixel_y
-    
-    def _um_size_to_pixels(self, um_width, um_height):
-        """Convert micrometer dimensions to pixel dimensions"""
-        scale = self.canvas_size / self.map_size_um
-        return um_width * scale, um_height * scale
-    
-    def _draw_pattern_marker(self, x_um, y_um):
-        """ Draw a blue rectangle given x and y """
-        x1_px, y1_px = self._um_to_pixels(x_um, y_um)
-        w_px, h_px = self._um_size_to_pixels(self.pattern_w, self.pattern_h)
-        
-        x2_px = x1_px + w_px
-        y2_px = y1_px + h_px
-
-        # shift from bottom down to bottom up
-        y1_px = self.canvas_size - y1_px
-        y2_px = self.canvas_size - y2_px
-        
-        marker = self.canvas.create_rectangle(
-            x1_px, y1_px, x2_px, y2_px,
-            fill='#7BB7B7',
-            width=0
-        )
-
-        return marker
-            
-    def _draw_current_position(self):
-        """ Draw the red rectangle for current position. """
-        x_um, y_um, z_um = self.event_dispatcher.stage_setpoint
-        
-        # Convert top-left corner to pixel coordinates
-        x1_px, y1_px = self._um_to_pixels(x_um, y_um)
-        
-        # Get pattern dimensions in pixels
-        w_px, h_px = self._um_size_to_pixels(self.pattern_w, self.pattern_h)
-        
-        # Calculate bottom-right corner
-        x2_px = x1_px + w_px
-        y2_px = y1_px + h_px
-
-        y1_px = self.canvas_size - y1_px
-        y2_px = self.canvas_size - y2_px        
-        
-        marker = self.canvas.create_rectangle(
-                x1_px, y1_px, x2_px, y2_px,
-                fill='',  # No fill
-                outline='#E86E7F',  # Red outline
-                width=2
-            )
-        
-        return marker # marker ID
-
-    def _load_patterns_from_chip(self):
-        """ Load all exposed pattern coordinates from the chip
-        into the self.pattern_markers list """
-
-        self.pattern_markers.clear()
-        
-        chip = self.event_dispatcher.chip
-        for layer in chip.layers:
-            for exposure in layer.exposures:
-                if not exposure.aborted:  # Only include successful exposures
-                    x, y, z = exposure.coords
-                    self.pattern_markers.append((x, y))
-
-    def _redraw_all(self):
-        """Redraw all exposed patterns from the chip"""
-        # Clear existing pattern markers
-        self.canvas.delete("all")
-        
-        # Draw all exposures from all layers
-        for x_um, y_um in self.pattern_markers:
-            self._draw_pattern_marker(x_um, y_um)
-        
-        self._draw_current_position()
-    
-    def _on_position_changed(self):
-        self._redraw_all() # TODO: only update current_position?
-    
-    def _on_pattern_exposed(self):
-        """ Get the most recent exposure from current layer """
-        chip = self.event_dispatcher.chip
-        if chip.layers and chip.layers[-1].exposures:
-            latest_exposure = chip.layers[-1].exposures[-1]
-            if not latest_exposure.aborted:
-                x, y, z = latest_exposure.coords
-                self.pattern_markers.append((x, y))
-                self._redraw_all()
-
-    def _on_chip_changed(self):
-        """Handle chip changes (load, new chip, etc.) - reload and redraw"""
-        self._load_patterns_from_chip()
-        self._redraw_all()
-
-class LithographerGui:
-    root: Tk
-    event_dispatcher: EventDispatcher
-
-    def __init__(self, config: LithographerConfig):
-        self.root = Tk()
-        self.event_dispatcher = EventDispatcher(
-            config.stage, 
-            TkProjector(self.root), 
-            self.root, 
-            config.camera,
-            config.red_exposure,
-            config.uv_exposure,
-        )
-        self.event_dispatcher.initialize_alignment(config)
-
-        self.shown_image = ShownImage.CLEAR
-
-        # scrollable interface begin ------------------
-        self.canvas = tkinter.Canvas(self.root)
-        self.scrollbar_y = tkinter.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
-        self.scrollbar_x = tkinter.Scrollbar(self.root, orient="horizontal", command=self.canvas.xview)
-        self.canvas.configure(yscrollcommand=self.scrollbar_y.set, xscrollcommand=self.scrollbar_x.set)
-
-        self.scrollbar_y.grid(row=0, column=1, sticky="ns")
-        self.scrollbar_x.grid(row=1, column=0, sticky="ew")
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-
-        self.root.grid_rowconfigure(0, weight=1)
-        self.root.grid_columnconfigure(0, weight=1)
-
-        self.inner_frame = ttk.Frame(self.canvas)
-        self.canvas_window = self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
-
-        def on_frame_configure(event):
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-        def on_canvas_configure(event):
-            min_width = self.inner_frame.winfo_reqwidth()
-            self.canvas.itemconfig(self.canvas_window, width=max(event.width, min_width))
-
-        self.inner_frame.bind("<Configure>", on_frame_configure)
-        self.canvas.bind("<Configure>", on_canvas_configure)
-
-        # Mouse wheel scrolling
-        def on_mousewheel_vertical(event):
-            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        def on_mousewheel_horizontal(event):
-            self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        self.canvas.bind_all("<Shift-MouseWheel>", on_mousewheel_horizontal)
-        self.canvas.bind_all("<MouseWheel>", on_mousewheel_vertical)  # Windows/macOS
-        self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
-        self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units")) 
-        # scrollable interface end ---------------------
-
-        self.top_panel = ttk.Frame(self.inner_frame)
-        self.top_panel.grid(row=0, column=0, sticky='ew')
-
-        # Map (top)
-        self.map = MapFrame(self.top_panel, self.event_dispatcher)
-        self.map.frame.grid(row=0, column=0, padx=5, pady=5)
-        # Camera frame (top)
-        self.camera = CameraFrame(self.top_panel, self.event_dispatcher, config.camera, config.camera_scale)
-        self.camera.frame.grid(row=0, column=1, padx=5, pady=5)
-
-        # Projector display (top)
-        self.projector_display = ProjectorDisplayFrame(self.top_panel, self.event_dispatcher)
-        self.projector_display.frame.grid(row=0, column=2, padx=5, pady=5)
-
-        # center the frames
-        self.top_panel.grid_columnconfigure(0, weight=1)
-        self.top_panel.grid_columnconfigure(1, weight=1)
-        self.top_panel.grid_columnconfigure(2, weight=1)
-
-        # Progress bar
-        self.pattern_progress = Progressbar(self.inner_frame, orient="horizontal", mode="determinate")
-        self.pattern_progress.grid(row=1, column=0, sticky="ew")
-
-        # Main tab interface (replaces middle_panel)
-        self.mode_select_frame = ModeSelectFrame(self.inner_frame, self.event_dispatcher)
-        self.mode_select_frame.notebook.grid(row=2, column=0, sticky="nsew")
-
-        # Bottom panel (chip log and image adjustment and tiling)
-        self.bottom_panel = ttk.Frame(self.inner_frame)
-        self.bottom_panel.grid(row=3, column=0, sticky="ew")
-
-        # Chip management
-        self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
-        self.chip_frame.frame.grid(row=0, column=0)
-
-        # Image adjustment controls
-        self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
-        self.image_adjust_frame.frame.grid(row=0, column=1)
-
-        # Global settings
-        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.alignment.enabled)
-        self.global_settings_frame.frame.grid(row=0, column=2)
-
-        # Tiling controls
-        self.tiling_frame = TilingFrame(self.bottom_panel, self.event_dispatcher)
-        self.tiling_frame.frame.grid(row=0, column=3)
-
-        # Legacy references for compatibility (if needed elsewhere in code)
-        self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
-        self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
-
-        self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
-        # self.debug.info("Debug info will appear here")
-
-        # Things that have to after the main loop begins
-        def on_start():
-            self.camera.start()
-            self.event_dispatcher.enter_red_mode(mode_switch_autofocus=False) # ensure exposure settings are correctly set
-            self.event_dispatcher.query_config()
-            if self.event_dispatcher.hardware.stage.has_homing():
-                self.event_dispatcher.home_stage()
-                self.map._redraw_all()
-            
-            self.event_dispatcher.stage_setpoint = self.event_dispatcher.hardware.stage.get_position()
-            print(f"Current GUI Location: {self.event_dispatcher.stage_setpoint}")
-
-            messagebox.showinfo(
-                message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
-            )
-
-        self.root.after(0, on_start)
-    
-
-    def cleanup(self):
-        print("Patterning GUI closed.")
-        print("TODO: Cleanup")
-        self.root.destroy()
-        self.camera.cleanup()
-        # if RUN_WITH_STAGE:
-        # serial_port.close()
-
-@dataclass
-class ImageCaptureSettings:
-    stride_x_um: int # x direction stride in um(steps) for stage movement during image capture
-    stride_y_um: int # y direction stride in um(steps) for stage movement during image capture
-    total_x_um: int  # total steps in x direction we need to move
-    total_y_um: int  # total steps in y direction we need to move
-    capture_folder: str # capture folder where we store all data + logs
-
-@dataclass
-class ImageStitchSettings:
-    num_rows: int # number of tile rows during pattern segmentation
-    num_cols: int # number of tile col during pattern segmentation
-    output_folder: str # output folder where we store the stitched image (set the same as capture_folder)
-    resize: float # resize factor of the stitched image before we save to the output folder (we do this to prevent it from being massive)
-    debug: bool # flag for debug print
-    threshold: int # error margin we allow before defaulting to expected_dx and expected_dy during stitching
-
-@dataclass
-class TilePreprocessSettings:
-    gaussian_kernel_size: tuple[int, int]
 
 class ImageStitchingFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -4223,6 +2929,248 @@ class MultiLayerAlignFrame:
         print(transformed_stitched)
 
         return (s, R_est, t_est, matches)
+########## END MULTI-LAYER TILING CLASSES ##################
+
+class MapFrame:
+    def __init__(self, parent, event_dispatcher: EventDispatcher):
+        self.frame = ttk.LabelFrame(parent)
+        self.event_dispatcher = event_dispatcher
+        
+        bounds = event_dispatcher.hardware.stage.get_bounds()
+        if bounds == None:
+            # Map dimensions in micrometers
+            self.x_min_um = 0
+            self.x_max_um = 100
+            self.y_min_um = 0
+            self.y_max_um = 100
+            self.width_um  = self.x_max_um - self.x_min_um
+            self.height_um = self.y_max_um - self.y_min_um
+        else:
+            self.x_min_um = bounds["x"][0]
+            self.x_max_um = bounds["x"][1]
+            self.y_min_um = bounds["y"][0]
+            self.y_max_um = bounds["y"][1]
+            self.width_um  = self.x_max_um - self.x_min_um
+            self.height_um = self.y_max_um - self.y_min_um
+            
+        # Canvas size in pixels
+        self.canvas_size = 350
+        
+        # Pattern dimensions: from DLP projector datasheet
+        self.pattern_w = 1037
+        self.pattern_h = 583
+        
+        # canvas with plain background
+        self.canvas = tkinter.Canvas(
+            self.frame, 
+            width=self.canvas_size, 
+            height=self.canvas_size,
+            bg='#3F9490',
+        )
+        self.canvas.grid(row=0, column=0, padx=5, pady=5)
+        
+        # coordinates of exposed patterns (list of tuples: (x, y))
+        self.pattern_markers = []
+        
+        event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, self._on_position_changed)
+        event_dispatcher.add_event_listener(Event.CHIP_CHANGED, self._on_chip_changed)
+        
+        self._redraw_all()
+    
+    def _um_to_pixels(self, um_x, um_y):
+        """
+        Convert micrometer stage coordinates to canvas pixel coordinates.
+        Stage origin (x_min, y_min) maps to canvas (0, canvas_size).
+        """
+        scale_x = self.canvas_size / self.width_um
+        scale_y = self.canvas_size / self.height_um
+
+        pixel_x = (um_x - self.x_min_um) * scale_x
+        pixel_y = (um_y - self.y_min_um) * scale_y
+
+        return pixel_x, pixel_y
+    
+    def _um_size_to_pixels(self, um_width, um_height):
+        scale_x = self.canvas_size / self.width_um
+        scale_y = self.canvas_size / self.height_um
+        return um_width * scale_x, um_height * scale_y
+    
+    def _draw_pattern_marker(self, x_um, y_um):
+        """ Draw a blue rectangle given x and y """
+        x1_px, y1_px = self._um_to_pixels(x_um, y_um)
+        w_px, h_px = self._um_size_to_pixels(self.pattern_w, self.pattern_h)
+        
+        x2_px = x1_px + w_px
+        y2_px = y1_px + h_px
+
+        # shift from bottom down to bottom up
+        y1_px = self.canvas_size - y1_px
+        y2_px = self.canvas_size - y2_px
+        
+        marker = self.canvas.create_rectangle(
+            x1_px, y1_px, x2_px, y2_px,
+            fill='#7BB7B7',
+            width=0
+        )
+
+        return marker
+            
+    def _draw_current_position(self):
+        """ Draw the red rectangle for current position. """
+        x_um, y_um, z_um = self.event_dispatcher.stage_setpoint
+        
+        # Convert top-left corner to pixel coordinates
+        x1_px, y1_px = self._um_to_pixels(x_um, y_um)
+        
+        # Get pattern dimensions in pixels
+        w_px, h_px = self._um_size_to_pixels(self.pattern_w, self.pattern_h)
+        
+        # Calculate bottom-right corner
+        x2_px = x1_px + w_px
+        y2_px = y1_px + h_px
+
+        y1_px = self.canvas_size - y1_px
+        y2_px = self.canvas_size - y2_px        
+        
+        marker = self.canvas.create_rectangle(
+                x1_px, y1_px, x2_px, y2_px,
+                fill='',  # No fill
+                outline='#E86E7F',  # Red outline
+                width=2
+            )
+        
+        return marker # marker ID
+
+    def _load_patterns_from_chip(self):
+        """ Load all exposed pattern coordinates from the chip
+        into the self.pattern_markers list """
+
+        self.pattern_markers.clear()
+        
+        chip = self.event_dispatcher.chip
+        for layer in chip.layers:
+            for exposure in layer.exposures:
+                if not exposure.aborted:  # Only include successful exposures
+                    x, y, z = exposure.coords
+                    self.pattern_markers.append((x, y))
+
+    def _redraw_all(self):
+        """Redraw all exposed patterns from the chip"""
+        # Clear existing pattern markers
+        self.canvas.delete("all")
+        
+        # Draw all exposures from all layers
+        for x_um, y_um in self.pattern_markers:
+            self._draw_pattern_marker(x_um, y_um)
+        
+        self._draw_current_position()
+    
+    def _on_position_changed(self):
+        self._redraw_all() # TODO: only update current_position?
+
+    def _on_chip_changed(self):
+        """Handle chip changes (load, new chip, etc.) - reload and redraw"""
+        self._load_patterns_from_chip()
+        self._redraw_all()
+
+class LithographerGui:
+    root: Tk
+    event_dispatcher: EventDispatcher
+
+    def __init__(self, config: LithographerConfig):
+        self.root = Tk()
+        self.event_dispatcher = EventDispatcher(
+            config.stage, 
+            TkProjector(self.root), 
+            self.root, 
+            config.camera,
+            config.red_exposure,
+            config.uv_exposure,
+        )
+        self.event_dispatcher.initialize_alignment(config)
+
+        self.shown_image = ShownImage.CLEAR
+
+        self.top_panel = ttk.Frame(self.root)
+        self.top_panel.grid(row=0, column=0, sticky='ew')
+
+        # Map (top)
+        self.map = MapFrame(self.top_panel, self.event_dispatcher)
+        self.map.frame.grid(row=0, column=0, padx=5, pady=5)
+        # Camera frame (top)
+        self.camera = CameraFrame(self.top_panel, self.event_dispatcher, config.camera, config.camera_scale)
+        self.camera.frame.grid(row=0, column=1, padx=5, pady=5)
+
+        # Projector display (top)
+        self.projector_display = ProjectorDisplayFrame(self.top_panel, self.event_dispatcher)
+        self.projector_display.frame.grid(row=0, column=2, padx=5, pady=5)
+
+        # center the frames
+        self.top_panel.grid_columnconfigure(0, weight=1)
+        self.top_panel.grid_columnconfigure(1, weight=1)
+        self.top_panel.grid_columnconfigure(2, weight=1)
+
+        # Progress bar
+        self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
+        self.pattern_progress.grid(row=1, column=0, sticky="ew")
+
+        # Main tab interface (replaces middle_panel)
+        self.mode_select_frame = ModeSelectFrame(self.root, self.event_dispatcher)
+        self.mode_select_frame.notebook.grid(row=2, column=0, sticky="nsew")
+
+        # Bottom panel (chip log and image adjustment and tiling)
+        self.bottom_panel = ttk.Frame(self.root)
+        self.bottom_panel.grid(row=3, column=0, sticky="ew")
+
+        # Chip management
+        self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
+        self.chip_frame.frame.grid(row=0, column=0)
+
+        # Image adjustment controls
+        self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
+        self.image_adjust_frame.frame.grid(row=0, column=1)
+
+        # Global settings
+        self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.alignment.enabled)
+        self.global_settings_frame.frame.grid(row=0, column=2)
+
+        # Tiling controls
+        self.tiling_frame = TilingFrame(self.bottom_panel, self.event_dispatcher)
+        self.tiling_frame.frame.grid(row=0, column=3)
+
+        # Legacy references for compatibility (if needed elsewhere in code)
+        self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
+        self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
+
+        self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
+        # self.debug.info("Debug info will appear here")
+
+        # Things that have to after the main loop begins
+        def on_start():
+            self.camera.start()
+            self.event_dispatcher.enter_red_mode(mode_switch_autofocus=False) # ensure exposure settings are correctly set
+            self.event_dispatcher.query_config()
+            if self.event_dispatcher.hardware.stage.has_homing():
+                self.event_dispatcher.home_stage()
+                self.map._redraw_all()
+            
+            self.event_dispatcher.stage_setpoint = self.event_dispatcher.hardware.stage.get_position()
+            print(f"Current GUI Location: {self.event_dispatcher.stage_setpoint}")
+
+            messagebox.showinfo(
+                message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
+            )
+
+        self.root.after(0, on_start)
+    
+
+    def cleanup(self):
+        print("Patterning GUI closed.")
+        print("TODO: Cleanup")
+        self.root.destroy()
+        self.camera.cleanup()
+        # if RUN_WITH_STAGE:
+        # serial_port.close()
 
 def main():
 
@@ -4334,7 +3282,6 @@ def main():
 
     lithographer = LithographerGui(lithographer_config)
     lithographer.root.mainloop()
-
 
 if __name__ == "__main__":
     main()

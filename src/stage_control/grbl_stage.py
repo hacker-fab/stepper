@@ -153,8 +153,8 @@ class GrblStage(StageController):
                     raise TimeoutError("No response from GRBL")      
                 time.sleep(0.01)  # yield the CPU
 
-            resp = self.resp_buffer.split(b"\r\n")
-            self.resp_buffer = b""
+            lines = self.resp_buffer.split(b"\r\n")
+            self.resp_buffer = lines[-1]
             response = [res.decode("ascii", errors="replace").strip() for res in resp]
 
             for item in response:
@@ -222,7 +222,7 @@ class GrblStage(StageController):
                 x, y, z = part.removeprefix("WPos:").split(",")
                 work_position = (float(x), float(y), float(z))
         
-        resolved_position = position or work_position
+        resolved_position = work_position or position
         print(f"resolved position: {resolved_position}, Idle: {idle}")
         if resolved_position is None:
             raise ValueError(f"GRBL status response contained no position data: {buff!r}")
@@ -296,7 +296,8 @@ class GrblStage(StageController):
                 if "=" in part:
                     key, value = part.split("=", 1)
                     key = int(key.strip())
-                    value = value.strip()
+                    # value = value.strip()
+                    value = value.split("(")[0].strip()
                     if value == "":
                         value = None
                     elif "." in value:
