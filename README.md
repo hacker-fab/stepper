@@ -168,7 +168,7 @@ git lfs pull
 
 > If you already cloned without LFS, you can just run `git lfs pull` to fetch the weights, no need to run the second line.
 
-Alternatively, you may fetch the real file [here](https://drive.google.com/file/d/1gzfTfCEShMwD_rnQ02xfzXXrrkVuZwpM/view?usp=drive_link) and replace the current `weights.onnx` file with the one downloaded from the link. 
+Alternatively, you may fetch the real file [here](https://github.com/hacker-fab/stepper_attachments/tree/main/model) and replace the current `weights.onnx` file with the one downloaded from the link. 
 
 
 ### Using a Basler (Pylon) camera
@@ -244,15 +244,12 @@ enabled = true
 # Set homing to false if your stage does not have limit sensors
 homing = false
 
-# The following features can be enabled when homing 
-# is set to true. Note that this assumes the stage
+# The following features can be enabled when homing is set to true. Note that this assumes the stage
 # won't be moved manually, but entirely through the gui
 
 # Enable tiling if user wishes to use tiling features
 tiling = false
-# Set autofocus offset to get an estimated focus position
-# for the z-stage. Set 0 to use the original autofocus
-# algorithm, which may take more time to run. 
+# Set autofocus offset to get an estimated focus position for the z-stage. Set 0 to use the original autofocus algorithm
 autofocus = 0
 
 
