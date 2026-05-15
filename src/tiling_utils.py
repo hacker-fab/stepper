@@ -1,7 +1,5 @@
 from PIL import Image
 import cv2 as cv
-import os
-import json
 import math
 import numpy as np
 import onnxruntime as rt
@@ -75,38 +73,96 @@ def rf_detr_preprocess(img, layer: int = 1):
     img_input = np.expand_dims(img_input, 0).astype(np.float32) / 255.0
     return img_input, orig_h, orig_w
 
+# def estimate_transform(dest: np.ndarray, src: np.ndarray) -> tuple[float, float, float]:
+#     """
+#     TODO: make this better
+#     Given matched point pairs, estimate (dx, dy, rotation_degrees)
+#     using least-squares rigid body fit.
+
+#     Precondition: dest and src are of same size
+#     Assumption made: user does not tilt the chip by more than 90 degrees
+#     because sth is wrong with chip placement if that's the case and
+#     user should benefit from reloading the chip on the stage
+
+#     dst_pts: (K, 2) — camera-detected positions (after step shift)
+#     src_pts: (K, 2) — pattern expected positions
+#     """
+
+#     # --- Translation: avg x,y offset ---
+#     assert dest.shape == src.shape, "dest and src sized differently"
+
+#     delta = dest - src
+#     dx = float(np.mean(delta[:, 0]))
+#     dy = float(np.mean(delta[:, 1]))
+
+#     dest_centroid = dest - dest.mean(axis=0)
+#     src_centroid = src - src.mean(axis=0)
+
+#     angles = []
+#     for s, d in zip(dest_centroid, src_centroid):
+#         cross = s[0]*d[1] - s[1]*d[0]
+#         dot   = s[0]*d[0] + s[1]*d[1]
+#         angle = np.arctan2(cross, dot)
+#         angles.append(angle)
+#     angles_arr = np.array(angles)
+
+#     # rotation_deg = float(np.degrees(np.mean(angles)))
+#     rotation_deg = float(np.degrees(np.arctan2(
+#         np.mean(np.sin(angles_arr)),
+#         np.mean(np.cos(angles_arr))
+#     )))
+#     return (dx, dy, rotation_deg)
+
 def estimate_transform(dest: np.ndarray, src: np.ndarray) -> tuple[float, float, float]:
     """
-    Given matched point pairs, estimate (dx, dy, rotation_degrees)
-    using least-squares rigid body fit.
-
-    Precondition: dest and src are of same size
-    Assumption made: user does not tilt the chip by more than 90 degrees
-    because sth is wrong with chip placement if that's the case and
-    user should benefit from reloading the chip on the stage
-
-    dst_pts: (K, 2) — camera-detected positions (after step shift)
-    src_pts: (K, 2) — pattern expected positions
+    Estimate (dx, dy, rotation_degrees) between matched point pairs
+    using least-squares rigid body fit (SVD method).
+    
+    dest: (K, 2) — where points are now (camera detections)
+    src:  (K, 2) — where points should be (pattern expected)
+    Returns (dx, dy, rotation_deg) where:
+        - dx, dy are in pixels, representing stage correction needed
+        - rotation_deg is the chip rotation relative to pattern
     """
+    assert dest.shape == src.shape and dest.shape[0] >= 1
 
-    # --- Translation: avg x,y offset ---
-    assert dest.shape == src.shape, "dest and src sized differently"
+    dest_centroid = dest.mean(axis=0)
+    src_centroid = src.mean(axis=0)
 
-    delta = dest - src
-    dx = float(np.mean(delta[:, 0]))
-    dy = float(np.mean(delta[:, 1]))
+    dest_c = dest - dest_centroid
+    src_c  = src  - src_centroid
 
-    dest_centroid = dest - dest.mean(axis=0)
-    src_centroid = src - src.mean(axis=0)
+    # Only meaningful with 2+ points; fall back to zero rotation for single point
+    if dest.shape[0] >= 2:
+        H = src_c.T @ dest_c          # (2, 2) cross-covariance
+        U, S, Vt = np.linalg.svd(H)
+        R = Vt.T @ U.T
 
-    angles = []
-    for s, d in zip(dest_centroid, src_centroid):
-        cross = s[0]*d[1] - s[1]*d[0]
-        dot   = s[0]*d[0] + s[1]*d[1]
-        angle = np.arctan2(cross, dot)
-        angles.append(angle)
+        # Correct for reflection (det should be +1 for rotation, -1 for reflection)
+        if np.linalg.det(R) < 0:
+            Vt[-1, :] *= -1
+            R = Vt.T @ U.T
 
-    rotation_deg = float(np.degrees(np.mean(angles)))
+        rotation_rad = np.arctan2(R[1, 0], R[0, 0])
+        rotation_deg = float(np.degrees(rotation_rad))
+    else:
+        R = np.eye(2)
+        rotation_deg = 0.0
+
+    # Rotate src centroid by R, then find offset to dest centroid
+    # This is the correct order: rotation is about src centroid,
+    # then translate to align centroids
+    src_centroid_rotated = R @ src_centroid
+    dx = float(dest_centroid[0] - src_centroid_rotated[0])
+    dy = float(dest_centroid[1] - src_centroid_rotated[1])
+
+    # --- 5. Sanity check ---
+    if abs(rotation_deg) >= 90.0:
+        raise ValueError(
+            f"Estimated rotation {rotation_deg:.1f}° exceeds 90° — "
+            "chip is likely misloaded or detection failed."
+        )
+
     return (dx, dy, rotation_deg)
 
 def detect_marks_for_slam(img, session, orig_h, orig_w, threshold=0.77) -> list[dict]:
