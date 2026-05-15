@@ -12,8 +12,8 @@ CONFIDENCE_THRESHOLD = 0.75
 STITCHED_CONFIDENCE_THRESHOLD = 0.4
 
 # digital pattern pixels to step size scalar
-px_to_step_x = 1.0/1.576
-px_to_step_y = 1.0/1.668
+px_to_step_x = 1.0/1.668 # was 1.0/1.576
+px_to_step_y = 1.0/1.576 # was 1.0/1.668
 digital_to_cam_view = 0.5
 
 # image set position scale (steps to pixels scalar)
