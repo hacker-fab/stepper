@@ -155,7 +155,7 @@ class GrblStage(StageController):
 
             lines = self.resp_buffer.split(b"\r\n")
             self.resp_buffer = lines[-1]
-            response = [res.decode("ascii", errors="replace").strip() for res in resp]
+            response = [res.decode("ascii", errors="replace").strip() for res in lines[:-1]]
 
             for item in response:
                 if not item:

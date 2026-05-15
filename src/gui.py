@@ -1433,12 +1433,10 @@ class ModeSelectFrame:
         selected = self.notebook.select()
         if "previouslayer" in selected.lower() or self.notebook.index("current") == 0:
             return "prevpattern"
-        elif "stitchedimage" in selected.lower() or self.notebook.index("current") == 1:
-            return "stitchedpattern"
-        if "patternupload" in selected.lower() or self.notebook.index("current") == 2:
+        elif "patternupload" in selected.lower() or self.notebook.index("current") == 1:
             return "pattern"
-        elif "redmode" in selected or self.notebook.index("current") == 3:
-            return "red" 
+        elif "redmode" in selected or self.notebook.index("current") == 2:
+            return "red"
         else:
             return "uv"
 ################## END MODE FRAME CLASSES ###########################
