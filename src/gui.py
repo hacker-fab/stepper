@@ -3523,7 +3523,45 @@ class LithographerGui:
 
         self.shown_image = ShownImage.CLEAR
 
-        self.top_panel = ttk.Frame(self.root)
+        # scrollable interface begin ------------------
+        self.canvas = tkinter.Canvas(self.root)
+        self.scrollbar_y = tkinter.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
+        self.scrollbar_x = tkinter.Scrollbar(self.root, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=self.scrollbar_y.set, xscrollcommand=self.scrollbar_x.set)
+
+        self.scrollbar_y.grid(row=0, column=1, sticky="ns")
+        self.scrollbar_x.grid(row=1, column=0, sticky="ew")
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
+
+        self.inner_frame = ttk.Frame(self.canvas)
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
+
+        def on_frame_configure(event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+        def on_canvas_configure(event):
+            min_width = self.inner_frame.winfo_reqwidth()
+            self.canvas.itemconfig(self.canvas_window, width=max(event.width, min_width))
+
+        self.inner_frame.bind("<Configure>", on_frame_configure)
+        self.canvas.bind("<Configure>", on_canvas_configure)
+
+        # Mouse wheel scrolling
+        def on_mousewheel_vertical(event):
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        def on_mousewheel_horizontal(event):
+            self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        self.canvas.bind_all("<Shift-MouseWheel>", on_mousewheel_horizontal)
+        self.canvas.bind_all("<MouseWheel>", on_mousewheel_vertical)  # Windows/macOS
+        self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units")) 
+        # scrollable interface end ---------------------
+
+        self.top_panel = ttk.Frame(self.inner_frame)
         self.top_panel.grid(row=0, column=0, sticky='ew')
 
         # Map (top)
@@ -3543,15 +3581,15 @@ class LithographerGui:
         self.top_panel.grid_columnconfigure(2, weight=1)
 
         # Progress bar
-        self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
+        self.pattern_progress = Progressbar(self.inner_frame, orient="horizontal", mode="determinate")
         self.pattern_progress.grid(row=1, column=0, sticky="ew")
 
         # Main tab interface (replaces middle_panel)
-        self.mode_select_frame = ModeSelectFrame(self.root, self.event_dispatcher)
+        self.mode_select_frame = ModeSelectFrame(self.inner_frame, self.event_dispatcher)
         self.mode_select_frame.notebook.grid(row=2, column=0, sticky="nsew")
 
         # Bottom panel (chip log and image adjustment and tiling)
-        self.bottom_panel = ttk.Frame(self.root)
+        self.bottom_panel = ttk.Frame(self.inner_frame)
         self.bottom_panel.grid(row=3, column=0, sticky="ew")
 
         # Chip management
