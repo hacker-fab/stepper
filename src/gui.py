@@ -2627,6 +2627,13 @@ class ImageStitchingFrame:
         src_keypoints, src_descriptors = sift.detectAndCompute(src_img, None)
         dst_keypoints, dst_descriptors = sift.detectAndCompute(dst_img, None)
 
+        if src_descriptors is None or dst_descriptors is None:
+            raise ValueError(
+                f"SIFT found no keypoints: src={len(src_keypoints) if src_keypoints else 0}, "
+                f"dst={len(dst_keypoints) if dst_keypoints else 0}. "
+                f"Check that tile images are not blank or featureless."
+            )
+        
         src_descriptors = src_descriptors.astype(np.float32)
         dst_descriptors = dst_descriptors.astype(np.float32)
         
@@ -2740,7 +2747,12 @@ class ImageStitchingFrame:
                 expected_dy = (next_tile_stage_pos[1] - curr_tile_stage_pos[1]) * 1.576
 
                 print(f"curr_tile_info: {curr_tile_info}, next_tile_info: {next_tile_info}")
-                M, error = self.image_alignment(curr_tile, next_tile)
+                
+                try:
+                    M, _ = self.image_alignment(curr_tile, next_tile)
+                except ValueError as e:
+                    print(f"[stitch] Alignment failed for tiles {curr_tile_info} → {next_tile_info}: {e}")
+                    M = None  
 
                 if M is None:
                     # could not find an alignment use expected values
