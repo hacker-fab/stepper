@@ -28,6 +28,8 @@ def select_channels(
     channels: tuple[Image.Image, ...] = img_cpy.split()
     assert len(channels) in (3, 4)
 
+    print("red" if red else "green" if green else "blue")
+
     return Image.merge(
         "RGB",
         (
