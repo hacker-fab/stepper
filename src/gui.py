@@ -322,7 +322,7 @@ class EventDispatcher:
         self.should_abort = False
 
         # Exposure settings and progress
-        self.exposure_time = 8000
+        self.exposure_time = 20000
         self.patterning_progress = 0.0
         self.red_exposure_time = red_exposure
         self.uv_exposure_time = uv_exposure
