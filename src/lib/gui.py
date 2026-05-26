@@ -236,20 +236,20 @@ class FloatEntry:
     def _round_display(self, event=None):
         try:
             value = float(self.widget.get())
-            value = round(value, 1)
-            self._var.set(f"{value:.1f}")
+            value = round(value, 5)
+            self._var.set(f"{value:.5f}")
         except ValueError:
-            self._var.set(f"{self.default:.1f}")
+            self._var.set(f"{self.default:.5f}")
 
     def get(self) -> float:
         if self.widget.get() == "":
-            self.default = round(self.default, 1)
+            self.default = round(self.default, 5)
             return self.default
         else:
-            return round(self._var.get(), 1)
+            return round(self._var.get(), 5)
 
     def set(self, value: float):
-        value = round(value, 1)
+        value = round(value, 5)
         self._var.set(value)
 
 # TODO:

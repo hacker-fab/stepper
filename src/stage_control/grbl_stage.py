@@ -49,31 +49,6 @@ class GrblStage(StageController):
     def _fill_resp_buffer(self):
         self.resp_buffer += self.controller_target.read_all()
     
-    def _wait_for_idle(self, timeout=10):
-        """
-        To ensure we are accurantely moving the stage, we'll only send
-        GRBL the next move command when it is ready to take in more commands
-        This means we will return if we're no longer idle
-        """
-        deadline = time.time() + timeout
-
-        while time.time() < deadline:
-            while b"\r\n" not in self.resp_buffer:
-                self._fill_resp_buffer()
-
-            raw, self.resp_buffer = self.resp_buffer.split(b"\r\n", 1)
-            line = raw.decode("ascii", errors="replace").strip()
-            self.resp_buffer = b""
-
-            if not line:
-                continue
-
-            if line.startswith("<") and "Idle" in line:
-                return
-
-            # ignore everything else (but don't lose it if you need it!)
-            raise TimeoutError("Stage did not reach idle")
-
     def _handle_alarms(self, response):
         """
         GRBL Alarm codes:
@@ -170,7 +145,7 @@ class GrblStage(StageController):
             - <>: Status reports are sent in chevrons.
         """
         self.controller_target.write(msg) # write gcode command
-        deadline = time.time() + 30.0
+        deadline = time.time() + 120.0
         while True:
             while b"\r\n" not in self.resp_buffer: # sometimes grbl may take time to respond, so we wait until
                 self._fill_resp_buffer()             # the response actually arrives. This is really important.
@@ -178,9 +153,9 @@ class GrblStage(StageController):
                     raise TimeoutError("No response from GRBL")      
                 time.sleep(0.01)  # yield the CPU
 
-            resp = self.resp_buffer.split(b"\r\n")
-            self.resp_buffer = b""
-            response = [res.decode("ascii", errors="replace").strip() for res in resp]
+            lines = self.resp_buffer.split(b"\r\n")
+            self.resp_buffer = lines[-1]
+            response = [res.decode("ascii", errors="replace").strip() for res in lines[:-1]]
 
             for item in response:
                 if not item:
@@ -189,7 +164,7 @@ class GrblStage(StageController):
                     print(f"[GRBL feedback]: {item}")
                     continue  # keep waiting for ok/error
                 if "ok" in item:
-                    print("Received OK")
+                    # print("Received OK")
                     return  # happy path, command completed, successful
                 elif item.startswith("error:"):
                     print(f"[GRBL error]: {item}")
@@ -247,7 +222,7 @@ class GrblStage(StageController):
                 x, y, z = part.removeprefix("WPos:").split(",")
                 work_position = (float(x), float(y), float(z))
         
-        resolved_position = position or work_position
+        resolved_position = work_position or position
         print(f"resolved position: {resolved_position}, Idle: {idle}")
         if resolved_position is None:
             raise ValueError(f"GRBL status response contained no position data: {buff!r}")
@@ -321,7 +296,8 @@ class GrblStage(StageController):
                 if "=" in part:
                     key, value = part.split("=", 1)
                     key = int(key.strip())
-                    value = value.strip()
+                    # value = value.strip()
+                    value = value.split("(")[0].strip()
                     if value == "":
                         value = None
                     elif "." in value:
