@@ -10,7 +10,7 @@ from enum import Enum
 from functools import partial
 from pathlib import Path
 from pycpd import RigidRegistration
-from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, ttk
+from tkinter import BooleanVar, IntVar, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
 from tkinter.ttk import Progressbar
 from typing import Optional
 
@@ -35,6 +35,44 @@ from lib.globals import *
 from tiling_utils import *
 from lib.structs import *
 
+import subprocess
+import time
+import screeninfo
+
+def setup_displays():
+    subprocess.run(['displayswitch.exe', '/extend'])
+    time.sleep(2)
+    print("Done display shenanigins")
+
+def setup_projection_window(proj_window: Toplevel):
+    monitors = screeninfo.get_monitors()
+
+    if len(monitors) < 2:
+        messagebox.showwarning(
+            title="Projector Not Found",
+            message="Only one display detected — is the projector connected and turned on?"
+        )
+        return
+
+    projector = next((m for m in monitors if not m.is_primary), monitors[1])
+    print(f"Target: {projector.name} at ({projector.x}, {projector.y})")
+
+    def move_window():
+        # Disable real fullscreen — this is what locks the window to a monitor
+        proj_window.attributes('-fullscreen', False)
+        proj_window.update()
+
+        # Remove title bar and borders to simulate fullscreen appearance
+        proj_window.overrideredirect(True)
+
+        # Position and size to exactly cover the projector monitor
+        proj_window.geometry(f"{projector.width}x{projector.height}+{projector.x}+{projector.y}")
+        proj_window.update()
+        proj_window.lift()
+        print(f"Projection window covering {projector.name} ({projector.width}x{projector.height}) ✓")
+
+    proj_window.after(500, move_window) 
+    
 class SnapshotFrame:
     """
     Presents a frame with a filename entry and a button to save screenshots of the current camera view.
@@ -3208,9 +3246,8 @@ class LithographerGui:
             self.event_dispatcher.stage_setpoint = self.event_dispatcher.hardware.stage.get_position()
             print(f"Current GUI Location: {self.event_dispatcher.stage_setpoint}")
 
-            messagebox.showinfo(
-                message="BEFORE CONTINUING: Ensure that you move the projector window to the correct display! Click on the fullscreen, completely black window, then press Windows Key + Shift + Left Arrow until it no longer is visible!"
-            )
+            setup_displays()
+            setup_projection_window(self.event_dispatcher.hardware.projector.window)
 
         self.root.after(0, on_start)
     
@@ -3332,6 +3369,7 @@ def main():
     )
 
     lithographer = LithographerGui(lithographer_config)
+    
     lithographer.root.mainloop()
 
 if __name__ == "__main__":
