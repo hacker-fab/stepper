@@ -559,7 +559,7 @@ class EventDispatcher:
         bounds = self.hardware.stage.get_bounds()
 
         if bounds is None:
-            return True  # no homing, no bounds enforced
+            return True, None  # no homing, no bounds enforced
 
         axes = [("x", 0), ("y", 1), ("z", 2)]
         for name, i in axes:
