@@ -313,7 +313,7 @@ class EventDispatcher:
         self.should_abort = False
 
         # Exposure settings and progress
-        self.exposure_time = 20000
+        self.exposure_time = 8000
         self.patterning_progress = 0.0
         self.red_exposure_time = red_exposure
         self.uv_exposure_time = uv_exposure
@@ -394,6 +394,7 @@ class EventDispatcher:
         return (0b001 if r else 0) | (0b010 if g else 0) | (0b100 if b else 0)
 
     def _sync_led_enable(self, mask: int) -> None:
+        """Sync the Image channel mask to the DLPC chip's LED enable mask to hard turn on/off LEDs to avoid exposure due to 'uv leakage'."""
         if self.dlpc is None:
             return
         try:

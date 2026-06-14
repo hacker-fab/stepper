@@ -27,7 +27,8 @@ ILLUM_ALL = 0b111
 
 
 class DLPC:
-    """USB bulk-transfer driver for DLPC6540 (DLPDLCR471TPEVM)."""
+    """USB bulk-transfer driver for DLPC6540 (DLPDLCR471TPEVM). Used to interface with the
+    projector's DLPC chip as per: https://www.ti.com/lit/ug/dlpu110b/dlpu110b.pdf"""
 
     INTERFACE = 0  # Projector Control per §15.3
 
