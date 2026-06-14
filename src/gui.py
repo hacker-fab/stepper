@@ -174,6 +174,7 @@ class LithographerConfig:
     red_exposure: float
     uv_exposure: float
     alignment: AlignmentConfig
+    dlpc: Optional[object] = None  # DLPC instance if USB projector control is enabled
 
 
 @dataclass
@@ -263,18 +264,20 @@ class EventDispatcher:
     listeners: dict[Event, List[Callable]]
 
     def __init__(
-        self, 
+        self,
         stage: StageController,
         proj: TkProjector,
         root: Tk,
         camera: Optional[CameraModule],
         red_exposure: float,
         uv_exposure: float,
+        dlpc=None,
     ):
         # Hardware components
         self.hardware = Lithographer(stage, proj)
         self.camera = camera
         self.root = root
+        self.dlpc = dlpc
 
         # Detection model
         self.model = None
@@ -286,6 +289,7 @@ class EventDispatcher:
 
         # Source images
         self.pattern_image = Image.new("RGB", (1, 1), "black")
+        self.pattern_image_path = ""
         self.red_focus_image = Image.new("RGB", (1, 1), "black")
         self.uv_focus_image = Image.new("RGB", (1, 1), "black")
         self.solid_red_image = Image.new("RGB", (1, 1), "red")
@@ -368,8 +372,35 @@ class EventDispatcher:
         img = self.current_image
         if img is None:
             self.hardware.projector.clear()
+            self._sync_led_enable(0)
         else:
             self.hardware.projector.show(img)
+            self._sync_led_enable(self._active_channel_mask())
+
+    def _active_channel_mask(self) -> int:
+        """Return the DLPC illumination enable bitmask for the currently shown image."""
+        match self.shown_image:
+            case ShownImage.RED_FOCUS:
+                settings = self.red_focus.cached_settings
+            case ShownImage.UV_FOCUS:
+                settings = self.uv_focus.cached_settings
+            case ShownImage.PATTERN:
+                settings = self.pattern.cached_settings
+            case _:
+                return 0
+        if settings is None:
+            return 0b111  # settings not yet computed; leave all on
+        r, g, b = settings.color_channels
+        return (0b001 if r else 0) | (0b010 if g else 0) | (0b100 if b else 0)
+
+    def _sync_led_enable(self, mask: int) -> None:
+        """Sync the Image channel mask to the DLPC chip's LED enable mask to hard turn on/off LEDs to avoid exposure due to 'uv leakage'."""
+        if self.dlpc is None:
+            return
+        try:
+            self.dlpc.set_illumination_enable(mask)
+        except Exception as e:
+            print(f"DLPC LED sync failed: {e}")
 
     def _refresh_pattern(self):
         self.pattern.update(
@@ -506,7 +537,7 @@ class EventDispatcher:
         bounds = self.hardware.stage.get_bounds()
 
         if bounds is None:
-            return True  # no homing, no bounds enforced
+            return True, None  # no homing, no bounds enforced
         
         axes = [('x', 0), ('y', 1), ('z', 2)]
         for name, i in axes:
@@ -3076,12 +3107,13 @@ class LithographerGui:
     def __init__(self, config: LithographerConfig):
         self.root = Tk()
         self.event_dispatcher = EventDispatcher(
-            config.stage, 
-            TkProjector(self.root), 
-            self.root, 
+            config.stage,
+            TkProjector(self.root),
+            self.root,
             config.camera,
             config.red_exposure,
             config.uv_exposure,
+            dlpc=config.dlpc,
         )
         self.event_dispatcher.initialize_alignment(config)
 
@@ -3161,7 +3193,12 @@ class LithographerGui:
 
     def cleanup(self):
         print("Patterning GUI closed.")
-        print("TODO: Cleanup")
+        if self.event_dispatcher.dlpc is not None:
+            try:
+                self.event_dispatcher.dlpc.set_illumination_enable(0)
+                self.event_dispatcher.dlpc.close()
+            except Exception as e:
+                print(f"DLPC cleanup error: {e}")
         self.root.destroy()
         self.camera.cleanup()
         # if RUN_WITH_STAGE:
@@ -3267,13 +3304,30 @@ def main():
         y_scale_factor=y_scale_factor,
     )
     
+    # DLPC CONFIG
+    dlpc = None
+    projector_config = config.get("projector", {})
+    if projector_config.get("dlpc_enabled", False):
+        try:
+            from dlpc import connect as dlpc_connect
+
+            pid = projector_config.get("dlpc_pid", None)
+            dlpc = dlpc_connect(pid)
+            if dlpc is not None:
+                print("Connected to DLPC6540 projector controller")
+            else:
+                print("Warning: dlpc_enabled=true but no TI USB device found")
+        except Exception as e:
+            print(f"Warning: DLPC connection failed: {e}")
+
     lithographer_config = LithographerConfig(
         stage,
         camera,
         camera_scale,
         red_exposure,
         uv_exposure,
-        alignment_config
+        alignment_config,
+        dlpc,
     )
 
     lithographer = LithographerGui(lithographer_config)

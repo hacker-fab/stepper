@@ -42,6 +42,17 @@ baud-rate = 115200
 [stage.omm]
 z-max = -1
 
+# This section configures the DLPC6540 projector controller over USB.
+# When enabled, the software will hardware-disable LED channels whose image
+# channel is zeroed out (e.g. red LED off during UV exposure, blue LED off
+# during red alignment mode). This prevents stray light from unused channels.
+[projector]
+# Set to true to enable USB control of the DLPC6540 via pyusb.
+dlpc_enabled = false
+# Optional USB product ID to disambiguate if multiple TI devices are present.
+# Leave unset (comment out) to auto-select the first TI (VID=0x0451) device.
+# dlpc_pid = 0x6401
+
 # This section configures alignment marker detection
 [alignment]
 # Enable or disable real-time detection of alignment markers

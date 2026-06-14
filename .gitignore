@@ -30,5 +30,7 @@ venvcompat
 # Python setup
 venv/
 **/__pycache__
+**/.zed
+**/.claude
 
 stepper_captures
