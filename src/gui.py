@@ -683,10 +683,8 @@ class EventDispatcher:
 
         # TODO: Image slicing.
         # Note that flatfield correction and image adjustment should be applied *after* slicing
-        img = self.pattern.processed()
-
         self.set_patterning_busy(True)
-        self.hardware.projector.show(img)
+        self.set_shown_image(ShownImage.PATTERN)
         end_time = time.time() + duration / 1000.0
         while time.time() < end_time:
             progress = 1.0 - ((end_time - time.time()) * 1000 / duration)
