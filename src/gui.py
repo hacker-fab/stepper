@@ -723,7 +723,8 @@ class EventDispatcher:
     def enter_red_mode(self, mode_switch_autofocus=True):
         print("enter_red_mode")
         self.set_shown_image(ShownImage.RED_FOCUS)
-        self.camera.setExposureTime(self.red_exposure_time)
+        if self.camera:
+            self.camera.setExposureTime(self.red_exposure_time)
         if mode_switch_autofocus and self.autofocus_on_mode_switch:
             self.autofocus(blue_only=False)
         self.on_event(Event.MOVEMENT_LOCK_CHANGED)
@@ -734,7 +735,8 @@ class EventDispatcher:
             filename = self.snapshot_directory / f"uv_mode_entry_{timestamp}.png"
             self.on_event(Event.SNAPSHOT, str(filename))
 
-        self.camera.setExposureTime(self.uv_exposure_time)
+        if self.camera:
+            self.camera.setExposureTime(self.uv_exposure_time)
         if (
             mode_switch_autofocus
             and not self.autofocus_busy
@@ -3067,7 +3069,7 @@ class MapFrame:
         chip = self.event_dispatcher.chip
         for layer in chip.layers:
             for exposure in layer.exposures:
-                if not exposure.aborted:  # Only include successful exposures
+                if not exposure.aborted and exposure.coords is not None:  # Only include successful exposures
                     x, y, z = exposure.coords
                     self.pattern_markers.append((x, y))
 
