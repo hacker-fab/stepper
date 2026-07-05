@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import queue
 import shutil
 import time
@@ -30,6 +31,14 @@ from projector import TkProjector
 from stage_control.grbl_stage import GrblStage
 from stage_control.omm_stage import OMMStage
 from stage_control.stage_controller import StageController
+
+# Enable DPI awareness on Windows before any Tk() call so the UI isn't tiny on HiDPI displays
+if platform.system() == "Windows":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
 
 # TODO: Don't hardcode
 THUMBNAIL_SIZE: tuple[int, int] = (160, 90)
@@ -984,6 +993,7 @@ class CameraFrame:
         self.frame = ttk.Frame(parent)
         self.label = ttk.Label(self.frame, text="No Camera Connected")
         self.label.grid(row=0, column=0, sticky="nesw")
+        self._config_camera_scale = camera_scale
         self.gui_camera_scale = camera_scale
 
         self.focus_score_label = ttk.Label(self.frame, text="Focus Score: N/A")
@@ -1032,6 +1042,9 @@ class CameraFrame:
         finally:
             self.event_dispatcher.root.after(66, lambda: self._on_new_frame())
 
+    def resize(self, ui_scale: float):
+        self.gui_camera_scale = self._config_camera_scale * ui_scale
+
     def start(self):
         if not self.camera:
             print("No camera available")
@@ -1068,7 +1081,7 @@ class CameraFrame:
         self.gui_img = gui_img
 
 class StagePositionFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher, uvmode):
+    def __init__(self, parent, event_dispatcher: EventDispatcher, uvmode, ui_scale: float = 1.0):
         self.frame = ttk.Frame(parent)
         self.event_dispatcher = event_dispatcher
         
@@ -1120,15 +1133,15 @@ class StagePositionFrame:
             # XY circular control: hide in UV mode
             xy_frame = ttk.Frame(control_frame)
             xy_frame.grid(row=0, column=1, padx=10)
-            self.create_xy_control(xy_frame)
+            self.create_xy_control(xy_frame, ui_scale)
             z_col = 2
         else:
             z_col = 0
-        
+
         # Z vertical control
         z_frame = ttk.Frame(control_frame)
         z_frame.grid(row=0, column=z_col, padx=10)
-        self.create_z_control(z_frame)
+        self.create_z_control(z_frame, ui_scale)
         
         def on_lock_change():
             lock = event_dispatcher.movement_lock
@@ -1227,85 +1240,74 @@ class StagePositionFrame:
         self.custom_step_pos_z_button.grid(row=3, column=0, sticky="ew")
         self.custom_step_neg_z_button.grid(row=3, column=1, sticky="ew")
     
-    def create_xy_control(self, parent):
-        """Create circular XY control with 4 quadrants and 4 layers each"""
-        canvas_size = 255
-        center = canvas_size // 2
-        
-        self.xy_canvas = tkinter.Canvas(parent, width=canvas_size, height=canvas_size, 
+    def create_xy_control(self, parent, ui_scale: float = 1.0):
+        """Create circular XY control canvas, then draw it."""
+        self.xy_canvas = tkinter.Canvas(parent, width=1, height=1,
                                    bg='#f0f0f0', highlightthickness=0)
         self.xy_canvas.pack()
-        
-        # Step sizes for each layer (inner to outer)
+        self.xy_canvas.bind('<Button-1>', self._on_xy_click)
+        self.xy_widgets.append(self.xy_canvas)
+        self._draw_xy(ui_scale)
+
+    def _draw_xy(self, ui_scale: float):
+        """Clear and redraw the XY joystick canvas at the given scale."""
+        canvas_size = int(255 * ui_scale)
+        center = canvas_size // 2
+
+        self._xy_canvas_size = canvas_size
+        self._xy_radii = [int(r * ui_scale) for r in [31, 62, 94, 125]]
+
+        self.xy_canvas.config(width=canvas_size, height=canvas_size)
+        self.xy_canvas.delete("all")
+
         step_sizes = [10, 50, 100, 250]
-        
-        # Radii for the 4 layers (inner to outer)
-        radii = [31, 62, 94, 125]
-        
-        # Colors for each layer (lighter as you go out)
         colors = ['#52796f', '#5a9a8b', '#7ab8a8', '#95c9be']
-        
-        # Draw concentric circles for layers
-        for i, radius in enumerate(radii[::-1]):
+
+        for i, radius in enumerate(self._xy_radii[::-1]):
             self.xy_canvas.create_oval(
                 center - radius, center - radius,
                 center + radius, center + radius,
                 fill=colors[i], outline='#2c3e50', width=2
             )
-        
-        # Draw cross lines to divide into quadrants
+
         cx, cy = center, center
         half_L = canvas_size / 2
-
-        for angle_deg, color in [(-45, "#2c3e50"), (45, "#2c3e50")]:
+        for angle_deg in [-45, 45]:
             angle_rad = math.radians(angle_deg)
-
-            # Adjust for Tkinter’s downward Y-axis
             x0 = cx - half_L * math.sin(angle_rad)
             y0 = cy - half_L * math.cos(angle_rad)
             x1 = cx + half_L * math.sin(angle_rad)
             y1 = cy + half_L * math.cos(angle_rad)
+            self.xy_canvas.create_line(x0, y0, x1, y1, fill='#2c3e50', width=3)
 
-            self.xy_canvas.create_line(x0, y0, x1, y1, fill=color, width=3)
-        
-        # Labels for directions
-        label_offset = 160
+        font_large = ('Arial', max(7, int(12 * ui_scale)), 'bold')
+        font_small = ('Arial', max(6, int(9 * ui_scale)), 'bold')
         labels = [
             (center, 10, "+Y", '#85c1e9'),
             (center, canvas_size - 10, "-Y", '#85c1e9'),
             (canvas_size - 10, center, "+X", '#f4d03f'),
             (10, center, "-X", '#f4d03f'),
         ]
-        
         for x, y, text, color in labels:
-            self.xy_canvas.create_text(x, y, text=text, fill=color, 
-                                      font=('Arial', 12, 'bold'))
-        
-        # Add step size labels on each layer
-        for i, (radius, step) in enumerate(zip(radii, step_sizes)):
-            # Show on top quadrant
-            y_pos = center - radius + 20
-            self.xy_canvas.create_text(center, y_pos, text=str(step), 
-                                      fill='white', font=('Arial', 9, 'bold'))
-        
-        # Bind click events
-        self.xy_canvas.bind('<Button-1>', self._on_xy_click)
-        
-        # Store reference for locking
-        self.xy_widgets.append(self.xy_canvas)
+            self.xy_canvas.create_text(x, y, text=text, fill=color, font=font_large)
+
+        for i, (radius, step) in enumerate(zip(self._xy_radii, step_sizes)):
+            y_pos = center - radius + max(8, int(20 * ui_scale))
+            self.xy_canvas.create_text(center, y_pos, text=str(step),
+                                      fill='white', font=font_small)
     
     def _on_xy_click(self, event):
         """Handle clicks on the XY canvas"""
-        canvas_size = 255
+        canvas_size = self._xy_canvas_size
         center = canvas_size // 2
-        
+
         # Calculate distance from center and angle
         dx = event.x - center
         dy = event.y - center
         distance = math.sqrt(dx**2 + dy**2)
-        
+
         # Determine which layer (step size)
-        radii = [31, 62, 94, 125]
+        radii = self._xy_radii
         step_sizes = [10, 50, 100, 250]
         
         step_size = None
@@ -1336,65 +1338,66 @@ class StagePositionFrame:
             else:
                 self.event_dispatcher.move_relative({"y": -step_size})
     
-    def create_z_control(self, parent):
-        bar_width = 60
-        section_height = 30
-        total_height = section_height * 8
-        
-        self.z_canvas = tkinter.Canvas(parent, width=bar_width, height=total_height,
+    def create_z_control(self, parent, ui_scale: float = 1.0):
+        """Create Z slider canvas, then draw it."""
+        self.z_canvas = tkinter.Canvas(parent, width=1, height=1,
                                  bg='#34495e', highlightthickness=0)
         self.z_canvas.pack()
-        
-        # Step sizes for Z (top 4 are +Z, bottom 4 are -Z)
+        self._z_label = ttk.Label(parent, text="Z Control")
+        self._z_label.pack(pady=(0, 5))
+        self._draw_z(ui_scale)
+
+    def _draw_z(self, ui_scale: float):
+        """Clear and redraw the Z slider canvas at the given scale."""
+        bar_width = int(60 * ui_scale)
+        section_height = int(30 * ui_scale)
+        total_height = section_height * 8
+
+        self.z_canvas.config(width=bar_width, height=total_height)
+        self.z_canvas.delete("all")
+
         step_sizes = [10, 50, 100, 250]
-        
-        # Colors (gradient from light to dark for +Z, then dark to light for -Z)
         colors_plus = ['#a8dadc', '#87bdbf', '#66a0a3', '#458486']
         colors_minus = ['#458486', '#66a0a3', '#87bdbf', '#a8dadc']
-        
-        # Store rectangle IDs and their original colors
-        self.z_rectangles = []  # List of (rect_id, original_color)
+        font_z = ('Arial', max(7, int(10 * ui_scale)), 'bold')
+        grey = '#b9bbb6'
 
-        # Create sections
+        self.z_rectangles = []
+
         for i in range(8):
             y_start = i * section_height
             y_end = (i + 1) * section_height
-            
+
             if i < 4:
-                # Top half: +Z movement
                 color = colors_plus[i]
                 step = step_sizes[3 - i]
                 label = f"+Z\n{step}"
                 direction = "+"
             else:
-                # Bottom half: -Z movement
                 color = colors_minus[i - 4]
                 step = step_sizes[i - 4]
                 label = f"-Z\n{step}"
                 direction = "-"
-            
-            # Draw rectangle
+
+            fill = grey if self.zlock else color
             rect_id = self.z_canvas.create_rectangle(
                 0, y_start, bar_width, y_end,
-                fill=color, outline='#2c3e50', width=2
+                fill=fill, outline='#2c3e50', width=2
             )
             self.z_rectangles.append((rect_id, color))
-            
-            # Draw label
+
             text_id = self.z_canvas.create_text(
                 bar_width // 2, (y_start + y_end) // 2,
-                text=label, fill='#1a1a1a', font=('Arial', 10, 'bold')
+                text=label, fill='#1a1a1a', font=font_z
             )
-            
-            # Bind click events
+
             for item_id in [rect_id, text_id]:
                 self.z_canvas.tag_bind(
                     item_id, '<Button-1>',
                     lambda e, d=direction, s=step: self._on_z_click(d, s)
                 )
-        
-        # Add label at top
-        ttk.Label(parent, text="Z Control", font=('Arial', 10, 'bold')).pack(pady=(0, 5))
+
+        self._z_label.configure(font=('Arial', max(7, int(10 * ui_scale)), 'bold'))
 
     def _on_z_click(self, direction, step_size):
         """Handle clicks on Z control sections"""
@@ -1403,6 +1406,12 @@ class StagePositionFrame:
                 self.event_dispatcher.move_relative({"z": step_size})
             else:
                 self.event_dispatcher.move_relative({"z": -step_size})
+
+    def resize(self, ui_scale: float):
+        """Redraw canvases proportionally to the new window scale."""
+        if hasattr(self, 'xy_canvas'):
+            self._draw_xy(ui_scale)
+        self._draw_z(ui_scale)
 
 class ImageAdjustFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -1835,7 +1844,7 @@ class ChipFrame:
         self.cur_layer_frame.grid(row=0, column=1, sticky="ns")
 
         self.tree_view_style = ttk.Style()
-        self.tree_view_style.configure("Treeview", rowheight=50)
+        self.tree_view_style.configure("Treeview", rowheight=30)
 
         self.prev_layer_view = ttk.Treeview(self.prev_layer_frame, selectmode="browse", columns=("XYZ",), height=5)
         self.prev_layer_view.grid(row=0, column=0)
@@ -2021,14 +2030,14 @@ class PatterningFrame:
 
 
 class RedModeFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
+    def __init__(self, parent, event_dispatcher: EventDispatcher, ui_scale: float = 1.0):
         self.frame = ttk.Frame(parent, name="redmodeframe")
         self.event_dispatcher = event_dispatcher
 
         # Create left middle right sections
         self.left_frame = ttk.Frame(self.frame)
         self.left_frame.grid(row=0, column=0)
-        
+
         self.middle_frame = ttk.Frame(self.frame)
         self.middle_frame.grid(row=0, column=1)
 
@@ -2042,7 +2051,7 @@ class RedModeFrame:
         self.frame.grid_rowconfigure(0, weight=1)
 
         # Stage position controls (middle)
-        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher, False)
+        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher, False, ui_scale=ui_scale)
         self.stage_position_frame.frame.grid(row=0, column=0)
 
         # test tiling check button & preview
@@ -2108,12 +2117,12 @@ class RedModeFrame:
 
 
 class UvModeFrame:
-    def __init__(self, parent, event_dispatcher):
+    def __init__(self, parent, event_dispatcher, ui_scale: float = 1.0):
         self.frame = ttk.Frame(parent, name="uvmodeframe")
         # Create left and right sections
         self.left_frame = ttk.Frame(self.frame)
         self.left_frame.grid(row=0, column=0, sticky="ns", padx=(0,10))
-        
+
         self.middle_frame = ttk.Frame(self.frame)
         self.middle_frame.grid(row=0, column=1, sticky="ns")
 
@@ -2131,7 +2140,7 @@ class UvModeFrame:
         self.uv_focus_frame.frame.grid(row=0, column=0, pady=(10,0))
 
         # Stage position controls (middle)
-        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher, True)
+        self.stage_position_frame = StagePositionFrame(self.middle_frame, event_dispatcher, True, ui_scale=ui_scale)
         self.stage_position_frame.frame.grid(row=0, column=0, sticky="n")
         
         # Pattern preview and UV focus selector (right side)
@@ -2219,15 +2228,15 @@ class PatternUploadFrame:
                 self.preview_label.configure(image=self.preview_photo)
 
 class ModeSelectFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
+    def __init__(self, parent, event_dispatcher: EventDispatcher, ui_scale: float = 1.0):
         self.notebook = ttk.Notebook(parent)
 
         # Add Pattern Upload tab first
         self.pattern_upload_frame = PatternUploadFrame(self.notebook, event_dispatcher)
         self.notebook.add(self.pattern_upload_frame.frame, text="Pattern Upload")
-        self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher)
+        self.red_mode_frame = RedModeFrame(self.notebook, event_dispatcher, ui_scale=ui_scale)
         self.notebook.add(self.red_mode_frame.frame, text="Red Light Alignment Mode")
-        self.uv_mode_frame = UvModeFrame(self.notebook, event_dispatcher)
+        self.uv_mode_frame = UvModeFrame(self.notebook, event_dispatcher, ui_scale=ui_scale)
         self.notebook.add(self.uv_mode_frame.frame, text="UV Exposure Mode")
 
         def on_tab_change():
@@ -2408,8 +2417,12 @@ class GlobalSettingsFrame:
 class ExposureHistoryFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.LabelFrame(parent, text="Exposure History")
-        self.text = tkinter.Text(self.frame, width=80, height=10, wrap="none", state="disabled")
-        self.text.grid(row=0, column=0)
+        self.text = tkinter.Text(self.frame, width=40, height=10, wrap="none", state="disabled")
+        self.h_scroll = ttk.Scrollbar(self.frame, orient="horizontal", command=self.text.xview)
+        self.text.configure(xscrollcommand=self.h_scroll.set)
+        self.text.grid(row=0, column=0, sticky="nsew")
+        self.h_scroll.grid(row=1, column=0, sticky="ew")
+        self.frame.grid_columnconfigure(0, weight=1)
         self.event_dispatcher = event_dispatcher
         event_dispatcher.add_event_listener(Event.PATTERNING_BUSY_CHANGED, lambda: self._refresh())
 
@@ -2728,17 +2741,16 @@ class TilingFrame:
 class ProjectorDisplayFrame:
     """Frame to display what the projector is currently showing"""
     
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
+    def __init__(self, parent, event_dispatcher: EventDispatcher, display_size: tuple[int, int] = (320, 180)):
         self.frame = ttk.Frame(parent)
         self.event_dispatcher = event_dispatcher
-        
+
         # Main label frame
         self.display_frame = ttk.LabelFrame(self.frame, text="Projector Output")
         self.display_frame.grid(row=0, column=0)
-        
+
         # Create placeholder image
-        # Using a similar size to camera preview for consistency
-        self.display_size = (320, 180)
+        self.display_size = display_size
         placeholder = Image.new("RGB", self.display_size, "black")
         self.photo = image_to_tk_image(placeholder)
         
@@ -2800,6 +2812,10 @@ class ProjectorDisplayFrame:
             self.photo = image_to_tk_image(display_img)
         
         self.label.configure(image=self.photo)
+
+    def resize(self, display_size: tuple[int, int]):
+        self.display_size = display_size
+        self._update_display()
 
 class TilingCheckFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
@@ -2962,15 +2978,15 @@ class TilingCheckFrame:
         return stitched_image
 
 class MapFrame:
-    def __init__(self, parent, event_dispatcher: EventDispatcher):
+    def __init__(self, parent, event_dispatcher: EventDispatcher, canvas_size: int = 350):
         self.frame = ttk.LabelFrame(parent)
         self.event_dispatcher = event_dispatcher
-        
+
         # Map dimensions in micrometers
         self.map_size_um = 10000.0  # 1 cm * 1 cm
-        
+
         # Canvas size in pixels
-        self.canvas_size = 350
+        self.canvas_size = canvas_size
         
         # Pattern dimensions: from DLP projector datasheet
         self.pattern_w = 1037
@@ -3100,12 +3116,33 @@ class MapFrame:
         self._load_patterns_from_chip()
         self._redraw_all()
 
+    def resize(self, canvas_size: int):
+        self.canvas_size = canvas_size
+        self.canvas.config(width=canvas_size, height=canvas_size)
+        self._redraw_all()
+
 class LithographerGui:
     root: Tk
     event_dispatcher: EventDispatcher
 
     def __init__(self, config: LithographerConfig):
         self.root = Tk()
+
+        # Scale all fixed-pixel UI elements to the actual screen size.
+        # Cap at 1.0 so we don't upscale on large monitors; floor at 0.5 to stay usable.
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        ui_scale = max(0.5, min(screen_w / 1920, screen_h / 1080, 1.0))
+
+        # All three main rows share vertical space equally so they all shrink/grow together.
+        # Row 1 (progress bar) stays fixed since it's tiny.
+        self.root.grid_columnconfigure(0, weight=1)
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_rowconfigure(1, weight=0)
+        self.root.grid_rowconfigure(2, weight=1)
+        self.root.grid_rowconfigure(3, weight=1)
+        self.root.minsize(900, 640)
+
         self.event_dispatcher = EventDispatcher(
             config.stage,
             TkProjector(self.root),
@@ -3120,30 +3157,33 @@ class LithographerGui:
         self.shown_image = ShownImage.CLEAR
 
         self.top_panel = ttk.Frame(self.root)
-        self.top_panel.grid(row=0, column=0, sticky='ew')
+        self.top_panel.grid(row=0, column=0, sticky='nsew')
 
         # Map (top)
-        self.map = MapFrame(self.top_panel, self.event_dispatcher)
+        self.map = MapFrame(self.top_panel, self.event_dispatcher, canvas_size=int(350 * ui_scale))
         self.map.frame.grid(row=0, column=0, padx=5, pady=5)
         # Camera frame (top)
         self.camera = CameraFrame(self.top_panel, self.event_dispatcher, config.camera, config.camera_scale)
         self.camera.frame.grid(row=0, column=1, padx=5, pady=5)
 
         # Projector display (top)
-        self.projector_display = ProjectorDisplayFrame(self.top_panel, self.event_dispatcher)
+        self.projector_display = ProjectorDisplayFrame(
+            self.top_panel, self.event_dispatcher,
+            display_size=(int(320 * ui_scale), int(180 * ui_scale)),
+        )
         self.projector_display.frame.grid(row=0, column=2, padx=5, pady=5)
 
-        # center the frames
-        self.top_panel.grid_columnconfigure(0, weight=1)
-        self.top_panel.grid_columnconfigure(1, weight=1)
-        self.top_panel.grid_columnconfigure(2, weight=1)
+        # uniform="top" forces all 3 columns to always share width equally
+        self.top_panel.grid_columnconfigure(0, weight=1, uniform="top")
+        self.top_panel.grid_columnconfigure(1, weight=1, uniform="top")
+        self.top_panel.grid_columnconfigure(2, weight=1, uniform="top")
 
         # Progress bar
         self.pattern_progress = Progressbar(self.root, orient="horizontal", mode="determinate")
         self.pattern_progress.grid(row=1, column=0, sticky="ew")
 
         # Main tab interface (replaces middle_panel)
-        self.mode_select_frame = ModeSelectFrame(self.root, self.event_dispatcher)
+        self.mode_select_frame = ModeSelectFrame(self.root, self.event_dispatcher, ui_scale=ui_scale)
         self.mode_select_frame.notebook.grid(row=2, column=0, sticky="nsew")
 
         # Bottom panel (chip log and image adjustment and tiling)
@@ -3152,26 +3192,32 @@ class LithographerGui:
 
         # Chip management
         self.chip_frame = ChipFrame(self.bottom_panel, self.event_dispatcher)
-        self.chip_frame.frame.grid(row=0, column=0)
+        self.chip_frame.frame.grid(row=0, column=0, sticky="nsew")
 
         # Image adjustment controls
         self.image_adjust_frame = ImageAdjustFrame(self.bottom_panel, self.event_dispatcher)
-        self.image_adjust_frame.frame.grid(row=0, column=1)
+        self.image_adjust_frame.frame.grid(row=0, column=1, sticky="nsew")
 
         # Global settings
         self.global_settings_frame = GlobalSettingsFrame(self.bottom_panel, self.event_dispatcher, config.alignment.enabled)
-        self.global_settings_frame.frame.grid(row=0, column=2)
+        self.global_settings_frame.frame.grid(row=0, column=2, sticky="nsew")
 
         # Tiling controls
         self.tiling_frame = TilingFrame(self.bottom_panel, self.event_dispatcher)
-        self.tiling_frame.frame.grid(row=0, column=3)
+        self.tiling_frame.frame.grid(row=0, column=3, sticky="nsew")
+
+        # uniform="bottom" forces all 4 columns to always share width equally
+        for i in range(4):
+            self.bottom_panel.grid_columnconfigure(i, weight=1, uniform="bottom")
 
         # Legacy references for compatibility (if needed elsewhere in code)
         self.exposure_frame = self.mode_select_frame.uv_mode_frame.exposure_frame
         self.patterning_frame = self.mode_select_frame.uv_mode_frame.patterning_frame
 
         self.root.protocol("WM_DELETE_WINDOW", lambda: self.cleanup())
-        # self.debug.info("Debug info will appear here")
+
+        self._pending_resize: Optional[str] = None
+        self.root.bind('<Configure>', self._on_resize)
 
         # Things that have to after the main loop begins
         def on_start():
@@ -3189,7 +3235,28 @@ class LithographerGui:
             )
 
         self.root.after(0, on_start)
-    
+
+    def _on_resize(self, event):
+        if event.widget is not self.root:
+            return
+        if self._pending_resize is not None:
+            self.root.after_cancel(self._pending_resize)
+        self._pending_resize = self.root.after(
+            150, lambda: self._apply_resize(event.width, event.height)
+        )
+
+    def _apply_resize(self, window_w: int, window_h: int):
+        self._pending_resize = None
+        ui_scale = max(0.3, min(window_w / 1920, window_h / 1080, 1.0))
+
+        self.map.resize(int(350 * ui_scale))
+        self.projector_display.resize((int(320 * ui_scale), int(180 * ui_scale)))
+        self.camera.resize(ui_scale)
+
+        red_stage = self.mode_select_frame.red_mode_frame.stage_position_frame
+        uv_stage = self.mode_select_frame.uv_mode_frame.stage_position_frame
+        red_stage.resize(ui_scale)
+        uv_stage.resize(ui_scale)
 
     def cleanup(self):
         print("Patterning GUI closed.")
