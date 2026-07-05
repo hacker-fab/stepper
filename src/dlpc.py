@@ -124,6 +124,7 @@ class DLPC:
         """Enable/disable LEDs. mask: ILLUM_RED | ILLUM_GREEN | ILLUM_BLUE."""
         if not 0 <= mask <= 7:
             raise ValueError(f"mask must be 0-7, got {mask}")
+        print("line 127, dlpc.py, mask:", mask)
         self.send_write_command(DEST_SYSTEM, OP_ILLUMINATION_ENABLE, bytes([mask]))
 
     def get_illumination_enable(self) -> int:

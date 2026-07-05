@@ -33,6 +33,7 @@ class StageController:
 
     def get_position(self):
         print(f"ignoring get_position in dummy_stage controller")
+        return (0.0, 0.0, 0.0)
     
     def get_on_start_location(self):
         print(f"ignoring get_on_start_location in dummy_stage controller")
