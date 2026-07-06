@@ -52,8 +52,10 @@ dlpc_enabled = false
 # Optional USB product ID to disambiguate if multiple TI devices are present.
 # Leave unset (comment out) to auto-select the first TI (VID=0x0451) device.
 # dlpc_pid = 0x6401
+
 # UV (blue channel) LED drive current level, 0-400. Values outside this range,
 # or if unset, fall back to the safe default of 150. Red/Green always default to 150.
+# OutputCurrent = ((DriveLevel + 1)/1024)*((0.15/0.036)) // confirm the eqn for your DLPC projector model
 # uv_led_drive_level = 150
 
 # This section configures alignment marker detection
