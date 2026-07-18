@@ -3380,27 +3380,37 @@ def main():
 
             pid = projector_config.get("dlpc_pid", None)
             dlpc = dlpc_connect(pid)
-            if dlpc is not None:
-                print("Connected to DLPC6540 projector controller")
-                try:
-                    SAFE_DEFAULT_LEVEL = 150
-                    SAFE_MAX_LEVEL = 400
-                    uv_level = projector_config.get("uv_led_drive_level", SAFE_DEFAULT_LEVEL)
-                    try:
-                        uv_level = int(uv_level)
-                        if not 0 <= uv_level <= SAFE_MAX_LEVEL:
-                            uv_level = SAFE_DEFAULT_LEVEL
-                    except (TypeError, ValueError):
-                        uv_level = SAFE_DEFAULT_LEVEL
-                    dlpc.set_led_drive_level(SAFE_DEFAULT_LEVEL, SAFE_DEFAULT_LEVEL, uv_level)
-                    print(f"Set LED drive levels: red={SAFE_DEFAULT_LEVEL}, "
-                          f"green={SAFE_DEFAULT_LEVEL}, blue(UV)={uv_level}")
-                except Exception as e:
-                    print(f"Warning: failed to set LED drive levels: {e}")
-            else:
-                print("Warning: dlpc_enabled=true but no TI USB device found")
+            if dlpc is None:
+                raise RuntimeError(
+                    "No TI USB projector controller was found. Check that the "
+                    "projector USB connection is enabled and that the correct "
+                    "device is connected."
+                )
+
+            print("Connected to DLPC6540 projector controller")
+            SAFE_DEFAULT_LEVEL = 150
+            SAFE_MAX_LEVEL = 400
+            uv_level = projector_config.get("uv_led_drive_level", SAFE_DEFAULT_LEVEL)
+            try:
+                uv_level = int(uv_level)
+                if not 0 <= uv_level <= SAFE_MAX_LEVEL:
+                    uv_level = SAFE_DEFAULT_LEVEL
+            except (TypeError, ValueError):
+                uv_level = SAFE_DEFAULT_LEVEL
+            try:
+                dlpc.set_led_drive_level(SAFE_DEFAULT_LEVEL, SAFE_DEFAULT_LEVEL, uv_level)
+            except Exception as e:
+                raise RuntimeError(f"Failed to configure the DLPC LED drive levels: {e}") from e
+            print(f"Set LED drive levels: red={SAFE_DEFAULT_LEVEL}, "
+                  f"green={SAFE_DEFAULT_LEVEL}, blue(UV)={uv_level}")
         except Exception as e:
-            print(f"Warning: DLPC connection failed: {e}")
+            print(f"ERROR: DLPC USB startup failed: {e}")
+            if dlpc is not None:
+                try:
+                    dlpc.close()
+                except Exception as close_error:
+                    print(f"ERROR: failed to close DLPC after startup failure: {close_error}")
+            raise
 
     lithographer_config = LithographerConfig(
         stage,
