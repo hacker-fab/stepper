@@ -3272,67 +3272,6 @@ class LithographerGui:
         # serial_port.close()
 
 
-def _prompt_dlpc_failure(parent, details: str) -> bool:
-    """Ask whether to continue without DLPC USB control after startup failure."""
-    dialog = tkinter.Toplevel(parent)
-    dialog.title("DLPC USB connection failed")
-    dialog.transient(parent)
-    dialog.resizable(False, False)
-
-    result = {"continue_without_usb": False}
-
-    content = ttk.Frame(dialog, padding=16)
-    content.grid(row=0, column=0, sticky="nsew")
-    ttk.Label(
-        content,
-        text=(
-            "DLPC USB control is enabled, but the projector controller could not "
-            "be connected."
-        ),
-        wraplength=520,
-        justify="left",
-    ).grid(row=0, column=0, sticky="w")
-    ttk.Label(
-        content,
-        text=f"Details: {details}",
-        wraplength=520,
-        justify="left",
-    ).grid(row=1, column=0, pady=(10, 0), sticky="w")
-    ttk.Label(
-        content,
-        text=(
-            "Continue to run with the DLPC USB features disabled, or exit and "
-            "retry after reconnecting the projector?"
-        ),
-        wraplength=520,
-        justify="left",
-    ).grid(row=2, column=0, pady=(10, 0), sticky="w")
-
-    buttons = ttk.Frame(content)
-    buttons.grid(row=3, column=0, pady=(16, 0), sticky="e")
-
-    def continue_without_usb():
-        result["continue_without_usb"] = True
-        dialog.destroy()
-
-    ttk.Button(
-        buttons,
-        text="Exit and retry",
-        command=dialog.destroy,
-    ).grid(row=0, column=0, padx=(0, 8))
-    ttk.Button(
-        buttons,
-        text="Continue without USB features",
-        command=continue_without_usb,
-    ).grid(row=0, column=1)
-
-    dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-    dialog.grab_set()
-    dialog.focus_force()
-    parent.wait_window(dialog)
-    return result["continue_without_usb"]
-
-
 def main():
 
     # Open a file selector window
@@ -3356,6 +3295,7 @@ def main():
             config = toml.load(f)
 
     # STAGE CONFIG
+    config_win.destroy()
     stage_config = config["stage"]
     if stage_config["enabled"]:
         if stage_config.get("type") == "omm":
@@ -3398,7 +3338,6 @@ def main():
         camera = None
     else:
         print(f"config.toml specifies invalid camera type {camera_config['type']}")
-        config_win.destroy()
         return 1
 
     camera_scale = float(camera_config.get("gui-scale", 1.0))
@@ -3436,51 +3375,42 @@ def main():
     dlpc = None
     projector_config = config.get("projector", {})
     if projector_config.get("dlpc_enabled", False):
-        dlpc_failure = None
         try:
             from dlpc import connect as dlpc_connect
 
             pid = projector_config.get("dlpc_pid", None)
             dlpc = dlpc_connect(pid)
             if dlpc is None:
-                dlpc_failure = "No TI USB projector controller was found."
-            else:
-                print("Connected to DLPC6540 projector controller")
-                SAFE_DEFAULT_LEVEL = 150
-                SAFE_MAX_LEVEL = 400
-                uv_level = projector_config.get("uv_led_drive_level", SAFE_DEFAULT_LEVEL)
-                try:
-                    uv_level = int(uv_level)
-                    if not 0 <= uv_level <= SAFE_MAX_LEVEL:
-                        uv_level = SAFE_DEFAULT_LEVEL
-                except (TypeError, ValueError):
-                    uv_level = SAFE_DEFAULT_LEVEL
-                try:
-                    dlpc.set_led_drive_level(SAFE_DEFAULT_LEVEL, SAFE_DEFAULT_LEVEL, uv_level)
-                    print(f"Set LED drive levels: red={SAFE_DEFAULT_LEVEL}, "
-                          f"green={SAFE_DEFAULT_LEVEL}, blue(UV)={uv_level}")
-                except Exception as e:
-                    dlpc_failure = f"The controller connected, but LED setup failed: {e}"
-        except Exception as e:
-            dlpc_failure = f"DLPC connection failed: {e}"
+                raise RuntimeError(
+                    "No TI USB projector controller was found. Check that the "
+                    "projector USB connection is enabled and that the correct "
+                    "device is connected."
+                )
 
-        if dlpc_failure is not None:
-            print(f"Error: {dlpc_failure}")
+            print("Connected to DLPC6540 projector controller")
+            SAFE_DEFAULT_LEVEL = 150
+            SAFE_MAX_LEVEL = 400
+            uv_level = projector_config.get("uv_led_drive_level", SAFE_DEFAULT_LEVEL)
+            try:
+                uv_level = int(uv_level)
+                if not 0 <= uv_level <= SAFE_MAX_LEVEL:
+                    uv_level = SAFE_DEFAULT_LEVEL
+            except (TypeError, ValueError):
+                uv_level = SAFE_DEFAULT_LEVEL
+            try:
+                dlpc.set_led_drive_level(SAFE_DEFAULT_LEVEL, SAFE_DEFAULT_LEVEL, uv_level)
+            except Exception as e:
+                raise RuntimeError(f"Failed to configure the DLPC LED drive levels: {e}") from e
+            print(f"Set LED drive levels: red={SAFE_DEFAULT_LEVEL}, "
+                  f"green={SAFE_DEFAULT_LEVEL}, blue(UV)={uv_level}")
+        except Exception as e:
+            print(f"ERROR: DLPC USB startup failed: {e}")
             if dlpc is not None:
                 try:
                     dlpc.close()
-                except Exception as e:
-                    print(f"Warning: failed to close DLPC after startup failure: {e}")
-                dlpc = None
-
-            if _prompt_dlpc_failure(config_win, dlpc_failure):
-                print("Continuing with DLPC USB features disabled")
-            else:
-                print("Exiting so the DLPC USB connection can be retried")
-                config_win.destroy()
-                return 1
-
-    config_win.destroy()
+                except Exception as close_error:
+                    print(f"ERROR: failed to close DLPC after startup failure: {close_error}")
+            raise
 
     lithographer_config = LithographerConfig(
         stage,
