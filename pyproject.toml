@@ -1,19 +1,33 @@
 [project]
 name = "stepper"
 version = "0.1.0"
-description = "Add your description here"
+description = "The Hacker Fab open source lithography stepper software"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "open-micro-stage-api",
-    "opencv-python>=4.11.0.86",
-    "pillow>=11.1.0",
-    "pypylon>=4.1.0",
-    "pyserial>=3.5",
-    "pyusb>=1.2.1",
+    "numpy>=1.26.0",
+    "opencv-python>=4.10.0",
+    "pillow>=10.4.0",
     "toml>=0.10.2",
-    "ultralytics>=8.3.218",
 ]
+
+[project.optional-dependencies]
+alignment = [
+    "ultralytics>=8.3.0",
+]
+grbl = [
+    "pyserial>=3.5",
+]
+omm = [
+    "open-micro-stage-api",
+]
+basler = [
+    "pypylon>=4.1.0",
+]
+dlpc = [
+    "pyusb>=1.2.1",
+]
+
 
 [tool.uv.sources]
 open-micro-stage-api = { git = "https://github.com/hacker-fab/MicroManipulatorStepper/", subdirectory = "software/PythonAPI" }

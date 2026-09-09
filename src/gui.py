@@ -18,19 +18,16 @@ from typing import Callable, List, Optional
 
 import cv2
 import numpy as np
-import serial
 import math
 from PIL import Image, ImageOps, ImageTk
-from ultralytics import YOLO
-from camera.camera_module import CameraModule
-from camera.webcam import Webcam
+from typing import Any
+
+from camera import CameraModule, get_camera, get_available_camera_types
 from hardware import ImageProcessSettings, Lithographer, ProcessedImage
 from lib.gui import IntEntry, Thumbnail, FloatEntry
 from lib.img import image_to_tk_image
 from projector import TkProjector
-from stage_control.grbl_stage import GrblStage
-from stage_control.omm_stage import OMMStage
-from stage_control.stage_controller import StageController
+from stage_control import StageController, get_stage_controller, get_available_stage_types
 
 # Enable DPI awareness on Windows before any Tk() call so the UI isn't tiny on HiDPI displays
 if platform.system() == "Windows":
@@ -82,6 +79,8 @@ def compute_focus_score(camera_image, blue_only, save=False):
 
 
 def detect_alignment_markers(model, image, draw_rectangle=False):
+    if model is None:
+        return [], image.copy()
     detections = []
     display_image = image.copy()
     try:
@@ -241,7 +240,7 @@ class Chip:
 class EventDispatcher:
     hardware: Lithographer
     root: Tk
-    model: Optional[YOLO]
+    model: Optional[Any]
     camera: Optional[CameraModule]
     red_focus: ProcessedImage
     uv_focus: ProcessedImage
@@ -922,14 +921,20 @@ class EventDispatcher:
     def initialize_alignment(self, config: LithographerConfig):
         self.config = config
         self.realtime_detection = config.alignment.enabled
-        # Attempt loading the model even if detection is off by default
-        try:
-            print("loading model")
-            model_path = config.alignment.model_path
-            self.model = YOLO(model_path)
-            print("loaded model")
-        except Exception as e:
-            print(f"Failed to load YOLO model: {e}")
+        self.model = None
+        if config.alignment.enabled:
+            try:
+                print("Loading YOLO alignment model...")
+                from ultralytics import YOLO
+                self.model = YOLO(config.alignment.model_path)
+                print("Loaded YOLO alignment model successfully.")
+            except ImportError:
+                print(
+                    "[Alignment] Optional package 'ultralytics' is not installed. "
+                    "Alignment marker detection is disabled. Install with: pip install '.[alignment]'"
+                )
+            except Exception as e:
+                print(f"Failed to load YOLO model: {e}")
 
     def set_snapshot_directory(self, directory: Path):
         self.snapshot_directory = directory
@@ -3294,50 +3299,26 @@ def main():
         with open(config_path, "r") as f:
             config = toml.load(f)
 
+    print("--- Hardware Driver Discovery ---")
+    get_available_camera_types(print_missing=True)
+    get_available_stage_types(print_missing=True)
+    print("---------------------------------")
+
     # STAGE CONFIG
     config_win.destroy()
-    stage_config = config["stage"]
-    if stage_config["enabled"]:
-        if stage_config.get("type") == "omm":
-            stage = OMMStage(stage_config["autofocus"], stage_config["omm"]["z-max"])
-            stage.connect(stage_config["port"], stage_config["baud-rate"])
-        else:
-            serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
-            print(f"Using serial port {serial_port.name}")
-        
-            # default features to False if they aren't specified -> supports legacy config.toml files
-            if stage_config.get("tiling", 0) == 0:
-                stage_config['tiling'] = False
-            if stage_config.get('autofocus', 0) == 0:
-                stage_config['autofocus'] = 0
-            stage = GrblStage(serial_port, stage_config["homing"], stage_config["tiling"], stage_config["autofocus"])
-    else:
-        stage = StageController()
+    stage_config = config.get("stage", {})
+    try:
+        stage = get_stage_controller(stage_config)
+    except Exception as e:
+        print(f"Error initializing stage controller: {e}")
+        return 1
 
     # CAMERA CONFIG
-
-    camera_config = config["camera"]
-    
-    if camera_config["type"] == "webcam":
-        try:
-            index = int(camera_config["index"])
-        except Exception:
-            index = 0
-        camera = Webcam(index)
-    elif camera_config["type"] == "flir":
-        import camera.flir.flir_camera as flir
-        camera = flir.FlirCamera()
-    elif camera_config["type"] in ("basler", "pylon"):
-        from camera.pylon import BaslerPylon
-        try:
-            index = int(camera_config["index"])
-        except Exception:
-            index = 0
-        camera = BaslerPylon(index)
-    elif camera_config["type"] == "none":
-        camera = None
-    else:
-        print(f"config.toml specifies invalid camera type {camera_config['type']}")
+    camera_config = config.get("camera", {})
+    try:
+        camera = get_camera(camera_config)
+    except Exception as e:
+        print(f"Error initializing camera: {e}")
         return 1
 
     camera_scale = float(camera_config.get("gui-scale", 1.0))
