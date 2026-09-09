@@ -13,6 +13,8 @@ dependencies = [
     "pyusb>=1.2.1",
     "toml>=0.10.2",
     "ultralytics>=8.3.218",
+    "onnxruntime>=1.19.0,<1.22.0",
+    "screeninfo>=0.8.1",
 ]
 
 [tool.uv.sources]
@@ -27,7 +29,7 @@ dev = [
 
 [tool.ruff]
 # Set the maximum line length to 88 characters (standard Python convention)
-line-length = 100
+line-length = 120
 exclude = [
 	"src/camera/*",
 	"src/lib/*",
@@ -42,7 +44,7 @@ target-version = "py310"
 # "E" = pycodestyle errors, "F" = pyflakes (unused imports, etc.), "I" = isort (import sorting)
 select = ["E", "F", "I"]
 
-ignore = ["E501"] 
+ignore = ["E711", "F405", "F403"] 
 
 [tool.ruff.format]
 # Leave existing single and double quotes exactly as they are

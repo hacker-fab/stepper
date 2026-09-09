@@ -39,11 +39,8 @@ def gds_to_png(
     fill_color='black',
     bg_color='white',
 ):
-
     if layers_dict is None:
-        raise ValueError(
-            "Please provide a layers_dict mapping layer names to (layer, datatype)"
-        )
+        raise ValueError("Please provide a layers_dict mapping layer names to (layer, datatype)")
 
     # Load GDS library
     lib = gdspy.GdsLibrary(infile=gds_filename)
@@ -56,9 +53,7 @@ def gds_to_png(
         if isinstance(polys, dict):
             template_polygons.extend(polys.get(template_layer, []))
         else:
-            template_polygons.extend(
-                [poly for poly, lyr, dt in polys if (lyr, dt) == template_layer]
-            )
+            template_polygons.extend([poly for poly, lyr, dt in polys if (lyr, dt) == template_layer])
 
     if not template_polygons:
         raise RuntimeError(f"No template frames found on layer {template_layer}")
@@ -76,9 +71,7 @@ def gds_to_png(
         if isinstance(polys, dict):
             bbox_polygons.extend(polys.get(bbox_layer, []))
         else:
-            bbox_polygons.extend(
-                [poly for poly, lyr, dt in polys if (lyr, dt) == bbox_layer]
-            )
+            bbox_polygons.extend([poly for poly, lyr, dt in polys if (lyr, dt) == bbox_layer])
 
     if not bbox_polygons:
         raise RuntimeError(f"No polygons found on bounding box layer {bbox_layer}")
@@ -100,9 +93,7 @@ def gds_to_png(
     png_width = int(np.ceil(design_width * scale))
     png_height = int(np.ceil(design_height * scale))
 
-    print(
-        f"Design bounding box: ({merged_min_x},{merged_min_y})-({merged_max_x},{merged_max_y})"
-    )
+    print(f"Design bounding box: ({merged_min_x},{merged_min_y})-({merged_max_x},{merged_max_y})")
     print(f"Template size (layout units): {t_width}x{t_height}")
     print(f"Scale factor: {scale}")
     print(f"Output PNG size: {png_width}x{png_height}")
@@ -125,10 +116,7 @@ def gds_to_png(
 
             for poly in layer_polys:
                 # Shift origin and scale to pixels
-                shifted_scaled = [
-                    ((x - merged_min_x) * scale, (y - merged_min_y) * scale)
-                    for x, y in poly
-                ]
+                shifted_scaled = [((x - merged_min_x) * scale, (y - merged_min_y) * scale) for x, y in poly]
                 ax.fill(*zip(*shifted_scaled), color=fill_color)
 
         ax.set_xlim(0, design_width * scale)
@@ -137,9 +125,7 @@ def gds_to_png(
         ax.axis('off')
 
         png_filename = f"{output_prefix}_layer_{layer_name}.png"
-        plt.savefig(
-            png_filename, dpi=dpi, bbox_inches=None, pad_inches=0, facecolor=bg_color
-        )
+        plt.savefig(png_filename, dpi=dpi, bbox_inches=None, pad_inches=0, facecolor=bg_color)
         plt.close()
         print(f"Saved {png_filename}")
 

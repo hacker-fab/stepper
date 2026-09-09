@@ -20,14 +20,10 @@ class GrblStage(StageController):
     # only x, y, and z axes are supported by this interface
     # may support alternative axes schemes in the future
     # controller_target must be an open file (may be serial port for example)
-    def __init__(
-        self, controller_target, enable_homing, enable_tiling, autofocus_offset
-    ):
+    def __init__(self, controller_target, enable_homing, enable_tiling, autofocus_offset):
         self.controller_target = controller_target
         self.enable_homing = enable_homing  # homes on start
-        self.enable_tiling = (
-            enable_tiling  # allow for tiling feature that requires homing
-        )
+        self.enable_tiling = enable_tiling  # allow for tiling feature that requires homing
         self.autofocus_estimate = autofocus_offset  # a value offset that estimates current focus z-coordinates
         self.valid_position = True
         self.configuration = None
@@ -50,12 +46,10 @@ class GrblStage(StageController):
         self.axes = ("x", "y", "z")
         self.resp_buffer = b""
 
-        print(
-            f"WPos startup (mm): {self._query_state()}"
-        )  # queries for current position and state
+        print(f"WPos startup (mm): {self._query_state()}")  # queries for current position and state
         self._send_msg(b'$X\n')  # exit out of any alarms
 
-        self._query_config()  # query for grbl config settings, which we will need to determine bounds and other features
+        self._query_config()  # query for grbl config settings, determine bounds and other features
 
     def _fill_resp_buffer(self):
         self.resp_buffer += self.controller_target.read_all()
@@ -133,8 +127,7 @@ class GrblStage(StageController):
         elif code in (6, 7, 8, 9):
             self.resp_buffer = b""
             raise RuntimeError(
-                f"Homing failure ({response}) — homing cycle did not complete. "
-                "Check limit switches and wiring."
+                f"Homing failure ({response}) — homing cycle did not complete. Check limit switches and wiring."
             )
 
         # --- Reset while in motion (ALARM:3) ---
@@ -142,8 +135,7 @@ class GrblStage(StageController):
             self.resp_buffer = b""
             self.valid_position = False
             raise RuntimeError(
-                "GRBL was reset while the stage was moving. "
-                "Position may be lost — rehome before continuing."
+                "GRBL was reset while the stage was moving. Position may be lost — rehome before continuing."
             )
 
         # --- Probe failures (ALARM:4-5) ---
@@ -151,9 +143,7 @@ class GrblStage(StageController):
             # probe alarms don't necessarily require a full reset
             # since your lithostepper may not use probing, raise clearly
             self.resp_buffer = b""
-            raise RuntimeError(
-                f"Probe failure ({response}) — check probe wiring and initial state."
-            )
+            raise RuntimeError(f"Probe failure ({response}) — check probe wiring and initial state.")
 
         # --- Any other that we didn't cover ---
         else:
@@ -182,17 +172,15 @@ class GrblStage(StageController):
         self.controller_target.write(msg)  # write gcode command
         deadline = time.time() + 30.0
         while True:
-            while (
-                b"\r\n" not in self.resp_buffer
-            ):  # sometimes grbl may take time to respond, so we wait until
+            while b"\r\n" not in self.resp_buffer:  # sometimes grbl may take time to respond, so we wait until
                 self._fill_resp_buffer()  # the response actually arrives. This is really important.
                 if time.time() > deadline:
                     raise TimeoutError("No response from GRBL")
                 time.sleep(0.01)  # yield the CPU
 
-            resp = self.resp_buffer.split(b"\r\n")
-            self.resp_buffer = b""
-            response = [res.decode("ascii", errors="replace").strip() for res in resp]
+            lines = self.resp_buffer.split(b"\r\n")
+            self.resp_buffer = lines[-1]
+            response = [res.decode("ascii", errors="replace").strip() for res in lines[:-1]]
 
             for item in response:
                 if not item:
@@ -201,7 +189,7 @@ class GrblStage(StageController):
                     print(f"[GRBL feedback]: {item}")
                     continue  # keep waiting for ok/error
                 if "ok" in item:
-                    print("Received OK")
+                    # print("Received OK")
                     return  # happy path, command completed, successful
                 elif item.startswith("error:"):
                     print(f"[GRBL error]: {item}")
@@ -262,9 +250,7 @@ class GrblStage(StageController):
         resolved_position = position or work_position
         print(f"resolved position: {resolved_position}, Idle: {idle}")
         if resolved_position is None:
-            raise ValueError(
-                f"GRBL status response contained no position data: {buff!r}"
-            )
+            raise ValueError(f"GRBL status response contained no position data: {buff!r}")
         return idle, resolved_position
 
     def _query_config(self):
@@ -325,9 +311,7 @@ class GrblStage(StageController):
             if "ok" in setting:
                 break
             if setting.startswith("error:"):
-                raise Exception(
-                    f"GRBL error: query config failed -> {setting}"
-                )  # double check this
+                raise Exception(f"GRBL error: query config failed -> {setting}")  # double check this
             lines.append(setting)
 
         # parse string splits
@@ -337,7 +321,8 @@ class GrblStage(StageController):
                 if "=" in part:
                     key, value = part.split("=", 1)
                     key = int(key.strip())
-                    value = value.strip()
+                    # value = value.strip()
+                    value = value.split("(")[0].strip()
                     if value == "":
                         value = None
                     elif "." in value:
@@ -352,7 +337,6 @@ class GrblStage(StageController):
         self._send_msg(b"G91\n")
 
     def _move(self, microns: dict[str, float], relative):
-
         # Note: depending on $10, G91 and G90 will move wrt WPos or MPos
         if relative:
             self._send_msg(b"G91\n")
@@ -382,12 +366,8 @@ class GrblStage(StageController):
         0 >= microns[1] >= -$131   (for Y)
         0 >= microns[2] >= -$132   (for Z)
         """
-        if (
-            not self.valid_position and self.enable_tiling
-        ):  # only block if users are doing tiling
-            raise RuntimeError(
-                "Position is invalid — please exit and re-open the application."
-            )
+        if not self.valid_position and self.enable_tiling:  # only block if users are doing tiling
+            raise RuntimeError("Position is invalid — please exit and re-open the application.")
 
         print("moving relative", microns)
         self._move(microns, relative=True)
@@ -401,12 +381,8 @@ class GrblStage(StageController):
         0 >= microns[1] >= -$131   (for Y)
         0 >= microns[2] >= -$132   (for Z)
         """
-        if (
-            not self.valid_position and self.enable_tiling
-        ):  # only block if users are doing tiling
-            raise RuntimeError(
-                "Position is invalid — please exit and re-open the application."
-            )
+        if not self.valid_position and self.enable_tiling:  # only block if users are doing tiling
+            raise RuntimeError("Position is invalid — please exit and re-open the application.")
 
         print("moving absolute", microns)
         self._move(microns, relative=False)
@@ -430,9 +406,7 @@ class GrblStage(StageController):
             time.sleep(0.05)
 
         if not startup_seen:
-            raise RuntimeError(
-                "GRBL did not send startup greeting after reset — check connection."
-            )
+            raise RuntimeError("GRBL did not send startup greeting after reset — check connection.")
 
         self.resp_buffer = b""
 
@@ -473,7 +447,8 @@ class GrblStage(StageController):
 
         Because MPos can sometimes contain random values (which makes sense), we want to set a
         WPos, which allows us to set the (0,0,0) position to any location we're at. This is just
-        so developers and gui users find it easier to work off of coordinates with an origin of (0,0,0)
+        so developers and gui users find it easier to work off of coordinates with an
+        origin of (0,0,0)
 
         For more info, please visit GRBL documentation wiki.
 
@@ -602,7 +577,8 @@ class GrblStage(StageController):
             else:
                 # if bounds exceeded, set target coordinate to the boundary
                 if relative:
-                    clamped_amt[i] = clamp(coords[i] + self.position[i], bounds_lo, bounds_hi) - self.position[i]
+                    clamped_amt[i] = clamp(coords[i] + self.position[i], 
+                                bounds_lo, bounds_hi) - self.position[i]
                 else:
                     clamped_amt[i] = clamp(coords[i], bounds_lo, bounds_hi)
         print('a')

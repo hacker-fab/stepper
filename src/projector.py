@@ -48,14 +48,6 @@ class TkProjector(ProjectorController):
     # if a duration is specified, show the image for that many milliseconds
     # Calls update_func during patterning with a single argument from 0.0-1.0 indicating progress
     def show(self, image: Image.Image):
-        # if(self.__is_patterning__):
-        #  if(self.debug != None):
-        #    self.debug.warn("Tried to show image while another is still showing")
-        # return False
-        # warn if image isn't correct size
-        # if(image.size != fit_image(image, self.size())):
-        #  if(self.debug != None):
-        #    self.debug.warn("projecting image with incorrect size:\n  "+str(image.size)+" instead of "+str(self.size()))
         photo = image_to_tk_image(image)
         self.label.configure(image=photo)  # type:ignore
         self.photo = photo
