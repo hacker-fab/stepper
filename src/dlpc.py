@@ -16,7 +16,7 @@ HDR_DEST_MASK = 0x07
 
 OP_MODE = 0x00
 OP_CONTROLLER_INFO = 0x00
-OP_ILLUMINATION_ENABLE = 0x80   # Table 19-90: 1 data byte
+OP_ILLUMINATION_ENABLE = 0x80  # Table 19-90: 1 data byte
 OP_ILLUMINATION_CURRENT = 0x84  # Table 19-91: 6 data bytes, 2 per channel LE
 
 ILLUM_OFF = 0x00
@@ -52,14 +52,16 @@ class DLPC:
             intf,
             custom_match=lambda e: (
                 usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
-                and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK
+                and usb.util.endpoint_type(e.bmAttributes)
+                == usb.util.ENDPOINT_TYPE_BULK
             ),
         )
         self.ep_in = usb.util.find_descriptor(
             intf,
             custom_match=lambda e: (
                 usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
-                and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK
+                and usb.util.endpoint_type(e.bmAttributes)
+                == usb.util.ENDPOINT_TYPE_BULK
             ),
         )
         if self.ep_out is None or self.ep_in is None:
@@ -99,7 +101,9 @@ class DLPC:
             )
         return resp[1:]
 
-    def send_read_command(self, destination: int, opcode: int, response_len: int) -> bytes:
+    def send_read_command(
+        self, destination: int, opcode: int, response_len: int
+    ) -> bytes:
         header = HDR_READ | (destination & HDR_DEST_MASK)
         self.ep_out.write(bytes([header, opcode]), timeout=self.timeout_ms)
 
