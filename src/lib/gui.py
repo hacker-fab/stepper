@@ -252,6 +252,7 @@ class FloatEntry:
         value = round(value, 1)
         self._var.set(value)
 
+
 # TODO:
 class IntEntry:
     widget: Entry
