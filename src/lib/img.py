@@ -7,7 +7,7 @@ from math import ceil, cos, pi, sin
 from PIL import Image, ImageTk
 from PIL.ImageOps import invert
 
-from .tuple import *
+from .tuple import BTW_tuple, add, mult
 
 
 def select_channels(
@@ -55,14 +55,12 @@ def fit_image(img_size: tuple[int, int], win_size: tuple[int, int]) -> tuple[int
 
 
 # return min image size that will fill in window
-def fill_image(
-    image: Image.Image | tuple[int, int], win_size: tuple[int, int]
-) -> tuple[int, int]:
+def fill_image(image: Image.Image | tuple[int, int], win_size: tuple[int, int]) -> tuple[int, int]:
     # for easier access
     img_size: tuple[int, int]
-    if type(image) == tuple:
+    if type(image) is tuple:
         img_size = image
-    elif type(image) == Image.Image:
+    elif type(image) is Image.Image:
         img_size = (image.width, image.height)
     # determine orientation to fit to
     if (win_size[0] / win_size[1]) > (img_size[0] / img_size[1]):
@@ -85,9 +83,7 @@ def center_crop(image: Image.Image, crop_size: tuple[int, int]) -> Image.Image:
     assert crop_size[0] > 0 and crop_size[1] > 0
 
     # resample image to fill desired size
-    cropped = cropped.resize(
-        fill_image(image, crop_size), resample=Image.Resampling.LANCZOS
-    )
+    cropped = cropped.resize(fill_image(image, crop_size), resample=Image.Resampling.LANCZOS)
 
     # determine which orientation needs cropping
     assert cropped.width == crop_size[0] or cropped.height == crop_size[1]
@@ -115,9 +111,7 @@ def center_crop(image: Image.Image, crop_size: tuple[int, int]) -> Image.Image:
 
 
 # convert a value on one scale to the same location on another scale
-def rescale_value(
-    old_scale: tuple[int, int], new_scale: tuple[int, int], value: int
-) -> int:
+def rescale_value(old_scale: tuple[int, int], new_scale: tuple[int, int], value: int) -> int:
     if old_scale[0] == old_scale[1]:
         return new_scale[1]
     assert old_scale[0] <= old_scale[1]
@@ -135,9 +129,7 @@ def rescale_value(
 
 # return the max and min brightness values of an image
 # optionally specify downsampling target
-def get_brightness_range(
-    image: Image.Image, downsample_target: int = 0
-) -> tuple[int, int]:
+def get_brightness_range(image: Image.Image, downsample_target: int = 0) -> tuple[int, int]:
     img_copy: Image.Image = image.copy()
     # first make sure image is single channel
     if img_copy.mode != "L":
@@ -301,7 +293,7 @@ def alpha_to_dec(alpha: tuple[int, int]) -> int:
 def build_affine(
     x: float = 0, y: float = 0, theta: None | tuple[int, int, float] = None
 ) -> tuple[float, ...]:
-    if theta == None or theta[2] == 0:
+    if theta is None or theta[2] == 0:
         # nice, simple translation matrix :)
         return (1, 0, x, 0, 1, y)
     else:
@@ -437,9 +429,7 @@ def slice_image(
                 )
             )
             if output_resolution != (0, 0):
-                cropped = cropped.resize(
-                    output_resolution, resample=Image.Resampling.LANCZOS
-                )
+                cropped = cropped.resize(output_resolution, resample=Image.Resampling.LANCZOS)
             output.append(cropped)
     return (grid, tuple(output))
 
@@ -607,9 +597,7 @@ if False:
         for i in range(runs):
             # img = Image.new("RGB", resolution, (randint(0,255),randint(0,255),randint(0,255)))
             img = Image.fromarray(
-                (numpy.random.rand(resolution[0], resolution[1], 3) * 255).astype(
-                    "uint8"
-                )
+                (numpy.random.rand(resolution[0], resolution[1], 3) * 255).astype("uint8")
             ).convert("RGB")
             start = time()
             better_transform(

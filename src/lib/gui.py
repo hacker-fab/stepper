@@ -24,7 +24,7 @@ from PIL import Image, ImageTk
 
 # import sys and use path insert to add lib files
 from .img import LA_to_L, RGBA_to_RGB, fit_image, image_to_tk_image
-from .tuple import *
+from .tuple import div, sub
 
 # endregion
 
@@ -92,7 +92,7 @@ class Debug:
         colspan: int = 1,
         rowspan: int = 1,
     ):
-        if row == None or col == None:
+        if row is None or col is None:
             self.__widget__.grid()
         else:
             self.__widget__.grid(
@@ -135,9 +135,7 @@ class Thumbnail:
         self.accept_alpha = accept_alpha
         self.on_import = on_import
         # build widget
-        self.widget = Button(
-            parent, text=self.text, command=self._import_image, compound="top"
-        )
+        self.widget = Button(parent, text=self.text, command=self._import_image, compound="top")
 
         self.thumb_size = thumb_size
         # create placeholder images
@@ -149,9 +147,7 @@ class Thumbnail:
     def _import_image(self):
         def is_valid_ext(path: str) -> bool:
             path = path.lower()
-            return (
-                path.endswith(".jpg") or path.endswith(".jpeg") or path.endswith(".png")
-            )
+            return path.endswith(".jpg") or path.endswith(".jpeg") or path.endswith(".png")
 
         # get image
         path: str = filedialog.askopenfilename(title="Open")
@@ -180,15 +176,15 @@ class Thumbnail:
             case "RGBA":
                 if not self.accept_alpha:
                     img = RGBA_to_RGB(img)
-                    # if(self.__gui__.debug != None):
+                    # if(self.__gui__.debug is not):
                     #  self.__gui__.debug.warn("RGBA images are not permitted, auto converted to RGB")
             case "LA":
                 if not self.accept_alpha:
                     img = LA_to_L(img)
-                    # if(self.__gui__.debug != None):
+                    # if(self.__gui__.debug is not):
                     #  self.__gui__.debug.warn("LA images are not permitted, auto converted to L")
             case _:
-                # if(self.__gui__.debug != None):
+                # if(self.__gui__.debug is not):
                 #  self.__gui__.debug.error("Invalid image mode: "+img.mode)
                 return
 
@@ -339,7 +335,7 @@ class Intput:
             justify=justify,
         )
         # set name
-        if name == None:
+        if name is None:
             self.name = "unnamed intput widget " + str(Intput.__total_intputs__)
             Intput.__total_intputs__ += 1
             gui.add_widget(self.name, self)
@@ -356,7 +352,7 @@ class Intput:
         colspan: int = 1,
         rowspan: int = 1,
     ):
-        if row == None or col == None:
+        if row is None or col is None:
             self.__widget__.grid()
         else:
             self.__widget__.grid(
@@ -388,7 +384,7 @@ class Intput:
     def __update__(self, new_value: int | None = None):
         # get new potential value
         new_val: int
-        if new_value == None:
+        if new_value is None:
             new_val = self.var.get()
         else:
             new_val = new_value
@@ -402,21 +398,19 @@ class Intput:
                 self.var.set(self.__value__)
             else:
                 self.__widget__.config(bg=self.invalid_color)
-            if self.__gui__.debug != None:
-                self.__gui__.debug.error(
-                    "Invalid value for " + self.name + ": " + str(new_val)
-                )
+            if self.__gui__.debug is not None:
+                self.__gui__.debug.error("Invalid value for " + self.name + ": " + str(new_val))
         self.__widget__.update()
 
     # check if the current value is valid
     def __validate__(self, new_val: int) -> bool:
         # check min / max
-        if self.min != None and new_val < self.min:
+        if self.min is not None and new_val < self.min:
             return False
-        if self.max != None and new_val > self.max:
+        if self.max is not None and new_val > self.max:
             return False
         # check extra validation
-        if self.extra_validation != None and not self.extra_validation(new_val):
+        if self.extra_validation is not None and not self.extra_validation(new_val):
             return False
         # passed all checks
         return True
@@ -473,9 +467,9 @@ class Floatput:
         # setup widget
         self.__widget__ = Entry(gui.root, textvariable=self.var, justify=justify)
         # set name
-        if name == None:
-            self.name = "unnamed floatput widget " + str(floatput.__total_floatputs__)
-            floatput.__total_floatputs__ += 1
+        if name is None:
+            self.name = "unnamed floatput widget " + str(Floatput.__total_floatputs__)
+            Floatput.__total_floatputs__ += 1
             gui.add_widget(self.name, self)
         else:
             gui.add_widget(name, self)
@@ -490,7 +484,7 @@ class Floatput:
         colspan: int = 1,
         rowspan: int = 1,
     ):
-        if row == None or col == None:
+        if row is None or col is None:
             self.__widget__.grid()
         else:
             self.__widget__.grid(
@@ -522,7 +516,7 @@ class Floatput:
     def __update__(self, new_value: float | None = None):
         # get new potential value
         new_val: float
-        if new_value == None:
+        if new_value is None:
             new_val = self.var.get()
         else:
             new_val = new_value
@@ -536,21 +530,19 @@ class Floatput:
                 self.var.set(self.__value__)
             else:
                 self.__widget__.config(bg=self.invalid_color)
-            if self.__gui__.debug != None:
-                self.__gui__.debug.error(
-                    "Invalid value for " + self.name + ": " + str(new_val)
-                )
+            if self.__gui__.debug is not None:
+                self.__gui__.debug.error("Invalid value for " + self.name + ": " + str(new_val))
         self.__widget__.update()
 
     # check if the current value is valid
     def __validate__(self, new_val: float) -> bool:
         # check min / max
-        if self.min != None and new_val < self.min:
+        if self.min is not None and new_val < self.min:
             return False
-        if self.max != None and new_val > self.max:
+        if self.max is not None and new_val > self.max:
             return False
         # check extra validation
-        if self.extra_validation != None and not self.extra_validation(new_val):
+        if self.extra_validation is not None and not self.extra_validation(new_val):
             return False
         # passed all checks
         return True
@@ -596,7 +588,7 @@ class TextPopup:
         self.__TL__.grid_rowconfigure(0, weight=1)
         self.__label__ = Label(self.__TL__, text=self.popup_text, justify="left")
         self.__label__.grid(row=0, column=0, sticky="nesw")
-        if self.debug != None:
+        if self.debug is not None:
             self.debug.info("Showing " + self.button_text + " popup")
         self.update()
 
@@ -608,7 +600,7 @@ class TextPopup:
         colspan: int = 1,
         rowspan: int = 1,
     ):
-        if row == None or col == None:
+        if row is None or col is None:
             self.__widget__.grid()
         else:
             self.__widget__.grid(
@@ -685,7 +677,7 @@ class GUI_Controller:
 
     def add_widget(self, name: str, widget: gui_widgets):
         # if a debug widget is added, save it as the debug field
-        if type(widget) == Debug:
+        if isinstance(widget, Debug):
             self.debug = widget
         else:
             self.__widgets__[name] = widget
@@ -700,11 +692,9 @@ class GUI_Controller:
         # remove widget from dictionary
         widget = self.__widgets__.pop(name, None)
         # check if widget was found
-        if widget == None:
-            if self.debug != None:
-                self.debug.warn(
-                    "Tried to remove widget " + name + " but it was not found"
-                )
+        if widget is None:
+            if self.debug is not None:
+                self.debug.warn("Tried to remove widget " + name + " but it was not found")
             return
         # report success
         self.debug.info("Removed widget " + name)
@@ -730,9 +720,9 @@ class GUI_Controller:
     ) -> tuple[float, float] | tuple[int, int]:
         # get widget
         this_widget = self.get_widget(widget)
-        if this_widget == None:
+        if this_widget is None:
             widget = "root window"
-            if self.debug != None:
+            if self.debug is not None:
                 self.debug.warn("Using root window for get_coords()")
             this_widget = self.root
         widget_size = (this_widget.winfo_width(), this_widget.winfo_height())
@@ -751,7 +741,7 @@ class GUI_Controller:
         # offset by widget location
         result = coords
         # result = sub(coords, (this_widget.winfo_x(), this_widget.winfo_y()))
-        if (result[0] < 0 or result[1] < 0) and self.debug != None:
+        if (result[0] < 0 or result[1] < 0) and self.debug is not None:
             self.debug.warn("Clicked outside of " + widget)
         # if image size is specified, return location within image
         if img_size != (0, 0):

@@ -34,3 +34,6 @@ venv/
 **/.claude
 
 stepper_captures
+
+# Mac Hidden files
+.DS_Store

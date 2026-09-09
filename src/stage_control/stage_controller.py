@@ -39,3 +39,4 @@ class StageController:
 
     def get_bounds(self) -> dict[str, tuple[float, float]]:
         print("ignoring get_bounds in dummy_stage controller")
+        return {}

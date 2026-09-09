@@ -9,8 +9,9 @@ from typing import Callable, Literal
 
 from PIL import Image
 
+from .debug import Debug
 from .img import slice_image
-from .tuple import *
+from .tuple import abs_tuple, add, div, mult, neg_tuple, sub
 
 # endregion
 
@@ -68,7 +69,7 @@ class Stage_Controller:
     def __call_funcs__(self, axis: str):
         # convert arbitrary string to literal
         key: Literal["x", "y", "z", "any"] | None = self.__str2key__(axis)
-        if key == None:
+        if key is None:
             return
         # call all functions
         for func in self.update_funcs.get(key, {}):
@@ -99,9 +100,7 @@ class Stage_Controller:
     # endregion
 
     # wrapper to add function to update_funcs
-    def add_callback(
-        self, axis: Literal["x", "y", "z", "any"], name: str, func: Callable
-    ):
+    def add_callback(self, axis: Literal["x", "y", "z", "any"], name: str, func: Callable):
         self.update_funcs[axis][name] = func
 
     # calibration function to equate camera view to stage step increments
@@ -169,19 +168,17 @@ class Stage_Controller:
 
         def bad_location(loc: tuple[float, float]) -> bool:
             if loc[0] < 0 or loc[0] > 1 or loc[1] < 0 or loc[1] > 1:
-                if self.debug != None:
+                if self.debug is not None:
                     self.debug.error(
-                        "Clicked out of bounds: "
-                        + str(loc)
-                        + "\n  Aborting calibration"
+                        "Clicked out of bounds: " + str(loc) + "\n  Aborting calibration"
                     )
                     return True
             return False
 
         # 0. check inputs
-        if type(step_size) != tuple:
+        if type(step_size) is not tuple:
             step_size = (step_size, step_size)
-        if self.debug != None:
+        if self.debug is not None:
             self.debug.info("Calibrating: click on the same point as it moves")
         # 1. Eliminate backlash biasing by moving
         step_size: tuple[float, float] = abs_tuple(step_size)
@@ -215,10 +212,8 @@ class Stage_Controller:
         # do math to get conversion ratio
         distance: tuple[float, float] = sub(new_location, starting_location)
         if distance[0] == 0 or distance[1] == 0:
-            if self.debug != None:
-                self.debug.error(
-                    "Clicked in same location twice\n  Aborting calibration"
-                )
+            if self.debug is not None:
+                self.debug.error("Clicked in same location twice\n  Aborting calibration")
             return
         self.__conversion_ratio__ = abs_tuple(div(step_size, distance))
 
@@ -285,23 +280,23 @@ class Stage_Controller:
             self.__last_dir__ = convert_to_dir(inv_dir)
             self.__calibrate_point__ = new_location
 
-        if self.debug != None:
+        if self.debug is not None:
             self.debug.info("Calibration complete")
 
     # check if stage is calibrated
     def is_calibrated(self) -> bool:
-        return self.__conversion_ratio__ != None
+        return self.__conversion_ratio__ is not None
 
     # move stage to a location in camera fov, must calibrate stage before use
     # @param location: move to location without querying user
     def goto(self, location: tuple[float, float] | None = None):
         # check if calibrated
-        if self.__conversion_ratio__ == None:
-            if self.debug != None:
+        if self.__conversion_ratio__ is None:
+            if self.debug is not None:
                 self.debug.error("Must calibrate before using goto function")
             return
         # get location from camera
-        if location == None:
+        if location is None:
             location: tuple[float, float] = self.__location_query__()
         # get delta
         delta: list[float] = list(
@@ -309,7 +304,7 @@ class Stage_Controller:
         )
         self.__calibrate_point__ = location
         # apply backlash
-        if self.__backlash__ != None:
+        if self.__backlash__ is not None:
             new_dir: self.dirs_t = (
                 "+" if delta[0] > 0 else "-",
                 "+" if delta[1] > 0 else "-",
@@ -354,7 +349,7 @@ class Stage_Controller:
         update: bool = True,
     ):
         if self.__locked__:
-            if self.debug != None:
+            if self.debug is not None:
                 self.debug.warn("Tried to move stage while locked")
             return
         delta: tuple[float, float, float] = (0, 0, 0)
@@ -381,17 +376,15 @@ class Stage_Controller:
             self.__call_funcs__(axis)
             self.__call_funcs__("any")
         # region: debug
-        if self.debug != None and self.__verbosity__ > 0:
+        if self.debug is not None and self.__verbosity__ > 0:
             debug_str: str = ""
             if self.__verbosity__ >= 1:
-                debug_str += (
-                    "stage stepped " + str(delta) + " to " + str(self.__coords__)
-                )
+                debug_str += "stage stepped " + str(delta) + " to " + str(self.__coords__)
             if self.__verbosity__ >= 2 and update:
                 debug_str += " and called:"
                 # convert arbitrary string to literal
                 key: Literal["x", "y", "z", "any"] | None = self.__str2key__(axis)
-                if key != None:
+                if key is not None:
                     for func in self.update_funcs.get(key, {}):
                         debug_str += "\n  " + axis[-1] + ": " + func
                 for func in self.update_funcs.get("any", {}):
@@ -402,7 +395,7 @@ class Stage_Controller:
     # set coords from a list of floats
     def set(self, x: float, y: float, z: float, update: bool = True):
         if self.__locked__:
-            if self.debug != None:
+            if self.debug is not None:
                 self.debug.warn("Tried to move stage while locked")
             return
         self.__coords__ = (x, y, z)
@@ -412,7 +405,7 @@ class Stage_Controller:
             self.__call_funcs__("z")
             self.__call_funcs__("any")
         # region: debug
-        if self.debug != None and self.__verbosity__ > 0:
+        if self.debug is not None and self.__verbosity__ > 0:
             debug_str: str = ""
             if self.__verbosity__ >= 1:
                 debug_str += "stage set to " + str((x, y, z))
@@ -480,7 +473,7 @@ class Multi_Stage:
         if not force:
             for stage_name in self.__names__:
                 if name in self.__controllers__[stage_name].update_funcs[axis]:
-                    if self.debug != None:
+                    if self.debug is not None:
                         self.debug.warn(
                             "attempted to overwrite existing function: "
                             + stage_name
@@ -501,7 +494,7 @@ class Multi_Stage:
         if strict:
             for stage_name in self.__names__:
                 if name not in self.__controllers__[stage_name].update_funcs[axis]:
-                    if self.debug != None:
+                    if self.debug is not None:
                         self.debug.warn(
                             "Tried to remove non-existant function: "
                             + stage_name
@@ -520,17 +513,17 @@ class Multi_Stage:
     # get a stage by name or name by stage
     # str search is O(1), Stage_Controller search is O(n)
     def get(self, name: str | Stage_Controller) -> Stage_Controller | None:
-        if type(name) == str:
+        if isinstance(name, str):
             if name not in self.__names__:
-                if self.debug != None:
+                if self.debug is not None:
                     self.debug.error("Tried to get non-existant stage " + name)
                 return None
             return self.__controllers__[name]
-        if type(name) == Stage_Controller:
+        if type(name) is Stage_Controller:
             for key in self.__controllers__:
                 if self.__controllers__[key] == name:
                     return key
-            if self.debug != None:
+            if self.debug is not None:
                 self.debug.error("Tried to get non-existant stage")
             return None
 
@@ -544,9 +537,9 @@ class Multi_Stage:
     ):
         # get list of names to toggle
         name_list: list[str]
-        if type(names) == str:
+        if type(names) is str:
             name_list = [names]
-        elif type(names) == list:
+        elif isinstance(names, list):
             name_list = names
         else:
             name_list = self.__names__.copy()
@@ -555,7 +548,7 @@ class Multi_Stage:
         for name in name_list:
             # check existence
             if name not in self.__names__:
-                if self.debug != None:
+                if self.debug is not None:
                     self.debug.error("Tried to select non-existant stage " + name)
                 continue
             # actually toggle
@@ -568,28 +561,24 @@ class Multi_Stage:
             elif name not in self.__selected__:
                 self.__selected__.append(name)
             else:
-                if self.debug != None:
-                    self.debug.error(
-                        "Execution reached unexpected point in Multi_Stage.toggle()"
-                    )
+                if self.debug is not None:
+                    self.debug.error("Execution reached unexpected point in Multi_Stage.toggle()")
             # success
-            if self.debug != None and self.verbosity > 0:
+            if self.debug is not None and self.verbosity > 0:
                 self.debug.info(
-                    ("Enabled " if name in self.__selected__ else "Disabled ")
-                    + name
-                    + " stage"
+                    ("Enabled " if name in self.__selected__ else "Disabled ") + name + " stage"
                 )
 
     # rename a stage
     def rename(self, old_name: str, new_name: str):
         # check existence
         if old_name not in self.__names__:
-            if self.debug != None:
+            if self.debug is not None:
                 self.debug.error("Tried to rename non-existant stage " + old_name)
             return
         # check name not taken
         if new_name in self.__names__:
-            if self.debug != None:
+            if self.debug is not None:
                 self.debug.error(
                     "Tried to rename "
                     + old_name
@@ -606,7 +595,7 @@ class Multi_Stage:
         if old_name in self.__selected__:
             self.__selected__[self.__selected__.index(old_name)] = new_name
         # success
-        if self.debug != None and self.verbosity > 0:
+        if self.debug is not None and self.verbosity > 0:
             self.debug.info("renamed " + old_name + " to " + new_name)
 
     # set coords from a list of floats
@@ -661,11 +650,11 @@ class Multi_Stage:
         calibrate_backlash: Literal["None", "symmetric", "bidirectional"] = "None",
         return_to_start: bool = True,
     ) -> None:
-        if type(name) == str:
-            if name not in self.__controllers__ and self.debug != None:
+        if isinstance(name, str):
+            if name not in self.__controllers__ and self.debug is not None:
                 self.debug.error("Tried to calibrate stage with invalid name")
             else:
-                if self.debug != None:
+                if self.debug is not None:
                     self.debug.info("Calibrating " + name + "...")
                 self.__controllers__[name].calibrate(
                     step_size=step_size,
@@ -673,12 +662,12 @@ class Multi_Stage:
                     return_to_start=return_to_start,
                 )
             return
-        elif type(name) == list:
+        elif type(name) is list:
             for n in name:
-                if n not in self.__controllers__ and self.debug != None:
+                if n not in self.__controllers__ and self.debug is not None:
                     self.debug.error("Tried to calibrate stage with invalid name")
                 else:
-                    if self.debug != None:
+                    if self.debug is not None:
                         self.debug.info("Calibrating " + n + "...")
                     self.__controllers__[n].calibrate(
                         step_size=step_size,
@@ -687,7 +676,7 @@ class Multi_Stage:
                     )
             return
         else:
-            if self.debug != None:
+            if self.debug is not None:
                 self.debug.error("Tried to calibrate stage with invalid name")
 
 
@@ -749,11 +738,7 @@ class Slicer:
                 if row % 2 == 0:
                     return index
                 else:
-                    return (
-                        self.__grid_size__[0] * (row + 1)
-                        - (index % self.__grid_size__[0])
-                        - 1
-                    )
+                    return self.__grid_size__[0] * (row + 1) - (index % self.__grid_size__[0]) - 1
         return 0
 
     # increment index, false if at end of list
@@ -825,7 +810,7 @@ class Slicer:
             self.__pattern__ = tiling_pattern
             reslice = True
 
-        if reslice and self.__full_image__ != None:
+        if reslice and self.__full_image__ is not None:
             (self.__grid_size__, self.__sliced_images__) = slice_image(
                 self.__full_image__,
                 self.__horizontal_slices__,
@@ -854,28 +839,28 @@ class Func_Manager:
     def __call__(self):
         if len(self.__funcs__) == 0 or self.__total_enabled__ == 0:
             return
-        if self.debug != None:
+        if self.debug is not None:
             self.debug.info(self.name + " Func Manager called:")
 
         for key in self.__funcs__.keys():
             entry: tuple[Callable, bool] = self.__funcs__[key]
             if entry[1]:
                 self.__funcs__[key][0]()
-                if self.debug != None:
+                if self.debug is not None:
                     self.debug.info("| " + key)
 
     def add(self, name: str, func: Callable, enabled: bool = True):
         if enabled:
             self.__total_enabled__ += 1
         self.__funcs__[name] = (func, enabled)
-        if self.debug != None:
+        if self.debug is not None:
             self.debug.info("added " + name + " to " + self.name + " Func Manager")
 
     def remove(self, name: str):
         if self.__funcs__.get(name, [False, False])[1]:
             self.__total_enabled__ -= 1
         self.__funcs__.pop(name, None)
-        if self.debug != None:
+        if self.debug is not None:
             self.debug.info("removed " + name + " from " + self.name + " Func Manager")
 
     def enable(self, name: str):
@@ -884,10 +869,8 @@ class Func_Manager:
         else:
             self.__total_enabled__ += 1
             self.__funcs__[name] = (self.__funcs__[name][0], True)
-            if self.debug != None:
-                self.debug.info(
-                    "enabled " + name + " in " + self.name + " Func Manager"
-                )
+            if self.debug is not None:
+                self.debug.info("enabled " + name + " in " + self.name + " Func Manager")
 
     def disable(self, name: str):
         if not self.__funcs__.get(name, [True, True])[1]:
@@ -895,10 +878,8 @@ class Func_Manager:
         else:
             self.__total_enabled__ -= 1
             self.__funcs__[name] = (self.__funcs__[name][0], False)
-            if self.debug != None:
-                self.debug.info(
-                    "disabled " + name + " in " + self.name + " Func Manager"
-                )
+            if self.debug is not None:
+                self.debug.info("disabled " + name + " in " + self.name + " Func Manager")
 
     def is_enabled(self, name: str) -> bool:
         return self.__funcs__[name][1]
@@ -910,7 +891,7 @@ class Func_Manager:
         for key in self.__funcs__.keys():
             self.disable(key)
         self.__total_enabled__ = 0
-        if self.debug != None:
+        if self.debug is not None:
             self.debug.info("disabled all functions in " + self.name + " Func Manager")
 
     def enable_all(self):
@@ -918,5 +899,5 @@ class Func_Manager:
         for key in self.__funcs__.keys():
             self.enable(key)
             self.__total_enabled__ += 1
-        if self.debug != None:
+        if self.debug is not None:
             self.debug.info("enabled all functions in " + self.name + " Func Manager")

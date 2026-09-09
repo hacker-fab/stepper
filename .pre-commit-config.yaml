@@ -1,18 +1,27 @@
 repos:
   # Run Ruff Linter and Formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.0 # (Or whatever the latest version is)
+    rev: v0.9.0
     hooks:
+      # 1. Run the linter
+      # '--fix' automatically resolves fixable issues. 
+      # If there are any unfixable issues left over, the hook will fail.
       - id: ruff
-        args: [ --fix ] # Auto-fixes safe errors before committing
+        args: [ --fix ]
+        
+      # 2. Run the formatter
+      # Automatically formats your code. 
+      # It will fail if there are severe syntax errors that prevent formatting.
       - id: ruff-format
+      - id: ruff-format
+        args: [ --check ]
 
   # Run the Ty type checker locally via uv
-  # - repo: local
-  #  hooks:
-  #    - id: ty-check
-  #      name: ty type checker
-  #      entry: uv run ty check
-  #      language: system
-  #      types: [python]
-  #      pass_filenames: false
+  - repo: local
+    hooks:
+      - id: ty-check
+        name: ty type checker
+        entry: uv run ty check src/gui.py src/hardware.py src/projector.py src/dlpc.py src/stage_control
+        language: system
+        pass_filenames: false
+        always_run: true

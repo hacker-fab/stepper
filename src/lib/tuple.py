@@ -94,11 +94,7 @@ def BTW_tuple(
     c: tuple[int | float, ...] | int | float,
 ) -> bool:
     # first check if all inputs are non-tuples and return early
-    if (
-        not isinstance(a, tuple)
-        and not isinstance(b, tuple)
-        and not isinstance(c, tuple)
-    ):
+    if not isinstance(a, tuple) and not isinstance(b, tuple) and not isinstance(c, tuple):
         return a <= b and b <= c
     # next check if all inputs are same length tuples
     if isinstance(a, tuple) and isinstance(b, tuple) and isinstance(c, tuple):
@@ -110,14 +106,14 @@ def BTW_tuple(
     # now check if there is more than one tuple, and ensure they are the same length
     last_len: int = -1
     for elem in input_list:
-        if type(elem) == tuple:
+        if type(elem) is tuple:
             if last_len == -1:
                 last_len = len(elem)
             else:
                 assert len(elem) == last_len
     # now for all non-tuples, extend to target length tuple
     for i in range(3):
-        if type(input_list[i]) != tuple:
+        if type(input_list[i]) is not tuple:
             input_list[i] = tuple([input_list[i]] * last_len)
 
     # now compare
