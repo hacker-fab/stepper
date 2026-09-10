@@ -30,15 +30,12 @@ dev = [
 line-length = 100
 exclude = [
 	"src/camera/*",
-	"src/lib/*",
-	"src/hardware.py",
 	"src/dlpc.py"
 ]
 # Tell Ruff which Python version you are targeting
 target-version = "py310"
 
-[tool.ruff.lint]
-# Which rules to check. 
+[tool.ruff.lint] 
 # "E" = pycodestyle errors, "F" = pyflakes (unused imports, etc.), "I" = isort (import sorting)
 select = ["E", "F", "I"]
 
@@ -55,6 +52,6 @@ indent-style = "space"
 
 [tool.ty.src]
 # Explicitly tell it which folders to check
-include = ["src/gui.py"]
-# Which directories/files to skip
+include = ["src/*"]
+# Uncomment to specify Which directories/files to skip
 # exclude = ["<insert>"]

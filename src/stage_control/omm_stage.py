@@ -93,6 +93,11 @@ class OMMStage(StageController):
     def home(self):
         """Home all axes on the stage."""
         res = self.omm.home()
+
+        if self.omm.serial is None:
+            print("Serial interface is not initialized. Cannot home the stage.")
+            return
+
         if res == self.omm.serial.ReplyStatus.OK:
             self._update_position()
 

@@ -76,9 +76,7 @@ def process_img(image: Image.Image, settings: ImageProcessSettings) -> Image.Ima
 
     bg = Image.new("RGB", settings.size, "black")
 
-    if (
-        abs(settings.image_adjust[2]) > 0.01
-    ):  # 1/100th of a degree is effectively nothing
+    if abs(settings.image_adjust[2]) > 0.01:  # 1/100th of a degree is effectively nothing
         new_image = new_image.rotate(
             settings.image_adjust[2], Image.Resampling.BILINEAR, expand=True
         )

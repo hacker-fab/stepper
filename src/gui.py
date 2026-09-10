@@ -1,11 +1,13 @@
+import ctypes
 import json
 import math
 import os
-import platform
 import queue
 import shutil
+import sys
 import time
 import tkinter
+import tkinter as tk
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, auto
@@ -13,7 +15,7 @@ from functools import partial
 from pathlib import Path
 from tkinter import BooleanVar, IntVar, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.ttk import Progressbar
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 import cv2
 import numpy as np
@@ -33,11 +35,9 @@ from stage_control.omm_stage import OMMStage
 from stage_control.stage_controller import StageController
 
 # Enable DPI awareness on Windows before any Tk() call so the UI isn't tiny on HiDPI displays
-if platform.system() == "Windows":
+if sys.platform == "win32":
     try:
-        import ctypes
-
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # type: ignore[unresolved-attribute]
     except Exception:
         pass
 
@@ -115,7 +115,8 @@ def detect_alignment_markers(model, image, draw_rectangle=False):
 class StrAutoEnum(str, Enum):
     """Base class for string-valued enums that use auto()"""
 
-    def _generate_next_value_(name, *_):
+    @staticmethod
+    def _generate_next_value_(name: str, start: int, count: int, last_values: list[Any]) -> str:
         return name.lower()
 
 
@@ -805,7 +806,7 @@ class EventDispatcher:
                 nonlocal counter
                 if log:
                     log_file.write(f'{counter},{focus_score}\n')
-                    cv2.imwrite(f'aftest/img{counter}.png', self.camera_image, log=True)
+                    cv2.imwrite(f'aftest/img{counter}.png', self.camera_image)
                 counter += 1
                 return focus_score
 
@@ -1096,7 +1097,7 @@ class CameraFrame:
             camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale
         )
         gui_img = image_to_tk_image(Image.fromarray(resized_img, mode="RGB"))
-        self.label.configure(image=gui_img)  # type:ignore
+        self.label.configure(image=gui_img)
         self.gui_img = gui_img
 
 
@@ -1111,7 +1112,7 @@ class StagePositionFrame:
 
         self.position_intputs = []
         # Track all interactive widgets for locking
-        self.xy_widgets = []
+        self.xy_widgets: list[tk.Entry | tk.Canvas] = []
         self.z_widgets = []
 
         self.zlock = False
@@ -1189,7 +1190,7 @@ class StagePositionFrame:
         def on_position_change():
             pos = event_dispatcher.stage_setpoint
             for i in range(3):
-                self.position_intputs[i].set(pos[i])
+                self.position_intputs[i].set(int(pos[i]))
 
         event_dispatcher.add_event_listener(Event.STAGE_POSITION_CHANGED, on_position_change)
 
@@ -1225,7 +1226,8 @@ class StagePositionFrame:
         self.chip_unload_button.grid(row=0, column=1, padx=5)
 
     def _position(self) -> tuple[int, int, int]:
-        return tuple(intput.get() for intput in self.position_intputs)
+        p = self.position_intputs
+        return (int(p[0].get()), int(p[1].get()), int(p[2].get()))
 
     def create_custom_xyz_control(self, parent):
         """Create custom step size control"""
@@ -1287,7 +1289,7 @@ class StagePositionFrame:
         # formatting
         self.custom_step_size_label.grid(row=0, column=0)
         self.custom_step_size.widget.grid(row=0, column=1, sticky="ew")
-        self.custom_step_size.widget.config(width="10")
+        self.custom_step_size.widget.config(width=10)
         self.custom_step_pos_x_button.grid(row=1, column=0, sticky="ew")
         self.custom_step_neg_x_button.grid(row=1, column=1, sticky="ew")
         self.custom_step_pos_y_button.grid(row=2, column=0, sticky="ew")
@@ -1525,7 +1527,7 @@ class ImageAdjustFrame:
                 self.step_size_intputs.append(
                     FloatEntry(
                         parent=self.relative_frame,
-                        default=10.0,
+                        default=10,
                         min_value=0.0,
                         max_value=360.0,
                     )
@@ -1571,7 +1573,7 @@ class ImageAdjustFrame:
         def on_position_change():
             pos = event_dispatcher.image_adjust_position
             for i in range(3):
-                self.position_intputs[i].set(pos[i])
+                self.position_intputs[i].set(int(pos[i]))
 
         event_dispatcher.add_event_listener(Event.IMAGE_ADJUST_CHANGED, on_position_change)
 
@@ -1586,14 +1588,16 @@ class ImageAdjustFrame:
         event_dispatcher.add_event_listener(Event.MOVEMENT_LOCK_CHANGED, on_lock_change)
 
     def _position(self) -> tuple[int, int, int]:
-        return tuple(intput.get() for intput in self.position_intputs)
+        p = self.position_intputs
+        return (int(p[0].get()), int(p[1].get()), int(p[2].get()))
 
     def _set_position(self, pos: tuple[int, int, int]):
         for i in range(3):
-            self.position_intputs[i].set(pos[i])
+            self.position_intputs[i].set(int(pos[i]))
 
     def step_sizes(self) -> tuple[int, int, int]:
-        return tuple(intput.get() for intput in self.step_size_intputs)
+        s = self.step_size_intputs
+        return (int(s[0].get()), int(s[1].get()), int(s[2].get()))
 
 
 class PredefinedImageSelector:
@@ -1657,7 +1661,7 @@ class PredefinedImageSelector:
         current_directory = StringVar(value=str("~"))
         # checks need to be made before we allow user to do this
         dir_path = filedialog.askopenfilename(
-            initialdir=current_directory,
+            initialdir=current_directory.get(),
             filetypes=[("All Files", "*.*")],
             title="Select Custom Alignment Marks",
         )
@@ -2074,7 +2078,7 @@ class PatterningFrame:
     def __init__(self, parent, event_dispatcher: EventDispatcher):
         self.frame = ttk.Frame(parent)
 
-        self.preview_tile = ttk.Label(self.frame, text="Next Pattern Tile", compound="top")  # type:ignore
+        self.preview_tile = ttk.Label(self.frame, text="Next Pattern Tile", compound="top")
         self.preview_tile.grid(row=0, column=0)
 
         self.begin_patterning_button = ttk.Button(
@@ -2127,7 +2131,7 @@ class PatterningFrame:
     def set_image(self, img: Image.Image):
         # TODO: What is the correct size?
         self.thumb_image = image_to_tk_image(img.resize(THUMBNAIL_SIZE))
-        self.preview_tile.configure(image=self.thumb_image)  # type:ignore
+        self.preview_tile.configure(image=self.thumb_image)
 
 
 class RedModeFrame:
@@ -2470,7 +2474,7 @@ class GlobalSettingsFrame:
         self.placeholder_photo = image_to_tk_image(Image.new("RGB", THUMBNAIL_SIZE, "black"))
         self.photo = None
 
-        self.current_image = ttk.Label(self.frame, image=self.placeholder_photo)  # type:ignore
+        self.current_image = ttk.Label(self.frame, image=self.placeholder_photo)
         self.current_image.grid(row=4, column=0, columnspan=2)
 
         # Disable the autofocus button if autofocus is already running
@@ -2485,10 +2489,10 @@ class GlobalSettingsFrame:
         def shown_image_changed():
             img = event_dispatcher.current_image
             if img is None:
-                self.current_image.configure(image=self.placeholder_photo)  # type:ignore
+                self.current_image.configure(image=self.placeholder_photo)
             else:
                 photo = image_to_tk_image(img.resize(THUMBNAIL_SIZE, Image.Resampling.NEAREST))
-                self.current_image.configure(image=photo)  # type:ignore
+                self.current_image.configure(image=photo)
                 self.photo = photo
 
         event_dispatcher.add_event_listener(Event.SHOWN_IMAGE_CHANGED, shown_image_changed)
@@ -2752,8 +2756,8 @@ class TilingFrame:
 
             tile_count = 0
             # Set amount of tiles for later use when exposing
-            self.x_settings.amount_var = len(x_positions)
-            self.y_settings.amount_var = len(y_positions)
+            self.x_settings.amount_var.set(str(len(x_positions)))
+            self.y_settings.amount_var.set(str(len(y_positions)))
             # Crop and Save the tile images
             for tile_id_y, top in enumerate(y_positions):
                 for tile_id_x, left in enumerate(x_positions):
@@ -2840,12 +2844,12 @@ class TilingFrame:
         def on_begin():
             model.set_red_focus_source(RedFocusSource.PATTERN)
 
-            x_amount = self.x_settings.amount_var
+            x_amount = int(self.x_settings.amount_var.get())
             x_offset = int(self.x_settings.offset_var.get())
             x_dir = 1 if x_amount > 0 else -1
             x_amount = abs(x_amount)
 
-            y_amount = self.y_settings.amount_var
+            y_amount = int(self.y_settings.amount_var.get())
             y_offset = int(self.y_settings.offset_var.get())
             y_dir = 1 if y_amount > 0 else -1
             y_amount = abs(y_amount)
@@ -3054,7 +3058,7 @@ class TilingCheckFrame:
         display_img = display_img.resize((crop_x // 4, crop_y // 4), Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(display_img)
         self.preview_label.config(image=photo)
-        self.preview_label.image = photo
+        self.preview_label.image = photo  # type: ignore
 
     def capture_current_image(self):
         # Get the camera view from the event dispatcher
@@ -3528,8 +3532,9 @@ def main():
             index = 0
         camera = Webcam(index)
     elif camera_config["type"] == "flir":
-        import camera.flir.flir_camera as flir
+        import importlib
 
+        flir = importlib.import_module("camera.flir.flir_camera")  # type: ignore[unresolved-import]
         camera = flir.FlirCamera()
     elif camera_config["type"] in ("basler", "pylon"):
         from camera.pylon import BaslerPylon
@@ -3618,6 +3623,8 @@ def main():
                 except Exception as close_error:
                     print(f"ERROR: failed to close DLPC after startup failure: {close_error}")
             raise
+
+    assert camera is not None, "Camera must be initialized"
 
     lithographer_config = LithographerConfig(
         stage,
