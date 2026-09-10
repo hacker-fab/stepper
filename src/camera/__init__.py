@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 from typing import Any, Optional
 
-from camera.camera_module import CameraModule
+from camera.camera_module import CameraModule, DummyCamera
 
 
 def _check_webcam() -> tuple[bool, Optional[str]]:
@@ -71,6 +71,10 @@ CAMERA_REGISTRY: dict[str, dict[str, Any]] = {
     "amscope": {
         "description": "AmScope optical camera",
         "check": _check_amscope,
+    },
+    "dummy": {
+        "description": "Simulated dummy camera (test pattern)",
+        "check": lambda: (True, None),
     },
 }
 
@@ -143,6 +147,11 @@ def get_camera(camera_config: dict) -> Optional[CameraModule]:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize AmScope camera: {e}") from e
 
+    elif camera_type == "dummy":
+        width = int(camera_config.get("width", 640))
+        height = int(camera_config.get("height", 480))
+        return DummyCamera(width=width, height=height)
+
     else:
         print(f"Unknown camera type in configuration: '{camera_type}'. Disabling camera.")
         return None
@@ -150,6 +159,7 @@ def get_camera(camera_config: dict) -> Optional[CameraModule]:
 
 __all__ = [
     "CameraModule",
+    "DummyCamera",
     "get_available_camera_types",
     "get_camera",
 ]

@@ -1,174 +1,127 @@
-from abc import ABC
+from abc import ABC, abstractmethod
+from typing import Any, Callable, Optional
+import numpy as np
 
 
-# Using this abstract base class definition allows software testing of a "dummy" camera when no hardware is available
 class CameraModule(ABC):
-    __resolutionsModeA__ = [(40, 30), (800, 600)]  # 4:3 aspect ratio
-    __resolutionsModeB__ = [(45, 30), (900, 600)]  # 3:2 aspect ratio
-    __resolutionA__ = __resolutionsModeA__[0]
-    __resolutionB__ = __resolutionsModeB__[0]
+    """Abstract base class defining the common camera interface.
 
-    __active__ = False
+    Supports industrial cameras (e.g. Basler Pylon) and standard USB webcams.
+    """
 
-    __singleImageReady__ = False
-    __streamImageReady__ = False
-    __singleImage__ = None
-    __streamImage__ = None
+    def __init__(self):
+        self._stream_callback: Optional[Callable[[np.ndarray, int, str], None]] = None
 
-    __singleCaptureCallback__ = None
-    __streamCaptureCallback__ = None
+    @abstractmethod
+    def open(self) -> bool:
+        """Open the camera connection. Returns True on success."""
+        pass
 
-    __exposureTime__ = 20
-    __gain__ = 1
+    @abstractmethod
+    def close(self) -> bool:
+        """Close the camera connection and release resources. Returns True on success."""
+        pass
 
-    # set to None if no callback desired
-    def setSingleCaptureCallback(self, callback):
-        self.__singleCaptureCallback__ = callback
+    @abstractmethod
+    def is_open(self) -> bool:
+        """Return True if the camera connection is open and active."""
+        pass
 
-    # set to None if no callback desired
-    def setStreamCaptureCallback(self, callback):
-        self.__streamCaptureCallback__ = callback
-    
-    # value is in microseconds
-    def setExposureTime(self, value):
-        print(f'Adjusting exposure is unsupported (value {value})')
+    def isOpen(self) -> bool:
+        """Backwards compatibility alias for is_open()."""
+        return self.is_open()
 
-    # camera configuration functions (e.g. 'exposure_time', 'gain', 'image_mode', etc.)
-    def getSetting(self, settingName):
-        match settingName:
-            case "exposure_time":
-                return self.__exposureTime__
-            case "gain":
-                return self.__gain__
-            case other:
-                return None
+    @abstractmethod
+    def get_latest_frame(self) -> Optional[np.ndarray]:
+        """Fetch the most recent camera frame as a numpy array (BGR format), or None."""
+        pass
 
-    def setSetting(self, settingName, settingValue):  # returns true on success
-        result = False
-
-        match settingName:
-            case "exposure_time":
-                if (
-                    isinstance(settingValue, int) or isinstance(settingValue, float)
-                ) and settingValue >= 0:
-                    self.__exposureTime__ = settingValue
-                    result = True
-            case "gain":
-                if (
-                    isinstance(settingValue, int) or isinstance(settingValue, float)
-                ) and settingValue >= 0:
-                    self.__gain__ = settingValue
-                    result = True
-
-        return result
-
-    def getAvailableResolutions(self, mode=None):
-        match mode:
-            case "B":
-                return self.__resolutionsModeB__
-            case other:
-                return self.__resolutionsModeA__
-
-    def getResolution(self, mode=None):
-        match mode:
-            case "B":
-                return self.__resolutionB__
-            case other:
-                return self.__resolutionA__
-
-    def setResolution(self, resolution, mode=None):  # returns true on success
-        match mode:
-            case "B":
-                if resolution in self.__resolutionsModeB__:
-                    self.__resolutionB__ = resolution
-                    self.__streamImageReady__ = False
-                    return True
-            case other:
-                if resolution in self.__resolutionsModeA__:
-                    self.__resolutionA__ = resolution
-                    self.__singleImageReady__ = False
-                    return True
+    def set_exposure_time(self, value: float) -> bool:
+        """Set exposure time in microseconds. Returns True if supported and successful."""
         return False
 
-    # camera interfacing functions
-    def streamImageReady(self):  # returns bool
-        return self.__streamImageReady__
+    def setExposureTime(self, value: float) -> bool:
+        """Backwards compatibility alias for set_exposure_time()."""
+        return self.set_exposure_time(value)
 
-    def singleImageReady(self):  # returns bool
-        return self.__singleImageReady__
+    def get_exposure_time(self) -> Optional[float]:
+        """Get the current exposure time in microseconds, or None if unsupported."""
+        return None
 
-    def getSingleCaptureImage(self):
-        if singleImageReady():
-            return (self.__singleImage__, self.__resolutionA__, "RGB888")
-        else:
+    def setStreamCaptureCallback(
+        self, callback: Optional[Callable[[np.ndarray, int, str], None]]
+    ) -> None:
+        """Set callback for streaming frames: callback(frame, size, format)."""
+        self._stream_callback = callback
+
+    def startStreamCapture(self) -> bool:
+        """Start streaming capture. Returns True on success."""
+        if not self.is_open():
+            return self.open()
+        return True
+
+    def stopStreamCapture(self) -> bool:
+        """Stop streaming capture."""
+        return True
+
+    def getDeviceInfo(self, parameterName: str) -> Optional[str]:
+        """Return device information string for parameterName (e.g. 'name', 'vendor')."""
+        return None
+
+    def getSetting(self, setting_name: str) -> Any:
+        """Backwards compatibility for camera settings."""
+        if setting_name == "exposure_time":
+            return self.get_exposure_time()
+        return None
+
+    def setSetting(self, setting_name: str, setting_value: Any) -> bool:
+        """Backwards compatibility for camera settings."""
+        if setting_name == "exposure_time":
+            return self.set_exposure_time(setting_value)
+        return False
+
+
+class DummyCamera(CameraModule):
+    """Simulated camera generating synthetic test patterns for testing without hardware."""
+
+    def __init__(self, width: int = 640, height: int = 480):
+        super().__init__()
+        self.width = width
+        self.height = height
+        self._active = False
+        self._frame_count = 0
+        self._exposure_time = 20000.0
+
+    def open(self) -> bool:
+        self._active = True
+        return True
+
+    def close(self) -> bool:
+        self._active = False
+        return True
+
+    def is_open(self) -> bool:
+        return self._active
+
+    def get_latest_frame(self) -> Optional[np.ndarray]:
+        if not self._active:
             return None
+        self._frame_count += 1
+        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        shift = (self._frame_count * 4) % self.width
+        frame[:, :, 0] = np.linspace(0, 255, self.width, dtype=np.uint8)
+        frame[:, :, 1] = np.linspace(0, 255, self.height, dtype=np.uint8).reshape(-1, 1)
+        frame[:, shift : min(shift + 20, self.width), 2] = 255
+        return frame
 
-    def getStreamCaptureImage(self):
-        if streamImageReady():
-            return (self.__streamImage__, self.__resolutionB__, "RGB888")
-        else:
-            return None
-
-    def isOpen(self):  # returns bool
-        return self.__active__
-
-    def open(self):  # returns true on success
-        self.__active__ = True
+    def set_exposure_time(self, value: float) -> bool:
+        self._exposure_time = float(value)
         return True
 
-    def close(self):  # returns true on success
-        self.__active__ = False
-        self.__singleImageReady__ = False
-        self.__streamImageReady__ = False
-        del self.__singleImage__
-        del self.__streamImage__
-        return True
+    def get_exposure_time(self) -> Optional[float]:
+        return self._exposure_time
 
-    def startSingleCapture(self):  # returns true on success
-        if not self.__active__:
-            return False
-
-        self.__singleImageReady__ = False
-        self.__singleImage__ = [0x00, 0xBF, 0xFF] * (
-            self.__resolutionA__[0] * self.__resolutionA__[1]
-        )
-        self.__singleImageReady__ = True
-
-        if self.__singleCaptureCallback__ is not None:
-            self.__singleCaptureCallback__(
-                self.__singleImage__, self.__resolutionA__, "RGB888"
-            )
-
-        return True
-
-    def startStreamCapture(self, iterations=10):  # returns true on success
-        if not self.__active__:
-            return False
-
-        for i in range(0, iterations):
-            self.__streamImageReady__ = False
-            self.__streamImage__ = [0x00, 0xFF, 0xFF] * (
-                self.__resolutionB__[0] * self.__resolutionB__[1]
-            )
-            self.__streamImageReady__ = True
-
-            if self.__streamCaptureCallback__ is not None:
-                self.__streamCaptureCallback__(
-                    self.__streamImage__, self.__resolutionB__, "RGB888"
-                )
-
-        return True
-
-    def stopSingleCapture(self):  # returns true on success
-        return True
-
-    def stopStreamCapture(self):  # returns true on success
-        return True
-
-    # camera description function (e.g. name, vendor, model number, etc.)
-    def getDeviceInfo(self, parameterName):
-        match parameterName:
-            case "name":
-                return "DummyCamera"
-            case other:
-                return None
+    def getDeviceInfo(self, parameterName: str) -> Optional[str]:
+        if parameterName == "name":
+            return "DummyCamera"
+        return None

@@ -47,6 +47,10 @@ class CameraViewWidget(QWidget):
         self.last_fps_time = time.time()
         self.current_fps = 0.0
 
+        if self.camera and not self.camera.is_open():
+            if not self.camera.open():
+                print("Warning: Camera failed to open")
+
         self._init_ui()
 
         # Camera polling timer (approx 30 FPS)
@@ -103,11 +107,29 @@ class CameraViewWidget(QWidget):
         print(f"Saved snapshot to {filename}")
         self.bridge.status_message.emit(f"Snapshot saved: {filename.name}")
 
+    def cleanup(self):
+        if hasattr(self, "timer") and self.timer.isActive():
+            self.timer.stop()
+        if self.camera and self.camera.is_open():
+            try:
+                self.camera.close()
+            except Exception as e:
+                print(f"Error closing camera: {e}")
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
+
     def _fetch_frame(self):
         if not self.camera:
             return
 
-        frame = self.camera.get_latest_frame()
+        try:
+            frame = self.camera.get_latest_frame()
+        except Exception as e:
+            print(f"Error fetching camera frame: {e}")
+            return
+
         if frame is None:
             return
 

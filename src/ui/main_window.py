@@ -230,6 +230,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._save_dock_layout()
+        if hasattr(self, "camera_widget") and self.camera_widget is not None:
+            try:
+                self.camera_widget.cleanup()
+            except Exception as e:
+                print(f"Error cleaning up camera widget: {e}")
         # Auto-close projector window if open
         if hasattr(self.engine, "hardware") and hasattr(self.engine.hardware, "projector"):
             proj = self.engine.hardware.projector

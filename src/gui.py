@@ -1,7 +1,6 @@
 """Entry point for the Hacker Fab Stepper V2 application using PySide6."""
 
 import os
-import platform
 import shutil
 import sys
 from pathlib import Path
