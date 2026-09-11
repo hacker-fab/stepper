@@ -1,15 +1,28 @@
 import threading
+import time
+from typing import Optional
 
-from pypylon import pylon
+import numpy as np
+
+try:
+    from pypylon import pylon
+except ImportError:
+    pylon = None
 
 from camera.camera_module import CameraModule
+from core.events import Event
 
 
 class BaslerPylon(CameraModule):
-    def __init__(self, index):
-        # Create an instant camera object
-        # index in config file specifies which device to use
-        # in the case that there are multiple cameras connected
+    """Basler industrial camera interface using PyPylon."""
+
+    def __init__(self, index: int = 0):
+        super().__init__()
+        if pylon is None:
+            raise RuntimeError(
+                "Failed to initialize Basler camera: 'pypylon' is not installed. "
+                "Install with: pip install '.[basler]' or pip install pypylon"
+            )
 
         tl_factory = pylon.TlFactory.GetInstance()
         devices = tl_factory.EnumerateDevices()
@@ -20,80 +33,154 @@ class BaslerPylon(CameraModule):
             return
 
         self.camera = pylon.InstantCamera(
-            pylon.TlFactory.GetInstance().CreateDevice(devices[index])
+            tl_factory.CreateDevice(devices[index])
         )
 
-        self.capture_thread = None
+        self.capture_thread: Optional[threading.Thread] = None
         self.should_stop = threading.Event()
+        self._lock = threading.Lock()
+        self._latest_frame: Optional[np.ndarray] = None
+        self.converter = None
 
-    def setExposureTime(self, value):
-        self.camera.ExposureTime.Value = value
+    def __del__(self):
+        self.close()
 
-    def open(self):
+    def is_open(self) -> bool:
+        return self.camera is not None and self.camera.IsOpen()
+
+    def open(self) -> bool:
+        if self.camera is None:
+            return False
+        if self.is_open():
+            return True
+
         self.camera.Open()
-
-        # Print the model name of the camera.
         print("Using device ", self.camera.GetDeviceInfo().GetModelName())
 
-        # self.camera.ExposureMode = pylon.ExposureMode_Timed
         self.camera.ExposureTime.Value = 8333.0
-
-        # self.camera.AcquisitionFrameRateEnable = True
         self.camera.AcquisitionFrameRate.Value = 30.0
 
-        # demonstrate some feature access
         new_width = self.camera.Width.Value - self.camera.Width.Inc
         if new_width >= self.camera.Width.Min:
             self.camera.Width.Value = new_width
 
         self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
         self.converter = pylon.ImageFormatConverter()
-
-        self.converter.OutputPixelFormat = pylon.PixelType_RGB8packed
+        self.converter.OutputPixelFormat = pylon.PixelType_BGR8packed
         self.converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+
+        self.should_stop.clear()
+        self.capture_thread = threading.Thread(
+            target=self._capture_loop, name="PylonCaptureThread", daemon=True
+        )
+        self.capture_thread.start()
         return True
 
-    def close(self):
+    def close(self) -> bool:
         self.should_stop.set()
-        if self.camera.IsOpen():
+        if self.camera is not None and self.camera.IsOpen():
             print("Stopping camera")
-            self.camera.StopGrabbing()
-            print("Stopped grabbing")
-            self.camera.Close()
+            try:
+                if self.camera.IsGrabbing():
+                    self.camera.StopGrabbing()
+                self.camera.Close()
+            except Exception as e:
+                print(f"Error closing Basler camera: {e}")
             print("Closed camera")
+
         if self.capture_thread is not None:
-            self.capture_thread.join()
+            self.capture_thread.join(timeout=1.0)
+            self.capture_thread = None
             print("Joined capture thread")
 
+        with self._lock:
+            self._latest_frame = None
+
         return True
 
-    def startStreamCapture(self):
-        self.should_stop.clear()
-
-        def capture_thread():
-            while self.camera.IsGrabbing() and not self.should_stop.is_set():
-                # Wait for an image and then retrieve it. A timeout of 5000 ms is used.
-
+    def _capture_loop(self):
+        while self.camera is not None and self.camera.IsGrabbing() and not self.should_stop.is_set():
+            try:
                 grabResult = self.camera.RetrieveResult(
-                    5000, pylon.TimeoutHandling_ThrowException
+                    1000, pylon.TimeoutHandling_Return
                 )
+            except Exception as e:
+                if self.should_stop.is_set():
+                    break
+                print(f"Pylon grab exception: {e}")
+                continue
 
-                # Image grabbed successfully?
-                if grabResult.GrabSucceeded():
-                    # Access the image data.
-                    image = self.converter.Convert(grabResult)
-                    frame = image.GetArray()
-                    assert self.__streamCaptureCallback__ is not None
-                    self.__streamCaptureCallback__(frame, frame.size, "RGB888")
-                else:
+            if grabResult is None:
+                continue
+
+            if grabResult.GrabSucceeded():
+                image = self.converter.Convert(grabResult)
+                frame = image.GetArray()
+                with self._lock:
+                    self._latest_frame = frame
+
+                if self.event_bus is not None:
+                    self.event_bus.emit(Event.CAMERA_FRAME_READY, frame)
+
+                if self._stream_callback is not None:
+                    try:
+                        self._stream_callback(frame, frame.size, "BGR888")
+                    except Exception as e:
+                        print(f"Pylon stream callback error: {e}")
+            else:
+                if not self.should_stop.is_set():
                     print("Error: ", grabResult.ErrorCode, grabResult.ErrorDescription)
-                grabResult.Release()
+            grabResult.Release()
 
-            print("Exited the loop!")
+        print("Exited Pylon capture loop")
 
-        if self.capture_thread is None and self.__streamCaptureCallback__ is not None:
-            self.capture_thread = threading.Thread(target=capture_thread)
-            self.capture_thread.start()
-            return True
+    def get_latest_frame(self) -> Optional[np.ndarray]:
+        if not self.is_open():
+            if not self.open():
+                return None
 
+        with self._lock:
+            if self._latest_frame is None:
+                return None
+            return self._latest_frame.copy()
+
+    def set_exposure_time(self, value: float) -> bool:
+        if self.camera is not None and self.camera.IsOpen():
+            try:
+                self.camera.ExposureTime.Value = float(value)
+                return True
+            except Exception as e:
+                print(f"Failed to set exposure time: {e}")
+                return False
         return False
+
+    def get_exposure_time(self) -> Optional[float]:
+        if self.camera is not None and self.camera.IsOpen():
+            try:
+                return float(self.camera.ExposureTime.Value)
+            except Exception:
+                return None
+        return None
+
+    def startStreamCapture(self) -> bool:
+        if not self.is_open():
+            return self.open()
+        return True
+
+    def stopStreamCapture(self) -> bool:
+        return True
+
+    def get_device_info(self, parameter_name: str) -> Optional[str]:
+        if self.camera is None:
+            return None
+        try:
+            device_info = self.camera.GetDeviceInfo()
+            match parameter_name:
+                case "name":
+                    return device_info.GetModelName()
+                case "vendor":
+                    return device_info.GetVendorName()
+                case other:
+                    return None
+        except Exception:
+            return None

@@ -3,40 +3,43 @@
 # Stage Controller Interface
 
 
+from core.engine_module import EngineModule
+from abc import ABC, abstractmethod
+from typing import Optional
+
+
 class UnsupportedCommand(Exception):
     pass
 
 
 # This will be an abstract interface for stage positioning.
-class StageController:
-    def has_homing(self):
-        return False
+class StageController(EngineModule):
 
-    def home(self):
-        print("ignoring home() in dummy_stage controller")
+    def __init__(self):
+        super().__init__()
 
-    def move_relative(self, microns: dict[str, float]):
-        print(f"ignoring move_relative {microns} in dummy_stage controller")
+    @abstractmethod
+    def has_homing(self) -> bool:
+        pass
 
-    def move_absolute(self, microns: dict[str, float]):
-        print(f"ignoring move_absolute {microns} in dummy_stage controller")
+    @abstractmethod
+    def home(self) -> bool:
+        pass
 
-    def soft_reset(self):
-        print("ignoring soft_reset in dummy_stage controller")
+    @abstractmethod
+    def move_relative(self, microns: dict[str, float]) -> bool:
+        pass
 
-    def set_on_start_location(self):
-        print("ignoring set_on_start_location in dummy_stage controller")
+    @abstractmethod
+    def move_absolute(self, microns: dict[str, float]) -> bool:
+        pass
 
-    def get_autofocus(self):
-        print("ignoring get_autofocus in dummy_stage controller")
+    @abstractmethod
+    def get_position(self) -> tuple[float, float, float]:
+        pass
 
-    def get_position(self):
-        print("ignoring get_position in dummy_stage controller")
-        return (0.0, 0.0, 0.0)
+    @abstractmethod
+    def get_bounds(self) -> Optional[dict[str, tuple[float, float]]]:
+        pass
 
-    def get_on_start_location(self):
-        print("ignoring get_on_start_location in dummy_stage controller")
 
-    def get_bounds(self) -> dict[str, tuple[float, float]]:
-        print("ignoring get_bounds in dummy_stage controller")
-        return {}
