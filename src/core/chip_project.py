@@ -239,6 +239,50 @@ class ChipLayer:
             return tiles[index]
         return tiles[0]
 
+    def get_tiling_path(
+        self,
+        project_settings: PatterningSettings,
+        start_pos: Tuple[float, float] = (0.0, 0.0),
+    ) -> List[Tuple[float, float]]:
+        """Calculates the list of stage coordinates for each tile in snake order."""
+        eff = self.get_effective_settings(project_settings)
+        if not eff.tiling_enabled:
+            return [(start_pos[0], start_pos[1])]
+
+        pattern = self.get_pattern_image()
+        if pattern is None:
+            return [(start_pos[0], start_pos[1])]
+
+        from lib.tiling import (
+            calculate_tile_position,
+            generate_snake_sequence,
+            split_image_into_tiles,
+        )
+
+        _, x_count, y_count = split_image_into_tiles(
+            pattern,
+            tile_width=eff.tile_width,
+            tile_height=eff.tile_height,
+            overlap_x=eff.overlap_x,
+            overlap_y=eff.overlap_y,
+        )
+
+        snake_coords = generate_snake_sequence(x_count, y_count)
+        path: List[Tuple[float, float]] = []
+        for x_idx, y_idx in snake_coords:
+            tx, ty = calculate_tile_position(
+                start_pos[0],
+                start_pos[1],
+                1,
+                1,
+                x_idx,
+                y_idx,
+                eff.pitch_x,
+                eff.pitch_y,
+            )
+            path.append((tx, ty))
+        return path
+
     def get_effective_settings(self, project_settings: PatterningSettings) -> PatterningSettings:
         """Resolves effective settings for this layer by applying overrides on top of project defaults."""
         return PatterningSettings(
@@ -385,6 +429,9 @@ class ChipProject:
     def get_active_layer_tile_count(self, projector_size: Tuple[int, int] = (1920, 1080)) -> int:
         tiles = self.active_layer.get_tiles(self.settings, projector_size)
         return len(tiles)
+
+    def get_tiling_path(self, start_pos: Tuple[float, float] = (0.0, 0.0)) -> List[Tuple[float, float]]:
+        return self.active_layer.get_tiling_path(self.settings, start_pos)
 
     def render_for_projector(
         self,

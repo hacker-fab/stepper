@@ -10,10 +10,11 @@ from core.operation import ExecutionContext, Operation
 class ExposureOperation(Operation):
     """Exposes a single layer mask for a defined duration."""
 
-    def __init__(self, layer_index: int, settings: PatterningSettings):
+    def __init__(self, layer_index: int, settings: PatterningSettings, tile_index: Optional[int] = None):
         super().__init__("Layer Exposure")
         self.layer_index = layer_index
         self.settings = settings
+        self.tile_index = tile_index
 
     def execute(self, context: ExecutionContext, report_progress: Callable[[float, str], None]) -> Optional[str]:
         duration_ms = self.settings.exposure_time
@@ -25,7 +26,8 @@ class ExposureOperation(Operation):
         try:
             report_progress(0.0, f"Starting exposure ({int(duration_ms)} ms)...")
             context.project.select_layer(self.layer_index)
-            context.project.select_tile(0)
+            if self.tile_index is not None:
+                context.project.select_tile(self.tile_index)
             context.projector.set_image_source(ProjectorImageSource.ACTIVE_LAYER)
             context.projector.set_color_mode(ColorMode.UV)
 

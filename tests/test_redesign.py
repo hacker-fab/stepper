@@ -753,6 +753,73 @@ class TestExposureColorModeAndTilingUpdates(unittest.TestCase):
         layer.regenerate_tiles()
         self.assertEqual(len(events_received), 5)
 
+    def test_tiled_exposure_exact_sequence(self):
+        from unittest.mock import patch
+
+        actions = []
+        engine = self._create_engine()
+        layer = engine.project.active_layer
+        layer.get_tiling_path = lambda settings, start_pos: [(10.0, 20.0), (30.0, 40.0)]
+
+        orig_set_color = engine.projector.set_color_mode
+        def spy_set_color(mode):
+            actions.append(("projector_color", mode))
+            return orig_set_color(mode)
+        engine.projector.set_color_mode = spy_set_color
+
+        orig_set_src = engine.projector.set_image_source
+        def spy_set_src(src):
+            actions.append(("projector_src", src))
+            return orig_set_src(src)
+        engine.projector.set_image_source = spy_set_src
+
+        orig_select_tile = engine.project.select_tile
+        def spy_select_tile(idx):
+            actions.append(("select_tile", idx))
+            return orig_select_tile(idx)
+        engine.project.select_tile = spy_select_tile
+
+        orig_move_abs = engine.stage.move_absolute
+        def spy_move_abs(coords):
+            actions.append(("stage_move", coords))
+            return orig_move_abs(coords)
+        engine.stage.move_absolute = spy_move_abs
+
+        with patch("operations.tiling.AutofocusOperation.execute") as mock_af, \
+             patch("operations.tiling.ExposureOperation.execute") as mock_exp:
+            mock_af.side_effect = lambda ctx, prog: actions.append(("autofocus",))
+            mock_exp.side_effect = lambda ctx, prog: actions.append(("exposure",))
+
+            engine.projector.set_color_mode(ColorMode.DISABLE)
+            actions.clear()
+
+            op = TiledExposureOperation(layer_index=0, settings=engine.project.settings)
+            err = op.execute(engine.context, lambda p, m: None)
+            self.assertIsNone(err)
+
+        expected_sequence = [
+            # Tile 0
+            ("projector_color", ColorMode.DISABLE),
+            ("stage_move", {"x": 10.0, "y": 20.0}),
+            ("select_tile", 0),
+            ("projector_src", ProjectorImageSource.ACTIVE_LAYER),
+            ("projector_color", ColorMode.RED),
+            ("autofocus",),
+            ("exposure",),
+            # Tile 1
+            ("projector_color", ColorMode.DISABLE),
+            ("stage_move", {"x": 30.0, "y": 40.0}),
+            ("select_tile", 1),
+            ("projector_src", ProjectorImageSource.ACTIVE_LAYER),
+            ("projector_color", ColorMode.RED),
+            ("autofocus",),
+            ("exposure",),
+            # Final restoration
+            ("projector_color", ColorMode.DISABLE),
+        ]
+        self.assertEqual(actions, expected_sequence)
+
 
 if __name__ == "__main__":
     unittest.main()
+

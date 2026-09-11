@@ -1,20 +1,11 @@
-import os
-import time
-from datetime import datetime
-from typing import Callable, List, Optional, Tuple
-from PIL import Image
+from typing import Callable, Optional
 
 from core.chip_project import PatterningSettings
-from core.events import ColorMode, Event, ProjectorImageSource
-from core.operation import Operation, ExecutionContext
-from operations.movement import JogOperation
+from core.events import ColorMode, ProjectorImageSource
+from core.operation import ExecutionContext, Operation
 from operations.autofocus import AutofocusOperation
-from lib.tiling import (
-    calculate_tile_position,
-    generate_snake_sequence,
-    split_image_into_tiles,
-    split_image_with_overlap,
-)
+from operations.exposure import ExposureOperation
+from operations.movement import JogOperation
 
 
 class TiledExposureOperation(Operation):
@@ -24,79 +15,111 @@ class TiledExposureOperation(Operation):
         super().__init__("Tiled Exposure")
         self.layer_index = layer_index
         self.settings = settings
+        self._current_sub_op: Optional[Operation] = None
+
+    def abort(self):
+        super().abort()
+        if self._current_sub_op is not None:
+            self._current_sub_op.abort()
 
     def execute(self, context: ExecutionContext, report_progress: Callable[[float, str], None]) -> Optional[str]:
         if context.project is None or self.layer_index >= len(context.project.layers):
             return "Invalid project or layer index"
-        layer = context.project.layers[self.layer_index]
+
         context.project.select_layer(self.layer_index)
+        layer = context.project.layers[self.layer_index]
 
-        s = self.settings
-        x_count = max(1, int(s.tile_width // 1000)) if s.tile_width else 3
-        y_count = max(1, int(s.tile_height // 1000)) if s.tile_height else 3
-        x_pitch = s.pitch_x
-        y_pitch = s.pitch_y
-        duration_ms = s.exposure_time
-
-        seq = generate_snake_sequence(x_count, y_count)
-        total_tiles = len(seq)
+        # 1. Get the tiling path for the active layer
         pos = context.stage.get_position()
-        x_start, y_start = pos[0], pos[1]
+        start_pos = (pos[0], pos[1])
+        tiling_path = layer.get_tiling_path(self.settings, start_pos=start_pos)
+        total_tiles = len(tiling_path)
+
+        if total_tiles == 0:
+            report_progress(1.0, "No tiles to expose")
+            return None
 
         report_progress(0.0, f"Beginning tiled exposure ({total_tiles} tiles)...")
 
         prev_color_mode = context.projector.color_mode
         try:
-            for i, (x_idx, y_idx) in enumerate(seq):
+            for tile_idx, (tx, ty) in enumerate(tiling_path):
                 if self.is_aborted:
                     break
 
-                pct_base = i / total_tiles
+                pct_base = tile_idx / total_tiles
+                pct_step = 1.0 / total_tiles
+
+                # Step 1: Set the projector to black
+                context.projector.set_color_mode(ColorMode.DISABLE)
+
+                # Step 2: Move to the position
                 report_progress(
                     pct_base,
-                    f"Tile {i + 1}/{total_tiles} ({x_idx}, {y_idx}) - Moving stage...",
+                    f"Tile {tile_idx + 1}/{total_tiles} - Moving stage to ({tx:.1f}, {ty:.1f})...",
                 )
-
-                # Move stage if not initial tile via direct JogOperation execution
-                if not (x_idx == 0 and y_idx == 0):
-                    tx, ty = calculate_tile_position(
-                        x_start, y_start, 1, 1, x_idx, y_idx, x_pitch, y_pitch
-                    )
-                    jog_op = JogOperation({"x": tx, "y": ty}, relative=False)
-                    jog_op.execute(context, lambda p, m: None)
-
-                if self.is_aborted:
+                jog_op = JogOperation({"x": tx, "y": ty}, relative=False)
+                err = self._run_sub_op(jog_op, context, lambda p, m: None)
+                if err or self.is_aborted:
                     break
 
-                # Red autofocus via direct AutofocusOperation execution
-                report_progress(pct_base, f"Tile {i + 1}/{total_tiles} - Autofocusing...")
-                af_op = AutofocusOperation(blue_only=False)
-                af_op.execute(context, lambda p, m: None)
+                # Step 3: Set the active tile
+                context.project.select_tile(tile_idx)
 
-                if self.is_aborted:
-                    break
-
-                # Expose tile
-                report_progress(pct_base, f"Tile {i + 1}/{total_tiles} - Exposing...")
-                context.project.select_tile(i)
+                # Step 4: Source to active layer
                 context.projector.set_image_source(ProjectorImageSource.ACTIVE_LAYER)
-                context.projector.set_color_mode(ColorMode.UV)
 
-                end_t = time.time() + (duration_ms / 1000.0)
-                while time.time() < end_t:
-                    if self.is_aborted:
-                        break
-                    context.delay_func(0.02)
+                # Step 5: Set projector to red and run auto focus
+                context.projector.set_color_mode(ColorMode.RED)
+                report_progress(
+                    pct_base + 0.3 * pct_step,
+                    f"Tile {tile_idx + 1}/{total_tiles} - Autofocusing...",
+                )
+                af_op = AutofocusOperation(blue_only=False)
+                err = self._run_sub_op(af_op, context, lambda p, m: None)
+                if err or self.is_aborted:
+                    break
 
-                context.projector.set_color_mode(ColorMode.DISABLE)
+                # Step 6: Then, do an exposure
+                report_progress(
+                    pct_base + 0.6 * pct_step,
+                    f"Tile {tile_idx + 1}/{total_tiles} - Exposing...",
+                )
+                exp_op = ExposureOperation(
+                    layer_index=self.layer_index,
+                    settings=self.settings,
+                    tile_index=tile_idx,
+                )
+                err = self._run_sub_op(
+                    exp_op,
+                    context,
+                    lambda p, m: report_progress(
+                        pct_base + (0.6 + 0.4 * p) * pct_step,
+                        f"Tile {tile_idx + 1}/{total_tiles} - {m}",
+                    ),
+                )
+                if err or self.is_aborted:
+                    break
         finally:
             context.projector.set_color_mode(prev_color_mode)
 
-        if context.event_bus:
-            context.event_bus.emit(Event.PROJECT_CHANGED, context.project)
         if self.is_aborted:
             report_progress(1.0, "Tiled exposure aborted")
             return "Tiled exposure aborted"
         else:
             report_progress(1.0, "Tiled exposure complete")
             return None
+
+    def _run_sub_op(
+        self,
+        op: Operation,
+        context: ExecutionContext,
+        progress_cb: Callable[[float, str], None],
+    ) -> Optional[str]:
+        if self.is_aborted:
+            return "Aborted"
+        self._current_sub_op = op
+        try:
+            return op.execute(context, progress_cb)
+        finally:
+            self._current_sub_op = None

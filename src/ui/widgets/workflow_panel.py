@@ -27,7 +27,6 @@ from core.chip_project import ChipLayer, PatterningSettings
 from core.engine import StepperEngine
 from core.events import Event
 from operations import ExposureOperation, TiledExposureOperation
-from operations.tiling import split_image_with_overlap
 from ui.bridge import QtEngineBridge
 
 
