@@ -1,3 +1,4 @@
+from typing import Optional
 from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
@@ -34,11 +35,10 @@ class ProjectorPreviewWidget(QWidget):
         layout.addWidget(self.canvas, stretch=1)
 
         # Connect signals
-        self.bridge.shown_image_changed.connect(self._on_image_changed)
-        self.bridge.pattern_image_changed.connect(lambda: self.canvas.update())
-        self.bridge.image_adjust_changed.connect(lambda: self.canvas.update())
+        self.bridge.projector_image_changed.connect(self._on_image_changed)
 
-    def _on_image_changed(self, shown_image: ShownImage):
+    def _on_image_changed(self, shown_image: Optional[ShownImage] = None):
+        current_mode = shown_image if isinstance(shown_image, ShownImage) else self.engine.projector.mode
         labels = {
             ShownImage.CLEAR: "Output: Clear (No UV/Red)",
             ShownImage.PATTERN: "Output: Pattern (UV Active)",
@@ -46,7 +46,7 @@ class ProjectorPreviewWidget(QWidget):
             ShownImage.UV_FOCUS: "Output: UV Focus Pattern",
             ShownImage.FLATFIELD: "Output: Flatfield Calibration",
         }
-        self.mode_label.setText(labels.get(shown_image, str(shown_image)))
+        self.mode_label.setText(labels.get(current_mode, str(current_mode)))
         self.canvas.update()
 
 
@@ -60,7 +60,7 @@ class ProjectorCanvas(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#000000"))
 
-        img = self.parent_view.engine.current_image
+        img = self.parent_view.engine.projector.current_image
         if img is not None:
             # Convert PIL Image to QPixmap
             if img.mode != "RGBA":

@@ -1,20 +1,27 @@
 from typing import Optional, Tuple
 from PIL import Image
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import QLabel, QMainWindow
 
 from projector import ProjectorController
 
 
-class QtProjector(QMainWindow, ProjectorController):
+class QtProjectorMeta(type(QMainWindow), type(ProjectorController)):
+    pass
+
+
+class QtProjector(QMainWindow, ProjectorController, metaclass=QtProjectorMeta):
     """Full-screen projector window implemented in PySide6.
 
     Displays projected mask patterns on the secondary monitor (or falls back to primary).
     """
 
+    _sig_update = Signal(object)
+
     def __init__(self, title: str = "Projector", background_color: str = "#000000"):
         super().__init__()
+        ProjectorController.__init__(self)
         self.setWindowTitle(title)
         self.setStyleSheet(f"background-color: {background_color};")
 
@@ -22,6 +29,8 @@ class QtProjector(QMainWindow, ProjectorController):
         self.label = QLabel(self)
         self.label.setAlignment(Qt.AlignCenter)
         self.setCentralWidget(self.label)
+
+        self._sig_update.connect(self._handle_update)
 
         # Place on secondary screen if multiple screens exist
         screens = QGuiApplication.screens()
@@ -48,13 +57,19 @@ class QtProjector(QMainWindow, ProjectorController):
         qimage = QImage(data, image.width, image.height, QImage.Format_RGBA8888)
         return QPixmap.fromImage(qimage)
 
+    def _handle_update(self, image: Optional[Image.Image]):
+        if image is None:
+            w, h = self.size()
+            pixmap = QPixmap(w, h)
+            pixmap.fill(QColor("black"))
+            self.label.setPixmap(pixmap)
+        else:
+            pixmap = self._pil_to_pixmap(image)
+            self.label.setPixmap(pixmap)
+
     def show(self, image: Image.Image):
-        pixmap = self._pil_to_pixmap(image)
-        self.label.setPixmap(pixmap)
+        self._sig_update.emit(image)
 
     def clear(self):
-        w, h = self.size()
-        pixmap = QPixmap(w, h)
-        pixmap.fill(QColor("black"))
-        self.label.setPixmap(pixmap)
+        self._sig_update.emit(None)
 

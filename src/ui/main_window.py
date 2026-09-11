@@ -9,27 +9,25 @@ from PySide6.QtWidgets import (
 )
 
 from core.engine import StepperEngine
-from core.lithography import LithographerConfig
 from ui.bridge import QtEngineBridge
 from ui.widgets import (
     ActivityRibbonWidget,
     CameraViewWidget,
-    DataPanelWidget,
-    ProcessControlPanelWidget,
+    MachineControlPanelWidget,
     ProjectorPreviewWidget,
     StageMapWidget,
-    StatusPanelWidget,
+    WorkflowPanelWidget,
 )
 
 
 class MainWindow(QMainWindow):
     """Main Application Window for Hacker Fab Stepper V2 using PySide6 QDockWidgets."""
 
-    def __init__(self, config: LithographerConfig, engine: StepperEngine, bridge: QtEngineBridge):
+    def __init__(self, engine: StepperEngine, bridge: QtEngineBridge, camera_scale: float = 1.0):
         super().__init__()
-        self.config = config
         self.engine = engine
         self.bridge = bridge
+        self.camera_scale = camera_scale
 
         self.setWindowTitle("Hacker Fab - Stepper V2")
         self.resize(1400, 900)
@@ -60,6 +58,7 @@ class MainWindow(QMainWindow):
         self.bridge.warning_emitted.connect(self._show_warning_dialog)
 
     def _apply_theme(self):
+        # return
         self.setStyleSheet(
             """
             QMainWindow {
@@ -145,7 +144,6 @@ class MainWindow(QMainWindow):
         dock = QDockWidget(title, self)
         dock.setObjectName(obj_name)
         dock.setWidget(widget)
-        # Explicitly movable and floatable, NOT closable per user instruction
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         return dock
 
@@ -155,7 +153,7 @@ class MainWindow(QMainWindow):
         self.dock_map = self._create_dock("Stage Map", self.stage_map_widget, "dock_stage_map")
 
         self.camera_widget = CameraViewWidget(
-            self.engine, self.bridge, self.config.camera, self.config.camera_scale, self
+            self.engine, self.bridge, self.engine.camera, self.camera_scale, self
         )
         self.dock_camera = self._create_dock("Camera View", self.camera_widget, "dock_camera")
 
@@ -164,18 +162,15 @@ class MainWindow(QMainWindow):
             "Projector Preview", self.projector_preview_widget, "dock_projector_preview"
         )
 
-        # Bottom Row Widgets
-        self.data_panel_widget = DataPanelWidget(self.engine, self.bridge, self)
-        self.dock_data = self._create_dock("Data & Files", self.data_panel_widget, "dock_data")
-
-        self.process_panel_widget = ProcessControlPanelWidget(self.engine, self.bridge, self)
-        self.dock_process = self._create_dock(
-            "Process & Actions", self.process_panel_widget, "dock_process"
+        # Bottom Row Widgets: (project | layer | action) and (machine control)
+        self.workflow_panel_widget = WorkflowPanelWidget(self.engine, self.bridge, self)
+        self.dock_workflow = self._create_dock(
+            "Workflow (Project | Layer | Action)", self.workflow_panel_widget, "dock_workflow"
         )
 
-        self.status_panel_widget = StatusPanelWidget(self.engine, self.bridge, self)
-        self.dock_status = self._create_dock(
-            "Status & Logs", self.status_panel_widget, "dock_status"
+        self.machine_control_widget = MachineControlPanelWidget(self.engine, self.bridge, self)
+        self.dock_machine = self._create_dock(
+            "Machine Control", self.machine_control_widget, "dock_machine"
         )
 
     def _setup_menus(self):
@@ -196,28 +191,27 @@ class MainWindow(QMainWindow):
         status_bar = QStatusBar(self)
         self.setStatusBar(status_bar)
 
-        stage_status = "Stage: Connected" if self.engine.hardware.stage else "Stage: None"
-        cam_status = "Camera: Active" if self.config.camera else "Camera: None"
-        dlpc_status = "DLPC: Ready" if self.config.dlpc else "DLPC: None"
+        stage_status = "Stage: Connected" if self.engine.stage else "Stage: None"
+        cam_status = "Camera: Active" if self.engine.camera else "Camera: None"
+        dlpc_status = "DLPC: Ready" if self.engine.dlpc else "DLPC: None"
 
         status_bar.showMessage(f"{stage_status}  |  {cam_status}  |  {dlpc_status}")
 
     def _reset_dock_layout(self):
-        """Places the 6 docks in the default 3-top / 3-bottom configuration."""
+        """Places the docks in the 3-top / 2-bottom (project|layer|action + machine control) configuration."""
         # Top Row
         self.addDockWidget(Qt.TopDockWidgetArea, self.dock_map)
         self.splitDockWidget(self.dock_map, self.dock_camera, Qt.Horizontal)
         self.splitDockWidget(self.dock_camera, self.dock_proj, Qt.Horizontal)
 
         # Bottom Row
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.dock_data)
-        self.splitDockWidget(self.dock_data, self.dock_process, Qt.Horizontal)
-        self.splitDockWidget(self.dock_process, self.dock_status, Qt.Horizontal)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.dock_workflow)
+        self.splitDockWidget(self.dock_workflow, self.dock_machine, Qt.Horizontal)
 
-        # Set default relative dimensions (equal thirds horizontally, equal halves vertically)
+        # Set default relative dimensions
         self.resizeDocks([self.dock_map, self.dock_camera, self.dock_proj], [350, 600, 350], Qt.Horizontal)
-        self.resizeDocks([self.dock_data, self.dock_process, self.dock_status], [400, 500, 400], Qt.Horizontal)
-        self.resizeDocks([self.dock_camera, self.dock_process], [450, 450], Qt.Vertical)
+        self.resizeDocks([self.dock_workflow, self.dock_machine], [900, 400], Qt.Horizontal)
+        self.resizeDocks([self.dock_camera, self.dock_workflow], [450, 450], Qt.Vertical)
 
     def _save_dock_layout(self):
         settings = QSettings("HackerFab", "StepperV2")
@@ -236,9 +230,9 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Error cleaning up camera widget: {e}")
         # Auto-close projector window if open
-        if hasattr(self.engine, "hardware") and hasattr(self.engine.hardware, "projector"):
-            proj = self.engine.hardware.projector
-            if proj is not None and hasattr(proj, "close"):
+        if hasattr(self.engine, "projector") and self.engine.projector is not None:
+            proj = self.engine.projector
+            if hasattr(proj, "close"):
                 try:
                     proj.close()
                 except Exception as e:

@@ -98,12 +98,14 @@ def get_available_camera_types(print_missing: bool = False) -> dict[str, dict[st
     return statuses
 
 
-def get_camera(camera_config: dict) -> Optional[CameraModule]:
-    """Factory function to instantiate a CameraModule from configuration."""
+def get_camera(camera_config: dict) -> CameraModule:
+    """Factory function to instantiate a CameraModule from configuration. Always returns a CameraModule."""
     camera_type = str(camera_config.get("type", "none")).lower()
 
-    if camera_type == "none":
-        return None
+    if camera_type in ("none", "dummy"):
+        width = int(camera_config.get("width", 640))
+        height = int(camera_config.get("height", 480))
+        return DummyCamera(width=width, height=height)
 
     if camera_type == "webcam":
         try:
@@ -147,14 +149,9 @@ def get_camera(camera_config: dict) -> Optional[CameraModule]:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize AmScope camera: {e}") from e
 
-    elif camera_type == "dummy":
-        width = int(camera_config.get("width", 640))
-        height = int(camera_config.get("height", 480))
-        return DummyCamera(width=width, height=height)
-
     else:
-        print(f"Unknown camera type in configuration: '{camera_type}'. Disabling camera.")
-        return None
+        print(f"Unknown camera type in configuration: '{camera_type}'. Falling back to DummyCamera.")
+        return DummyCamera()
 
 
 __all__ = [

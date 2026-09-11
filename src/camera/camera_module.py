@@ -1,15 +1,18 @@
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Optional
 import numpy as np
+from core.engine_module import EngineModule
+from core.events import Event
 
 
-class CameraModule(ABC):
+class CameraModule(EngineModule):
     """Abstract base class defining the common camera interface.
 
     Supports industrial cameras (e.g. Basler Pylon) and standard USB webcams.
     """
 
     def __init__(self):
+        super().__init__()
         self._stream_callback: Optional[Callable[[np.ndarray, int, str], None]] = None
 
     @abstractmethod
@@ -27,10 +30,6 @@ class CameraModule(ABC):
         """Return True if the camera connection is open and active."""
         pass
 
-    def isOpen(self) -> bool:
-        """Backwards compatibility alias for is_open()."""
-        return self.is_open()
-
     @abstractmethod
     def get_latest_frame(self) -> Optional[np.ndarray]:
         """Fetch the most recent camera frame as a numpy array (BGR format), or None."""
@@ -39,10 +38,6 @@ class CameraModule(ABC):
     def set_exposure_time(self, value: float) -> bool:
         """Set exposure time in microseconds. Returns True if supported and successful."""
         return False
-
-    def setExposureTime(self, value: float) -> bool:
-        """Backwards compatibility alias for set_exposure_time()."""
-        return self.set_exposure_time(value)
 
     def get_exposure_time(self) -> Optional[float]:
         """Get the current exposure time in microseconds, or None if unsupported."""
@@ -64,21 +59,9 @@ class CameraModule(ABC):
         """Stop streaming capture."""
         return True
 
-    def getDeviceInfo(self, parameterName: str) -> Optional[str]:
-        """Return device information string for parameterName (e.g. 'name', 'vendor')."""
+    def get_device_info(self, parameter_name: str) -> Optional[str]:
+        """Return device information string for parameter_name (e.g. 'name', 'vendor')."""
         return None
-
-    def getSetting(self, setting_name: str) -> Any:
-        """Backwards compatibility for camera settings."""
-        if setting_name == "exposure_time":
-            return self.get_exposure_time()
-        return None
-
-    def setSetting(self, setting_name: str, setting_value: Any) -> bool:
-        """Backwards compatibility for camera settings."""
-        if setting_name == "exposure_time":
-            return self.set_exposure_time(setting_value)
-        return False
 
 
 class DummyCamera(CameraModule):
@@ -112,6 +95,8 @@ class DummyCamera(CameraModule):
         frame[:, :, 0] = np.linspace(0, 255, self.width, dtype=np.uint8)
         frame[:, :, 1] = np.linspace(0, 255, self.height, dtype=np.uint8).reshape(-1, 1)
         frame[:, shift : min(shift + 20, self.width), 2] = 255
+        if self.event_bus is not None:
+            self.event_bus.emit(Event.CAMERA_FRAME_READY, frame)
         return frame
 
     def set_exposure_time(self, value: float) -> bool:
@@ -121,7 +106,7 @@ class DummyCamera(CameraModule):
     def get_exposure_time(self) -> Optional[float]:
         return self._exposure_time
 
-    def getDeviceInfo(self, parameterName: str) -> Optional[str]:
-        if parameterName == "name":
+    def get_device_info(self, parameter_name: str) -> Optional[str]:
+        if parameter_name == "name":
             return "DummyCamera"
         return None

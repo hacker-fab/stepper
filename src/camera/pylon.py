@@ -10,6 +10,7 @@ except ImportError:
     pylon = None
 
 from camera.camera_module import CameraModule
+from core.events import Event
 
 
 class BaslerPylon(CameraModule):
@@ -118,6 +119,9 @@ class BaslerPylon(CameraModule):
                 with self._lock:
                     self._latest_frame = frame
 
+                if self.event_bus is not None:
+                    self.event_bus.emit(Event.CAMERA_FRAME_READY, frame)
+
                 if self._stream_callback is not None:
                     try:
                         self._stream_callback(frame, frame.size, "BGR888")
@@ -166,12 +170,12 @@ class BaslerPylon(CameraModule):
     def stopStreamCapture(self) -> bool:
         return True
 
-    def getDeviceInfo(self, parameterName: str) -> Optional[str]:
+    def get_device_info(self, parameter_name: str) -> Optional[str]:
         if self.camera is None:
             return None
         try:
             device_info = self.camera.GetDeviceInfo()
-            match parameterName:
+            match parameter_name:
                 case "name":
                     return device_info.GetModelName()
                 case "vendor":

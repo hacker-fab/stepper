@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from camera import CameraModule
 from core.engine import StepperEngine
+from core.events import Event
 from ui.bridge import QtEngineBridge
 
 
@@ -134,7 +135,7 @@ class CameraViewWidget(QWidget):
             return
 
         self.current_frame = frame
-        self.engine.set_latest_image(frame)
+        self.engine.event_bus.emit(Event.CAMERA_FRAME_READY, frame)
 
         # Convert to QImage
         h, w = frame.shape[:2]

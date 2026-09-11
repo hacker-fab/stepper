@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from camera.camera_module import CameraModule
+from core.events import Event
 
 
 class Webcam(CameraModule):
@@ -77,6 +78,9 @@ class Webcam(CameraModule):
             with self._lock:
                 self._latest_frame = frame
 
+            if self.event_bus is not None:
+                self.event_bus.emit(Event.CAMERA_FRAME_READY, frame)
+
             if self._stream_callback is not None:
                 try:
                     self._stream_callback(frame, frame.size, "BGR888")
@@ -115,8 +119,8 @@ class Webcam(CameraModule):
     def stopStreamCapture(self) -> bool:
         return True
 
-    def getDeviceInfo(self, parameterName: str) -> Optional[str]:
-        match parameterName:
+    def get_device_info(self, parameter_name: str) -> Optional[str]:
+        match parameter_name:
             case "name":
                 return f"Webcam_{self.index}"
             case "vendor":

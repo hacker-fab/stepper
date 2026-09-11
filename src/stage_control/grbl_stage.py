@@ -2,10 +2,10 @@
 # J. Kent Wirant
 # GRBL Stage Controller
 
-from collections import defaultdict
 import time
 
 from stage_control.stage_controller import StageController, UnsupportedCommand
+from core.events import Event
 
 def clamp(value, lo, hi):
     if value > hi:
@@ -19,21 +19,17 @@ class GrblStage(StageController):
     # only x, y, and z axes are supported by this interface
     # may support alternative axes schemes in the future
     # controller_target must be an open file (may be serial port for example)
-    def __init__(self, controller_target, enable_homing, enable_tiling, autofocus_offset):
+    def __init__(self, controller_target, enable_homing, enable_tiling):
+        super().__init__()
         self.controller_target = controller_target
         self.enable_homing = enable_homing # homes on start
         self.enable_tiling = enable_tiling # allow for tiling feature that requires homing
-        self.autofocus_estimate = autofocus_offset # a value offset that estimates current focus z-coordinates
         self.valid_position = True
         self.configuration = None
-        self.on_start_location = (0,0,0)
 
         # Doing checks to ensure quality of following features
         if self.enable_tiling and not self.enable_homing: 
             raise RuntimeError("Error: Tiling enabled, but homing is not. Homing is required. Please change config and restart.")
-    
-        if self.autofocus_estimate != 0 and not self.enable_homing:
-            raise RuntimeError("Error: Autofocus set, but homing is not. Homing is required. Please change config and restart.")
 
         time.sleep(3.0) # allow time for grbl to boot
         print(self.controller_target.read_all())
@@ -371,6 +367,9 @@ class GrblStage(StageController):
         
         print("moving relative", microns)
         self._move(microns, relative=True)
+        if self.event_bus is not None:
+            self.event_bus.emit(Event.STAGE_POSITION_CHANGED, self.get_position())
+        return True
 
     def move_absolute(self, microns: dict[str, float]):
         """
@@ -386,6 +385,9 @@ class GrblStage(StageController):
         
         print("moving absolute", microns)
         self._move(microns, relative=False)
+        if self.event_bus is not None:
+            self.event_bus.emit(Event.STAGE_POSITION_CHANGED, self.get_position())
+        return True
     
     def soft_reset(self):
         """ 
@@ -462,28 +464,15 @@ class GrblStage(StageController):
             # WPos = (0,0,0) -> establish current position as home (0,0,0)
             self._send_msg(b"G10 L20 P1 X0 Y0 Z0\n") 
             self.valid_position = True
+            if self.event_bus is not None:
+                self.event_bus.emit(Event.STAGE_POSITION_CHANGED, self.get_position())
+            return True
                 
         else:
             raise UnsupportedCommand()
-    
-    def set_on_start_location(self):
-        self.on_start_location = self.get_position()
         
     def has_homing(self) -> bool:
         return self.enable_homing
-
-    def get_autofocus(self) -> float:
-        """
-        Returns offset from z-axis home coordinate
-        that can get the stage to reach an estimated
-        focused position. 
-
-        Note: developers will still need to run their custom 
-        autofocus function that can fine-tune the focus score,
-        but this provides a good point to start the gradient
-        descent search. 
-        """
-        return self.autofocus_estimate
         
     def get_position(self) -> tuple[float, float, float]:
         """
@@ -496,9 +485,6 @@ class GrblStage(StageController):
         micron_y = positions[1] * 1000
         micron_z = positions[2] * 1000
         return (micron_x, micron_y, micron_z)
-    
-    def get_on_start_location(self) -> tuple[float, float, float]:
-        return self.on_start_location
     
     def get_bounds(self):
         """
@@ -527,61 +513,3 @@ class GrblStage(StageController):
             'y': list(axis_bounds(131)),
             'z': list(axis_bounds(132)),
         }
-    
-    """
-    # pass in list of amounts to move by. Dictionary in "axis: amount" format
-    def move_by(self, amounts: dict[str, float]):
-        # first make sure axes are valid
-        if self.__axes_valid__(list(amounts.keys())):
-            x, y, z = self.__adjust_coordinates__(amounts, True)
-            self._move_relative((x, y, z))
-            # if that worked, update internal position
-            self.position[0] += x
-            self.position[1] += y
-            self.position[2] += z
-            print(f"moved by {x} {y} {z}")
-        else:
-            print('Error: tried to move on invalid axis')
-
-    def move_to(self, amounts: dict[str, float]):
-        # first make sure axes are valid
-        if self.__axes_valid__(list(amounts.keys())):
-            x, y, z = self.__adjust_coordinates__(amounts, False)
-            self._move_absolute((x, y, z))
-            # if that worked, update internal position
-            self.position[0] = x
-            self.position[1] = y
-            self.position[2] = z
-
-    def __axes_valid__(self, axes):
-        for axis in axes:
-            if axis not in self.axes or (axis != 'x' and axis != 'y' and axis != 'z'):
-                return False
-        return True
-    
-    def __adjust_coordinates__(self, amounts: dict[str, float], relative: bool):
-        coords = [0.0, 0.0, 0.0]
-        clamped_amt = [0.0, 0.0, 0.0]
-        coords[0] = amounts.get('x')
-        coords[1] = amounts.get('y')
-        coords[2] = amounts.get('z')
-
-        for i in range(0, len(coords)):
-            bounds_lo, bounds_hi = self.bounds[i]
-            if coords[i] == None:
-                if relative:
-                    coords[i] = 0
-                else:
-                    coords[i] = self.position[i]
-            else:
-                # if bounds exceeded, set target coordinate to the boundary
-                if relative:
-                    clamped_amt[i] = clamp(coords[i] + self.position[i], bounds_lo, bounds_hi) - self.position[i]
-                else:
-                    clamped_amt[i] = clamp(coords[i], bounds_lo, bounds_hi)
-        print('a')
-        print(self.position)
-        print(coords)
-        print(clamped_amt)
-        return clamped_amt
-    """

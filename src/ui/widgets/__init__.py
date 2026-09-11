@@ -2,19 +2,16 @@
 
 from .activity_ribbon import ActivityRibbonWidget
 from .camera_view import CameraViewWidget
-from .stage_map import StageMapWidget
+from .machine_control_panel import MachineControlPanelWidget
 from .projector_preview import ProjectorPreviewWidget
-from .data_panel import DataPanelWidget
-from .process_panel import ProcessControlPanelWidget
-from .status_panel import StatusPanelWidget
+from .stage_map import StageMapWidget
+from .workflow_panel import WorkflowPanelWidget
 
 __all__ = [
     "ActivityRibbonWidget",
     "CameraViewWidget",
     "StageMapWidget",
     "ProjectorPreviewWidget",
-    "DataPanelWidget",
-    "ProcessControlPanelWidget",
-    "StatusPanelWidget",
+    "WorkflowPanelWidget",
+    "MachineControlPanelWidget",
 ]
-

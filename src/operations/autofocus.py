@@ -4,12 +4,10 @@ from typing import Callable, Optional
 
 import cv2
 import numpy as np
+from core.operation import Operation, ExecutionContext
 
 
-def fetch_focus_score(camera_image, blue_only, ddepth=cv2.CV_64F, kernel_size=5, log=False):
-    """fetch_focus_score: computes the laplacian focal score after some
-    pre-processing of the camera image. The key is to detect the edges better
-    than other parts of the image that might not be suitable to be focused on."""
+def compute_focus_score(camera_image: np.ndarray, blue_only: bool, ddepth=cv2.CV_64F, kernel_size=5, log: bool = False):
     if camera_image is None:
         return 0.0
 
@@ -27,29 +25,6 @@ def fetch_focus_score(camera_image, blue_only, ddepth=cv2.CV_64F, kernel_size=5,
     src = cv2.Laplacian(src, ddepth, ksize=kernel_size)
 
     return float(src.var())
-
-
-def compute_focus_score(camera_image, blue_only, save=False):
-    if camera_image is None:
-        return 0.0
-
-    camera_image = camera_image.copy()
-    camera_image[:, :, 1] = 0  # green should never be used for focus
-    if blue_only:
-        camera_image[:, :, 0] = 0  # disable red
-    img = cv2.cvtColor(camera_image, cv2.COLOR_RGB2GRAY)
-    img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
-    mean = np.sum(img) / (img.shape[0] * img.shape[1])
-    if mean == 0:
-        return 0.0
-    img_lapl = (
-        np.abs(cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=1))
-        + np.abs(cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=1))
-    ) / mean
-    if save:
-        print("saved focus: ", np.min(img_lapl), np.max(img_lapl))
-        cv2.imwrite(save, img_lapl * 255.0 / 5.0)
-    return float(img_lapl.var() / mean)
 
 
 def execute_autofocus(
@@ -86,7 +61,7 @@ def execute_autofocus(
 
                 def one_sample():
                     img = get_camera_image()
-                    return fetch_focus_score(img, blue_only=blue_only, log=True)
+                    return compute_focus_score(img, blue_only=blue_only, log=True)
 
                 focus_score = sum([one_sample() for _ in range(5)]) / 5.0
                 print("focus average:", focus_score)
@@ -222,3 +197,29 @@ def execute_autofocus(
     finally:
         if log_file:
             log_file.close()
+
+
+class AutofocusOperation(Operation):
+    """Performs autofocus calibration."""
+
+    def __init__(self, blue_only: bool = False, log: bool = False):
+        super().__init__("Autofocus")
+        self.blue_only = blue_only
+        self.log = log
+
+    def execute(self, context: ExecutionContext, report_progress: Callable[[float, str], None]):
+        report_progress(0.2, "Executing autofocus...")
+
+        execute_autofocus(
+            has_homing=context.stage.has_homing(),
+            get_autofocus_base=lambda: context.stage.get_position()[2],
+            get_current_z=lambda: context.stage.get_position()[2],
+            move_absolute=context.stage.move_absolute,
+            move_relative=context.stage.move_relative,
+            get_camera_image=context.camera.get_latest_frame,
+            delay=context.delay_func,
+            on_warning=context.warning_callback,
+            blue_only=self.blue_only,
+            log=self.log,
+        )
+        report_progress(1.0, "Autofocus complete")

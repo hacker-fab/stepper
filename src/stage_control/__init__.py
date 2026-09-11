@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from stage_control.stage_controller import StageController
+from stage_control.dummy_stage import DummyStage
 
 
 def _check_grbl() -> tuple[bool, Optional[str]]:
@@ -25,7 +26,7 @@ def _check_omm() -> tuple[bool, Optional[str]]:
 
 STAGE_REGISTRY: dict[str, dict[str, Any]] = {
     "dummy": {
-        "description": "Dummy stage controller (no motion / simulation)",
+        "description": "Dummy stage controller (simulated motion with delays)",
         "check": lambda: (True, None),
     },
     "grbl": {
@@ -60,8 +61,15 @@ def get_available_stage_types(print_missing: bool = False) -> dict[str, dict[str
 
 def get_stage_controller(stage_config: dict) -> StageController:
     """Factory function to instantiate and connect a StageController from configuration."""
+    def _create_dummy_stage() -> DummyStage:
+        delay = float(stage_config.get("delay", 0.01))
+        speed = stage_config.get("speed")
+        if speed is not None:
+            speed = float(speed)
+        return DummyStage(delay=delay, speed=speed)
+
     if not stage_config.get("enabled", True):
-        return StageController()
+        return _create_dummy_stage()
 
     stage_type = str(stage_config.get("type", "grbl")).lower()
 
@@ -76,8 +84,7 @@ def get_stage_controller(stage_config: dict) -> StageController:
 
         omm_config = stage_config.get("omm", {})
         z_max = omm_config.get("z-max", -1)
-        autofocus = stage_config.get("autofocus", 0)
-        stage = OMMStage(autofocus, z_max)
+        stage = OMMStage(z_max)
         stage.connect(stage_config["port"], stage_config["baud-rate"])
         return stage
 
@@ -101,22 +108,23 @@ def get_stage_controller(stage_config: dict) -> StageController:
 
         # default features to False if they aren't specified -> supports legacy config.toml files
         tiling = stage_config.get("tiling", False)
-        autofocus = stage_config.get("autofocus", 0)
         homing = stage_config.get("homing", False)
 
-        return GrblStage(serial_port, homing, tiling, autofocus)
+        return GrblStage(serial_port, homing, tiling)
 
     elif stage_type in ("dummy", "none"):
-        return StageController()
+        return _create_dummy_stage()
 
     else:
         print(f"Unknown stage type: '{stage_type}'. Falling back to dummy stage controller.")
-        return StageController()
+        return _create_dummy_stage()
 
 
 __all__ = [
     "StageController",
+    "DummyStage",
     "get_available_stage_types",
     "get_stage_controller",
 ]
+
 

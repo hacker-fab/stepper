@@ -15,7 +15,6 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 
 from camera import get_available_camera_types, get_camera
 from core.engine import StepperEngine
-from core.lithography import AlignmentConfig, LithographerConfig
 from stage_control import get_available_stage_types, get_stage_controller
 from ui.bridge import QtEngineBridge
 from ui.main_window import MainWindow
@@ -75,29 +74,6 @@ def main():
     red_exposure = float(camera_config.get("red-exposure", DEFAULT_RED_EXPOSURE))
     uv_exposure = float(camera_config.get("uv-exposure", DEFAULT_UV_EXPOSURE))
 
-    # ALIGNMENT CONFIG
-    alignment_config = config.get("alignment", {})
-    alignment_enabled = alignment_config.get("enabled", False)
-    alignment_model = alignment_config.get("model_path", "ckpts/best.pt")
-
-    right_marker_x = float(alignment_config.get("right_marker_x", 1820.0))
-    left_marker_x = float(alignment_config.get("left_marker_x", 280.0))
-    top_marker_y = float(alignment_config.get("top_marker_y", 269.0))
-    bottom_marker_y = float(alignment_config.get("bottom_marker_y", 1075.0))
-    x_scale_factor = float(alignment_config.get("x_scale_factor", -1100))
-    y_scale_factor = float(alignment_config.get("y_scale_factor", 800))
-
-    alignment_obj = AlignmentConfig(
-        enabled=alignment_enabled,
-        model_path=alignment_model,
-        right_marker_x=right_marker_x,
-        left_marker_x=left_marker_x,
-        top_marker_y=top_marker_y,
-        bottom_marker_y=bottom_marker_y,
-        x_scale_factor=x_scale_factor,
-        y_scale_factor=y_scale_factor,
-    )
-
     # DLPC CONFIG
     dlpc = None
     projector_config = config.get("projector", {})
@@ -122,16 +98,6 @@ def main():
         except Exception as e:
             print(f"Warning: DLPC USB connection could not be established: {e}")
 
-    lithographer_config = LithographerConfig(
-        stage=stage,
-        camera=camera,
-        camera_scale=camera_scale,
-        red_exposure=red_exposure,
-        uv_exposure=uv_exposure,
-        alignment=alignment_obj,
-        dlpc=dlpc,
-    )
-
     # Projector window (secondary monitor)
     projector = QtProjector()
     app.aboutToQuit.connect(projector.close)
@@ -141,15 +107,14 @@ def main():
         stage=stage,
         projector=projector,
         camera=camera,
-        red_exposure=red_exposure,
-        uv_exposure=uv_exposure,
+        # red_exposure=red_exposure,
+        # uv_exposure=uv_exposure,
         dlpc=dlpc,
     )
-    engine.initialize_alignment(lithographer_config)
 
     # Qt Bridge & Main Application Window
     bridge = QtEngineBridge(engine)
-    main_win = MainWindow(lithographer_config, engine, bridge)
+    main_win = MainWindow(engine, bridge, camera_scale=camera_scale)
     main_win.show()
 
     exit_code = app.exec()

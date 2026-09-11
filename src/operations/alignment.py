@@ -1,9 +1,24 @@
+from typing import Callable
+from dataclasses import dataclass
+from core.operation import Operation, ExecutionContext
 from typing import Any, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
 
-from .lithography import AlignmentConfig
+
+@dataclass
+class AlignmentConfig:
+    enabled: bool = True
+    model_path: str = "ckpts/best.pt"
+    right_marker_x: float = 1820.0
+    left_marker_x: float = 280.0
+    top_marker_y: float = 269.0
+    bottom_marker_y: float = 1075.0
+    x_scale_factor: float = -1100.0
+    y_scale_factor: float = 800.0
+
+
 
 
 def load_alignment_model(model_path: str) -> Optional[Any]:
@@ -186,3 +201,38 @@ def compute_tiling_alignment_offset(
         dy /= count_y
 
     return float(dx), float(dy)
+
+
+class AlignmentOperation(Operation):
+    """Detects alignment marks with YOLO and offsets the stage."""
+
+    def __init__(self, config: Optional[AlignmentConfig] = None):
+        super().__init__("Optical Alignment")
+        self.config = config or AlignmentConfig()
+
+    def execute(self, context: ExecutionContext, report_progress: Callable[[float, str], None]):
+        report_progress(0.1, "Detecting alignment markers...")
+        if not self.config.enabled:
+            report_progress(1.0, "Alignment disabled in config")
+            return
+
+        model = load_alignment_model(self.config.model_path)
+        if model is None:
+            report_progress(1.0, "YOLO alignment model could not be loaded")
+            return
+
+        cam_img = context.camera.get_latest_frame()
+        if cam_img is None:
+            report_progress(1.0, "No camera frame available for alignment.")
+            return
+
+        h, w = cam_img.shape[:2]
+        markers, _ = detect_alignment_markers(model, cam_img)
+        if not markers:
+            report_progress(1.0, "No markers detected")
+            return
+
+        report_progress(0.5, "Calculating offset...")
+        dx, dy = compute_standard_alignment_offset(markers, w, h, self.config)
+        context.stage.move_relative({"x": dx, "y": dy})
+        report_progress(1.0, f"Aligned: dx={dx:.2f}µm, dy={dy:.2f}µm")

@@ -4,7 +4,7 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from core.engine import StepperEngine
-from core.events import Event, MovementLock, ShownImage
+from core.events import Event, ShownImage
 
 
 class WorkerRunnable(QRunnable):
@@ -34,18 +34,29 @@ class WorkerSignals(QObject):
 class QtEngineBridge(QObject):
     """Bridges StepperEngine events and async operations to Qt Signals."""
 
+    # Project related
+    project_changed = Signal(object)
+    active_layer_changed = Signal(int)
+    exposure_config_changed = Signal()
+
+    # Stage
     stage_position_changed = Signal(tuple)
-    shown_image_changed = Signal(object)
-    movement_lock_changed = Signal(object)
-    pattern_progress_changed = Signal(float, float)
-    patterning_busy_changed = Signal(bool)
-    chip_changed = Signal(object)
+
+    # Projector
+    projector_image_changed = Signal(object)
+
+    # Camera
+    camera_frame_ready = Signal(object)
+
+    # Operations
+    operation_started = Signal(str)
+    operation_progress = Signal(float, str)
+    operation_finished = Signal(str)
+    operation_aborted = Signal(str)
+
+    # Warnings & Status
     warning_emitted = Signal(str)
     status_message = Signal(str)
-    snapshot_saved = Signal(str)
-    pattern_image_changed = Signal()
-    image_adjust_changed = Signal()
-    camera_frame_ready = Signal(object)
 
     def __init__(self, engine: StepperEngine):
         super().__init__()
@@ -56,43 +67,78 @@ class QtEngineBridge(QObject):
         self.engine.warning_callback = self._on_engine_warning
 
         # Subscribe to EventBus
-        self.engine.events.add_listener(
-            Event.STAGE_POSITION_CHANGED,
-            lambda: self.stage_position_changed.emit(self.engine.stage_setpoint),
+        # Project related
+        self.engine.event_bus.add_listener(
+            Event.PROJECT_CHANGED,
+            lambda *args: self.project_changed.emit(self.engine.project),
         )
-        self.engine.events.add_listener(
-            Event.SHOWN_IMAGE_CHANGED,
-            lambda: self.shown_image_changed.emit(self.engine.shown_image),
-        )
-        self.engine.events.add_listener(
-            Event.MOVEMENT_LOCK_CHANGED,
-            lambda: self.movement_lock_changed.emit(self.engine.movement_lock),
-        )
-        self.engine.events.add_listener(
-            Event.EXPOSURE_PATTERN_PROGRESS_CHANGED,
-            lambda: self.pattern_progress_changed.emit(
-                self.engine.patterning_progress, self.engine.exposure_progress
+        self.engine.event_bus.add_listener(
+            Event.ACTIVE_LAYER_CHANGED,
+            lambda idx=0, *args: self.active_layer_changed.emit(
+                idx if isinstance(idx, int) else self.engine.project.active_layer_index
             ),
         )
-        self.engine.events.add_listener(
-            Event.PATTERNING_BUSY_CHANGED,
-            lambda: self.patterning_busy_changed.emit(self.engine.patterning_busy),
+        self.engine.event_bus.add_listener(
+            Event.EXPOSURE_CONFIG_CHANGED,
+            lambda *args: self.exposure_config_changed.emit(),
         )
-        self.engine.events.add_listener(
-            Event.CHIP_CHANGED,
-            lambda: self.chip_changed.emit(self.engine.chip),
+
+        # Stage
+        self.engine.event_bus.add_listener(
+            Event.STAGE_POSITION_CHANGED,
+            lambda *args: self.stage_position_changed.emit(self.engine.stage.get_position()),
         )
-        self.engine.events.add_listener(
-            Event.PATTERN_IMAGE_CHANGED,
-            lambda: self.pattern_image_changed.emit(),
+
+        # Projector
+        self.engine.event_bus.add_listener(
+            Event.PROJECTOR_IMAGE_CHANGED,
+            lambda mode=None, *args: self.projector_image_changed.emit(
+                mode if mode is not None else self.engine.projector.mode
+            ),
         )
-        self.engine.events.add_listener(
-            Event.IMAGE_ADJUST_CHANGED,
-            lambda: self.image_adjust_changed.emit(),
+
+        # Camera
+        self.engine.event_bus.add_listener(
+            Event.CAMERA_FRAME_READY,
+            lambda frame=None, *args: self.camera_frame_ready.emit(frame),
         )
-        self.engine.events.add_listener(
-            Event.SNAPSHOT,
-            lambda filename: self.snapshot_saved.emit(filename),
+
+        # Operations
+        self.engine.event_bus.add_listener(
+            Event.OPERATION_STARTED,
+            lambda name="", *args: self.operation_started.emit(str(name)),
+        )
+        self.engine.event_bus.add_listener(
+            Event.OPERATION_PROGRESS,
+            lambda pct=0.0, msg="", *args: self.operation_progress.emit(float(pct), str(msg)),
+        )
+        self.engine.event_bus.add_listener(
+            Event.OPERATION_FINISHED,
+            lambda name="", *args: self.operation_finished.emit(str(name)),
+        )
+        self.engine.event_bus.add_listener(
+            Event.OPERATION_ABORTED,
+            lambda name="", *args: self.operation_aborted.emit(str(name)),
+        )
+
+        # Warning
+        self.engine.event_bus.add_listener(
+            Event.WARNING_MESSAGE,
+            lambda msg="", *args: self.warning_emitted.emit(str(msg)),
+        )
+
+    def start_operation(
+        self,
+        operation,
+        on_finished: Optional[Callable[[], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+    ) -> bool:
+        """Starts an operation using the engine's OperationManager with async thread dispatch."""
+        return self.engine.operations.start_operation(
+            operation,
+            run_async_callback=lambda worker: self.run_async(worker),
+            on_finished=on_finished,
+            on_error=on_error or (lambda err: self.warning_emitted.emit(f"Operation failed: {err}")),
         )
 
     def _on_engine_warning(self, msg: str):

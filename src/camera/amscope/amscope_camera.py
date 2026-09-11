@@ -23,6 +23,7 @@ class AmscopeCamera(CameraModule):
     __resolutionModes = {"stream": None, "single": None}
 
     def __init__(self):
+        super().__init__()
         self.singleCaptureCallback = None
         self.streamCaptureCallback = None
         self.close()  # reset to known state
@@ -36,16 +37,16 @@ class AmscopeCamera(CameraModule):
     def singleImageReady(self):
         return self.stillImageGood
 
-    def isOpen(self):
-        return self.camera != None
+    def is_open(self) -> bool:
+        return self.camera is not None
 
     def open(self):
-        if self.isOpen():
+        if self.is_open():
             return True
 
         self.camera = amcam.Amcam.Open(None)
 
-        if self.camera == None:
+        if self.camera is None:
             return False
 
         self.setResolution(self.getAvailableResolutions("stream")[0], "stream")
@@ -53,7 +54,7 @@ class AmscopeCamera(CameraModule):
         return True
 
     def close(self):
-        if self.isOpen():
+        if self.is_open():
             self.camera.Close()
 
         self.stillData = None
@@ -61,6 +62,19 @@ class AmscopeCamera(CameraModule):
         self.camera = None
         self.liveImageGood = False
         self.stillImageGood = False
+
+    def get_latest_frame(self):
+        if not self.liveImageReady():
+            return None
+        import numpy as np
+        r = self.getResolution("stream")
+        if self.liveData is not None and r[0] > 0 and r[1] > 0:
+            try:
+                frame = np.frombuffer(self.liveData, dtype=np.uint8).reshape((r[1], r[0], 3))
+                return frame.copy()
+            except Exception:
+                return None
+        return None
 
     def startSingleCapture(self):
         self.stillImageGood = False

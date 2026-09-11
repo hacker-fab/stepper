@@ -19,44 +19,34 @@ class ShownImage(StrAutoEnum):
     UV_FOCUS = auto()
 
 
-class PatterningStatus(StrAutoEnum):
-    """The current state of the patterning process"""
-
-    IDLE = auto()
-    PATTERNING = auto()
-    ABORTING = auto()
-
 
 class Event(StrAutoEnum):
-    """Events that can be dispatched to listeners"""
+    """Events dispatched across the stepper software system."""
 
-    SNAPSHOT = auto()
-    SHOWN_IMAGE_CHANGED = auto()
-    STAGE_POSITION_CHANGED = auto()
-    IMAGE_ADJUST_CHANGED = auto()
-    PATTERN_IMAGE_CHANGED = auto()
-    MOVEMENT_LOCK_CHANGED = auto()
-    EXPOSURE_PATTERN_PROGRESS_CHANGED = auto()
-    PATTERNING_BUSY_CHANGED = auto()
-    PATTERNING_FINISHED = auto()
-    CHIP_CHANGED = auto()
+    # Project related
+    PROJECT_CHANGED = auto()  # Emitted when a project is loaded, created, saved, or layer structure changes
+    ACTIVE_LAYER_CHANGED = auto()  # Emitted when the selected active layer index changes
+    EXPOSURE_CONFIG_CHANGED = auto()  # Emitted when patterning/exposure config changes (global settings or per-layer overrides)
+
+    # Stage
+    STAGE_POSITION_CHANGED = auto()  # Emitted when stage position coordinates change
+
+    # Projector
+    PROJECTOR_IMAGE_CHANGED = auto()  # Emitted on any projector display change (layer pattern, test color, focus mode, clear, etc.)
+
+    # Camera
+    CAMERA_FRAME_READY = auto()  # Emitted when a new camera frame is captured and ready
+
+    # Operations
+    OPERATION_STARTED = auto()  # Emitted when an operation begins execution
+    OPERATION_PROGRESS = auto()  # Emitted during operation execution with progress fraction and status message
+    OPERATION_FINISHED = auto()  # Emitted when an operation finishes successfully
+    OPERATION_ABORTED = auto()  # Emitted when an operation is aborted or cancelled
+
+    # Warning
+    WARNING_MESSAGE = auto()  # Emitted when a warning message or non-fatal issue occurs
 
 
-class MovementLock(StrAutoEnum):
-    """Controls whether stage position can be manually adjusted"""
-
-    UNLOCKED = auto()  # X, Y, and Z are free to move
-    XY_LOCKED = auto()  # Only Z (focus) is free to move to avoid smearing UV focus pattern
-    LOCKED = auto()  # No positions can move to avoid disrupting patterning
-
-
-class RedFocusSource(StrAutoEnum):
-    """The source image to use for red focus mode"""
-
-    IMAGE = auto()  # Uses the dedicated red focus image
-    SOLID = auto()  # Shows a solid red screen
-    PATTERN = auto()  # Uses the blue channel from the pattern image
-    INV_PATTERN = auto()  # Uses the inverse of the blue channel from the pattern image
 
 
 class EventBus:

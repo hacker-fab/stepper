@@ -5,10 +5,10 @@
 # "basler" (for a Basler/Pylon camera)
 # "flir" (for a FLIR camera)
 # "none" (to disable camera)
-type = "none"
+type = "webcam"
 # The index field is optional and is only used to select which of multiple webcams or basler/pylon cameras should be used,
 # e.g. on a laptop where there may be a builtin webcam in addition to an external USB camera.
-index = 1
+index = 0
 # The output from the camera is typically too large to show at full resolution.
 # This parameter adjusts the size of the camera feed before it is displayed in the GUI.
 gui-scale = 0.25
@@ -36,7 +36,7 @@ autofocus = 0
 port = "COM6"
 # Select the type of stage for the stepper. Use `grbl` for most cases while `omm` is 
 # experimental
-type = "grbl"
+type = "dummy"
 # GRBL's baud rate is almost always 115200 while omm is almost always 921600 
 baud-rate = 115200
 [stage.omm]

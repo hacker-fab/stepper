@@ -34,7 +34,7 @@ class StageMapWidget(QWidget):
 
         # Connect signals
         self.bridge.stage_position_changed.connect(self._on_stage_moved)
-        self.bridge.chip_changed.connect(lambda _: self.canvas.update())
+        self.bridge.project_changed.connect(lambda _: self.canvas.update())
 
     def _on_stage_moved(self, coords: tuple):
         x, y, z = coords
@@ -66,7 +66,7 @@ class StageMapCanvas(QFrame):
             return
 
         # Stage bounds in mm
-        bounds = self.parent_widget.engine.hardware.stage.get_bounds()
+        bounds = self.parent_widget.engine.stage.get_bounds()
         if bounds:
             min_x, max_x = bounds["x"]
             min_y, max_y = bounds["y"]
@@ -97,10 +97,10 @@ class StageMapCanvas(QFrame):
             painter.drawLine(margin, int(sy), margin + dw, int(sy))
 
         # Draw previous exposure footprints
-        chip = self.parent_widget.engine.chip
+        chip_project = self.parent_widget.engine.project
         painter.setPen(QPen(QColor("#f59e0b"), 1))
         painter.setBrush(QBrush(QColor(245, 158, 11, 80)))
-        for layer in chip.layers:
+        for layer in chip_project.layers:
             for exp in layer.exposures:
                 ex_x, ex_y, _ = exp.coords
                 sx, sy = to_screen(ex_x, ex_y)
@@ -110,7 +110,7 @@ class StageMapCanvas(QFrame):
                 painter.drawRect(QRectF(sx - tile_w / 2, sy - tile_h / 2, tile_w, tile_h))
 
         # Draw current stage position indicator
-        cx, cy, _ = self.parent_widget.engine.stage_setpoint
+        cx, cy, _ = self.parent_widget.engine.stage.get_position()
         cur_sx, cur_sy = to_screen(cx, cy)
 
         # Target cross

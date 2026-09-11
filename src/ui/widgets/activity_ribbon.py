@@ -96,8 +96,10 @@ class ActivityRibbonWidget(QFrame):
 
         # Connect signals
         self.bridge.status_message.connect(self.set_status)
-        self.bridge.pattern_progress_changed.connect(self._on_progress_changed)
-        self.bridge.patterning_busy_changed.connect(self._on_busy_changed)
+        self.bridge.operation_started.connect(self._on_operation_started)
+        self.bridge.operation_progress.connect(self._on_operation_progress)
+        self.bridge.operation_finished.connect(self._on_operation_finished)
+        self.bridge.operation_aborted.connect(self._on_operation_aborted)
 
     def set_status(self, text: str, is_busy: bool = False, is_error: bool = False):
         self.status_label.setText(text)
@@ -108,20 +110,27 @@ class ActivityRibbonWidget(QFrame):
         else:
             self.status_icon.setStyleSheet("color: #10b981; font-size: 16px;")
 
-    def _on_progress_changed(self, pattern_progress: float, exposure_progress: float):
-        # Overall progress
-        pct = int(exposure_progress * 100)
-        self.progress_bar.setValue(pct)
-        if self.engine.patterning_busy:
-            self.set_status(f"Exposing Pattern... ({pct}%)", is_busy=True)
+    def _on_operation_started(self, name: str):
+        self.abort_btn.setEnabled(self.engine.operations.current_operation is not None)
+        self.progress_bar.setValue(0)
+        self.set_status(f"Running: {name}...", is_busy=True)
 
-    def _on_busy_changed(self, busy: bool):
-        self.abort_btn.setEnabled(busy)
-        if not busy:
-            self.progress_bar.setValue(0)
-            self.set_status("Ready", is_busy=False)
+    def _on_operation_progress(self, progress: float, message: str):
+        pct = int(progress * 100)
+        self.progress_bar.setValue(pct)
+        self.set_status(message if message else f"Progress: {pct}%", is_busy=True)
+
+    def _on_operation_finished(self, name: str):
+        self.abort_btn.setEnabled(self.engine.operations.current_operation is not None)
+        self.progress_bar.setValue(0)
+        self.set_status(f"Ready ({name} finished)", is_busy=False)
+
+    def _on_operation_aborted(self, name: str):
+        self.abort_btn.setEnabled(self.engine.operations.current_operation is not None)
+        self.progress_bar.setValue(0)
+        self.set_status(f"Aborted: {name}", is_busy=False, is_error=True)
 
     def _on_abort_clicked(self):
-        self.engine.abort_patterning()
-        self.set_status("Aborting exposure...", is_busy=True)
+        self.engine.abort_operation()
+        self.set_status("Aborting operation...", is_busy=True)
 
