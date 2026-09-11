@@ -69,3 +69,8 @@ indent-style = "space"
 [tool.ty.src]
 # Explicitly tell it which folders to check
 include = ["src/*"]
+<<<<<<< HEAD
+=======
+# Uncomment to specify Which directories/files to skip
+# exclude = ["<insert>"]
+>>>>>>> upstream/main
