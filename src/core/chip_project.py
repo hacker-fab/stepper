@@ -1,39 +1,12 @@
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple, Any
+from core.events import Event
 
 from PIL import Image
 
-
-@dataclass
-class ExposureLog:
-    """Log entry for an executed exposure."""
-
-    time: datetime
-    path: str
-    coords: Tuple[float, float, float]
-    duration: float  # ms
-    aborted: bool
-
-    def to_disk(self) -> dict:
-        return {
-            "time": str(self.time),
-            "path": self.path,
-            "coords": list(self.coords),
-            "duration": self.duration,
-            "aborted": self.aborted,
-        }
-
-    @classmethod
-    def from_disk(cls, d: dict) -> "ExposureLog":
-        return cls(
-            time=datetime.fromisoformat(d["time"]),
-            path=d.get("path", ""),
-            coords=tuple(d.get("coords", (0.0, 0.0, 0.0))),
-            duration=float(d.get("duration", 0.0)),
-            aborted=bool(d.get("aborted", False)),
-        )
 
 
 @dataclass
@@ -125,67 +98,146 @@ class ChipLayer:
     pattern_path: Optional[str] = None
     image_adjust: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # (shift_x, shift_y, theta)
     overrides: LayerSettingsOverride = field(default_factory=LayerSettingsOverride)
-    exposures: List[ExposureLog] = field(default_factory=list)
-    _loaded_image: Optional[Image.Image] = field(default=None, repr=False, compare=False)
-    _rendered_cache: Optional[Image.Image] = field(default=None, repr=False, compare=False)
-    _render_cache_key: Optional[tuple] = field(default=None, repr=False, compare=False)
+
+    # the original pattern image
+    _pattern_cache: Optional[Image.Image] = field(default=None, repr=False, compare=False)
+    _pattern_cache_dirty: bool = field(default=False, repr=False, compare=False)
+
+    # sliced and rendered tiles. For tiling disabled layer, this contains a single tile (the full pattern)
+    # the tiles are snake-ordered
+    _tile_cache: list[Image.Image] = field(default_factory=list, repr=False, compare=False)
+    _tile_cache_dirty: bool = field(default=False, repr=False, compare=False)
+
+    events: Optional[Any] = field(default=None, repr=False, compare=False)
+
+    def set_pattern_path(self, path: Optional[str]):
+        self.pattern_path = path
+        self._pattern_cache = None
+        self._pattern_cache_dirty = True
+        self._tile_cache = []
+        self._tile_cache_dirty = True
+        if self.events is not None:
+            self.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+
+    def set_image_adjust(self, adjust: Tuple[float, float, float]):
+        self.image_adjust = adjust
+        self._tile_cache = []
+        self._tile_cache_dirty = True
+        if self.events is not None:
+            self.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+
+    def set_overrides(self, overrides: LayerSettingsOverride):
+        self.overrides = overrides
+        self._tile_cache = []
+        self._tile_cache_dirty = True
+        if self.events is not None:
+            self.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+
+    def set_exposure_override(self, exposure_time: Optional[float]):
+        self.overrides.exposure_time = exposure_time
+        self.mark_dirty()
+        if self.events is not None:
+            self.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+
+    def set_tiling_override(self, tiling_enabled: Optional[bool]):
+        self.overrides.tiling_enabled = tiling_enabled
+        self.mark_dirty()
+        if self.events is not None:
+            self.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+
+    def update_overrides(self, **kwargs) -> None:
+        for k, v in kwargs.items():
+            if hasattr(self.overrides, k):
+                setattr(self.overrides, k, v)
+        self.mark_dirty()
+        if self.events is not None:
+            self.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+
+    def mark_dirty(self):
+        self._pattern_cache_dirty = True
+        self._tile_cache_dirty = True
+        self._tile_cache = []
+
+    def regenerate_tiles(self):
+        self.mark_dirty()
+        if self.events is not None:
+            self.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
 
     def get_pattern_image(self) -> Optional[Image.Image]:
-        if self._loaded_image is not None:
-            return self._loaded_image
-        if self.pattern_path:
-            try:
-                self._loaded_image = Image.open(self.pattern_path)
-                return self._loaded_image
-            except Exception as e:
-                print(f"Error loading pattern image from {self.pattern_path}: {e}")
-                return None
-        return None
+        if self._pattern_cache_dirty or self._pattern_cache is None:
+            if self.pattern_path and os.path.exists(self.pattern_path):
+                try:
+                    self._pattern_cache = Image.open(self.pattern_path)
+                except Exception as e:
+                    print(f"Error loading pattern image from {self.pattern_path}: {e}")
+                    self._pattern_cache = None
+            else:
+                self._pattern_cache = None
+            self._pattern_cache_dirty = False
+        return self._pattern_cache
 
-    def set_pattern_image(self, img: Optional[Image.Image], path: Optional[str] = None):
-        self._loaded_image = img
-        self.pattern_path = path
-        self.invalidate_render_cache()
-
-    def invalidate_render_cache(self):
-        self._rendered_cache = None
-        self._render_cache_key = None
-
-    def render_pattern(
+    def get_tiles(
         self,
         project_settings: PatterningSettings,
         projector_size: Tuple[int, int],
-        color_channels: Tuple[bool, bool, bool] = (False, False, True),
+    ) -> list[Image.Image]:
+        """Returns the list of snake-ordered rendered tiles for this layer."""
+        if self._tile_cache_dirty or not self._tile_cache:
+            pattern = self.get_pattern_image()
+            if pattern is None:
+                self._tile_cache = []
+                self._tile_cache_dirty = False
+                return self._tile_cache
+
+            eff = self.get_effective_settings(project_settings)
+            from lib.img import ImageProcessSettings, process_img
+
+            if eff.tiling_enabled:
+                from lib.tiling import split_image_into_tiles
+
+                tiles, _, _ = split_image_into_tiles(
+                    pattern,
+                    tile_width=eff.tile_width,
+                    tile_height=eff.tile_height,
+                    overlap_x=eff.overlap_x,
+                    overlap_y=eff.overlap_y,
+                )
+                proc_settings = ImageProcessSettings(
+                    posterization=eff.posterize_strength,
+                    flatfield=None,
+                    color_channels=(True, True, True),
+                    size=projector_size,
+                    image_adjust=self.image_adjust,
+                    border_size=eff.border_size,
+                )
+                self._tile_cache = [process_img(t, proc_settings) for t in tiles]
+            else:
+                proc_settings = ImageProcessSettings(
+                    posterization=eff.posterize_strength,
+                    flatfield=None,
+                    color_channels=(True, True, True),
+                    size=projector_size,
+                    image_adjust=self.image_adjust,
+                    border_size=eff.border_size,
+                )
+                self._tile_cache = [process_img(pattern, proc_settings)]
+
+            self._tile_cache_dirty = False
+
+        return self._tile_cache
+
+    def get_tile(
+        self,
+        index: int,
+        project_settings: PatterningSettings,
+        projector_size: Tuple[int, int],
     ) -> Optional[Image.Image]:
-        img = self.get_pattern_image()
-        if img is None:
+        tiles = self.get_tiles(project_settings, projector_size)
+        if not tiles:
             return None
-        eff = self.get_effective_settings(project_settings)
-        key = (
-            id(img),
-            self.image_adjust,
-            eff.posterize_strength,
-            eff.border_size,
-            projector_size,
-            color_channels,
-        )
-        if self._render_cache_key == key and self._rendered_cache is not None:
-            return self._rendered_cache
-
-        from lib.img import ImageProcessSettings, process_img
-
-        proc_settings = ImageProcessSettings(
-            posterization=eff.posterize_strength,
-            flatfield=None,
-            color_channels=color_channels,
-            size=projector_size,
-            image_adjust=self.image_adjust,
-            border_size=eff.border_size,
-        )
-        rendered = process_img(img, proc_settings)
-        self._render_cache_key = key
-        self._rendered_cache = rendered
-        return rendered
+        if 0 <= index < len(tiles):
+            return tiles[index]
+        return tiles[0]
 
     def get_effective_settings(self, project_settings: PatterningSettings) -> PatterningSettings:
         """Resolves effective settings for this layer by applying overrides on top of project defaults."""
@@ -228,7 +280,6 @@ class ChipLayer:
             "pattern_path": self.pattern_path,
             "image_adjust": list(self.image_adjust),
             "overrides": self.overrides.to_disk(),
-            "exposures": [ex.to_disk() for ex in self.exposures],
         }
 
     @classmethod
@@ -237,13 +288,11 @@ class ChipLayer:
         pattern_path = d.get("pattern_path", None)
         image_adjust = tuple(d.get("image_adjust", (0.0, 0.0, 0.0)))
         overrides = LayerSettingsOverride.from_disk(d.get("overrides", {}))
-        exposures = [ExposureLog.from_disk(ex) for ex in d.get("exposures", [])]
         return cls(
             name=name,
             pattern_path=pattern_path,
             image_adjust=image_adjust,
             overrides=overrides,
-            exposures=exposures,
         )
 
 
@@ -255,13 +304,21 @@ class ChipProject:
     settings: PatterningSettings = field(default_factory=PatterningSettings)
     layers: List[ChipLayer] = field(default_factory=lambda: [ChipLayer(name="Layer 1")])
     active_layer_index: int = 0
+    active_tile_index: int = 0
     events: Optional[Any] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if not self.layers:
-            self.layers = [ChipLayer(name="Layer 1")]
+            self.layers = [ChipLayer(name="Layer 1", events=self.events)]
+        for layer in self.layers:
+            layer.events = self.events
         if self.active_layer_index >= len(self.layers):
             self.active_layer_index = max(0, len(self.layers) - 1)
+
+    def set_events(self, events: Optional[Any]) -> None:
+        self.events = events
+        for layer in self.layers:
+            layer.events = events
 
     @property
     def active_layer(self) -> ChipLayer:
@@ -270,14 +327,15 @@ class ChipProject:
     def add_layer(self, name: Optional[str] = None) -> ChipLayer:
         layer_num = len(self.layers) + 1
         layer_name = name or f"Layer {layer_num}"
-        layer = ChipLayer(name=layer_name)
+        layer = ChipLayer(name=layer_name, events=self.events)
         self.layers.append(layer)
         self.active_layer_index = len(self.layers) - 1
+        self.active_tile_index = 0
         if self.events is not None:
             from core.events import Event
             self.events.emit(Event.PROJECT_CHANGED, self)
             self.events.emit(Event.ACTIVE_LAYER_CHANGED, self.active_layer_index)
-            self.events.emit(Event.PROJECTOR_IMAGE_CHANGED)
+            self.events.emit(Event.ACTIVE_TILE_CHANGED, self.active_tile_index)
         return layer
 
     def remove_layer(self, index: int) -> bool:
@@ -287,23 +345,98 @@ class ChipProject:
             self.layers.pop(index)
             if self.active_layer_index >= len(self.layers):
                 self.active_layer_index = len(self.layers) - 1
+            self.active_tile_index = 0
             if self.events is not None:
                 from core.events import Event
                 self.events.emit(Event.PROJECT_CHANGED, self)
                 self.events.emit(Event.ACTIVE_LAYER_CHANGED, self.active_layer_index)
-                self.events.emit(Event.PROJECTOR_IMAGE_CHANGED)
+                self.events.emit(Event.ACTIVE_TILE_CHANGED, self.active_tile_index)
             return True
         return False
 
     def select_layer(self, index: int) -> bool:
         if 0 <= index < len(self.layers):
             self.active_layer_index = index
+            self.active_tile_index = 0
             if self.events is not None:
                 from core.events import Event
                 self.events.emit(Event.ACTIVE_LAYER_CHANGED, self.active_layer_index)
-                self.events.emit(Event.PROJECTOR_IMAGE_CHANGED)
+                self.events.emit(Event.ACTIVE_TILE_CHANGED, self.active_tile_index)
             return True
         return False
+
+    def select_tile(self, index: int) -> bool:
+        self.active_tile_index = max(0, index)
+        if self.events is not None:
+            from core.events import Event
+            self.events.emit(Event.ACTIVE_TILE_CHANGED, self.active_tile_index)
+        return True
+
+    def update_settings(self, **kwargs) -> None:
+        """Updates project settings, marks all layer tile caches dirty, and emits EXPOSURE_CONFIG_CHANGED."""
+        for k, v in kwargs.items():
+            if hasattr(self.settings, k):
+                setattr(self.settings, k, v)
+        for layer in self.layers:
+            layer.mark_dirty()
+        if self.events is not None:
+            self.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+
+    def get_active_layer_tile_count(self, projector_size: Tuple[int, int] = (1920, 1080)) -> int:
+        tiles = self.active_layer.get_tiles(self.settings, projector_size)
+        return len(tiles)
+
+    def render_for_projector(
+        self,
+        color_mode: Any,
+        image_source: Any,
+        custom_path: Optional[str] = None,
+        projector_size: Tuple[int, int] = (1920, 1080),
+    ) -> Optional[Image.Image]:
+        """Renders the appropriate image frame for the projector."""
+        from core.events import ColorMode, ProjectorImageSource
+        from lib.img import select_channels
+
+        if color_mode == ColorMode.DISABLE:
+            return None
+
+        img: Optional[Image.Image] = None
+
+        if image_source == ProjectorImageSource.ACTIVE_LAYER:
+            tile = self.active_layer.get_tile(self.active_tile_index, self.settings, projector_size)
+            if tile is None:
+                return None
+            img = tile.copy()
+        elif image_source == ProjectorImageSource.CUSTOM_FILE:
+            if custom_path and os.path.exists(custom_path):
+                try:
+                    raw = Image.open(custom_path)
+                    from lib.img import ImageProcessSettings, process_img
+
+                    proc_settings = ImageProcessSettings(
+                        posterization=None,
+                        flatfield=None,
+                        color_channels=(True, True, True),
+                        size=projector_size,
+                        image_adjust=(0.0, 0.0, 0.0),
+                        border_size=0.0,
+                    )
+                    img = process_img(raw, proc_settings)
+                except Exception as e:
+                    print(f"Error loading custom image from {custom_path}: {e}")
+                    return None
+            else:
+                return None
+
+        if img is None:
+            return None
+
+        if color_mode == ColorMode.RED:
+            return select_channels(img, red=True, green=False, blue=False)
+        elif color_mode == ColorMode.UV:
+            return select_channels(img, red=False, green=False, blue=True)
+
+        return img
 
     def to_disk(self) -> dict:
         return {
@@ -311,6 +444,7 @@ class ChipProject:
             "settings": self.settings.to_disk(),
             "layers": [layer.to_disk() for layer in self.layers],
             "active_layer_index": self.active_layer_index,
+            "active_tile_index": self.active_tile_index,
         }
 
     @classmethod
@@ -319,11 +453,13 @@ class ChipProject:
         settings = PatterningSettings.from_disk(d.get("settings", {}))
         layers = [ChipLayer.from_disk(l) for l in d.get("layers", [])]
         active_idx = int(d.get("active_layer_index", 0))
+        active_tile = int(d.get("active_tile_index", 0))
         return cls(
             name=name,
             settings=settings,
             layers=layers,
             active_layer_index=active_idx,
+            active_tile_index=active_tile,
             events=events,
         )
 

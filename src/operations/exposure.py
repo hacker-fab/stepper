@@ -2,8 +2,8 @@ import time
 from datetime import datetime
 from typing import Callable, Optional
 
-from core.chip_project import ExposureLog, PatterningSettings
-from core.events import Event, ShownImage
+from core.chip_project import PatterningSettings
+from core.events import ColorMode, Event, ProjectorImageSource
 from core.operation import ExecutionContext, Operation
 
 
@@ -21,33 +21,28 @@ class ExposureOperation(Operation):
             return "Invalid project or layer index"
         layer = context.project.layers[self.layer_index]
 
-        report_progress(0.0, f"Starting exposure ({int(duration_ms)} ms)...")
-        rendered = layer.render_pattern(self.settings, context.projector.size())
-        context.projector.set_mode(ShownImage.PATTERN, rendered)
+        prev_color_mode = context.projector.color_mode
+        try:
+            report_progress(0.0, f"Starting exposure ({int(duration_ms)} ms)...")
+            context.project.select_layer(self.layer_index)
+            context.project.select_tile(0)
+            context.projector.set_image_source(ProjectorImageSource.ACTIVE_LAYER)
+            context.projector.set_color_mode(ColorMode.UV)
 
-        start_t = time.time()
-        end_t = start_t + (duration_ms / 1000.0)
+            start_t = time.time()
+            end_t = start_t + (duration_ms / 1000.0)
 
-        while time.time() < end_t:
-            if self.is_aborted:
-                break
-            elapsed = time.time() - start_t
-            pct = min(1.0, max(0.0, elapsed / (duration_ms / 1000.0)))
-            report_progress(pct, f"Exposing {layer.name}... ({int(pct * 100)}%)")
-            context.delay_func(0.1)
+            progress_resolution = min((0.1, duration_ms / 1000.0 / 10))
 
-        context.projector.set_mode(ShownImage.CLEAR)
-
-        log = ExposureLog(
-            time=datetime.now(),
-            path=layer.pattern_path or "",
-            coords=context.stage.get_position(),
-            duration=duration_ms,
-            aborted=self.is_aborted,
-        )
-        layer.exposures.append(log)
-        if context.event_bus:
-            context.event_bus.emit(Event.PROJECT_CHANGED, context.project)
+            while time.time() < end_t:
+                if self.is_aborted:
+                    break
+                elapsed = time.time() - start_t
+                pct = min(1.0, max(0.0, elapsed / (duration_ms / 1000.0)))
+                report_progress(pct, f"Exposing {layer.name}... ({int(pct * 100)}%)")
+                context.delay_func(progress_resolution)
+        finally:
+            context.projector.set_color_mode(prev_color_mode)
 
         if self.is_aborted:
             report_progress(1.0, "Exposure aborted")

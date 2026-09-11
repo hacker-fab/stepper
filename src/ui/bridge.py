@@ -4,7 +4,7 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from core.engine import StepperEngine
-from core.events import Event, ShownImage
+from core.events import Event
 
 
 class WorkerRunnable(QRunnable):
@@ -37,12 +37,15 @@ class QtEngineBridge(QObject):
     # Project related
     project_changed = Signal(object)
     active_layer_changed = Signal(int)
+    active_tile_changed = Signal(int)
     exposure_config_changed = Signal()
 
     # Stage
     stage_position_changed = Signal(tuple)
 
     # Projector
+    projector_color_mode_changed = Signal(object)
+    projector_image_source_changed = Signal(object)
     projector_image_changed = Signal(object)
 
     # Camera
@@ -79,6 +82,12 @@ class QtEngineBridge(QObject):
             ),
         )
         self.engine.event_bus.add_listener(
+            Event.ACTIVE_TILE_CHANGED,
+            lambda idx=0, *args: self.active_tile_changed.emit(
+                idx if isinstance(idx, int) else self.engine.project.active_tile_index
+            ),
+        )
+        self.engine.event_bus.add_listener(
             Event.EXPOSURE_CONFIG_CHANGED,
             lambda *args: self.exposure_config_changed.emit(),
         )
@@ -91,9 +100,21 @@ class QtEngineBridge(QObject):
 
         # Projector
         self.engine.event_bus.add_listener(
+            Event.PROJECTOR_COLOR_MODE_CHANGED,
+            lambda mode=None, *args: self.projector_color_mode_changed.emit(
+                mode if mode is not None else self.engine.projector.color_mode
+            ),
+        )
+        self.engine.event_bus.add_listener(
+            Event.PROJECTOR_IMAGE_SOURCE_CHANGED,
+            lambda src=None, *args: self.projector_image_source_changed.emit(
+                src if src is not None else self.engine.projector.image_source
+            ),
+        )
+        self.engine.event_bus.add_listener(
             Event.PROJECTOR_IMAGE_CHANGED,
-            lambda mode=None, *args: self.projector_image_changed.emit(
-                mode if mode is not None else self.engine.projector.mode
+            lambda img=None, *args: self.projector_image_changed.emit(
+                img if img is not None else self.engine.projector.current_image
             ),
         )
 

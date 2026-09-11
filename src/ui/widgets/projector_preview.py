@@ -5,7 +5,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from core.engine import StepperEngine
-from core.events import ShownImage
+from core.events import ColorMode
 from ui.bridge import QtEngineBridge
 
 
@@ -27,7 +27,7 @@ class ProjectorPreviewWidget(QWidget):
         layout.setSpacing(4)
 
         # Status mode label
-        self.mode_label = QLabel("Output: Clear (Off)")
+        self.mode_label = QLabel("Output: Disabled (Off)")
         self.mode_label.setStyleSheet("color: #888888; font-size: 11px;")
         layout.addWidget(self.mode_label)
 
@@ -36,17 +36,16 @@ class ProjectorPreviewWidget(QWidget):
 
         # Connect signals
         self.bridge.projector_image_changed.connect(self._on_image_changed)
+        self.bridge.projector_color_mode_changed.connect(lambda *_: self._on_image_changed())
 
-    def _on_image_changed(self, shown_image: Optional[ShownImage] = None):
-        current_mode = shown_image if isinstance(shown_image, ShownImage) else self.engine.projector.mode
+    def _on_image_changed(self, *args):
+        color_mode = self.engine.projector.color_mode
         labels = {
-            ShownImage.CLEAR: "Output: Clear (No UV/Red)",
-            ShownImage.PATTERN: "Output: Pattern (UV Active)",
-            ShownImage.RED_FOCUS: "Output: Red Focus Mode",
-            ShownImage.UV_FOCUS: "Output: UV Focus Pattern",
-            ShownImage.FLATFIELD: "Output: Flatfield Calibration",
+            ColorMode.DISABLE: "Output: Disabled (Off)",
+            ColorMode.RED: "Output: Red Illumination Active",
+            ColorMode.UV: "Output: UV Illumination Active",
         }
-        self.mode_label.setText(labels.get(current_mode, str(current_mode)))
+        self.mode_label.setText(labels.get(color_mode, str(color_mode)))
         self.canvas.update()
 
 

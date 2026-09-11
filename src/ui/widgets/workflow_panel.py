@@ -165,47 +165,27 @@ class ProjectSubpanelWidget(QTabWidget):
         self.spin_tile_w = QSpinBox()
         self.spin_tile_w.setRange(100, 10000)
         self.spin_tile_w.setValue(self.engine.project.settings.tile_width)
-        self.spin_tile_w.valueChanged.connect(
-            lambda val: (
-                setattr(self.engine.project.settings, "tile_width", val),
-                self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED),
-            )
-        )
+        self.spin_tile_w.valueChanged.connect(self._on_tile_w_changed)
         tile_form.addRow("Tile Width (px):", self.spin_tile_w)
 
         self.spin_tile_h = QSpinBox()
         self.spin_tile_h.setRange(100, 10000)
         self.spin_tile_h.setValue(self.engine.project.settings.tile_height)
-        self.spin_tile_h.valueChanged.connect(
-            lambda val: (
-                setattr(self.engine.project.settings, "tile_height", val),
-                self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED),
-            )
-        )
+        self.spin_tile_h.valueChanged.connect(self._on_tile_h_changed)
         tile_form.addRow("Tile Height (px):", self.spin_tile_h)
 
         self.spin_pitch_x = QDoubleSpinBox()
         self.spin_pitch_x.setRange(10.0, 50000.0)
         self.spin_pitch_x.setValue(self.engine.project.settings.pitch_x)
         self.spin_pitch_x.setSuffix(" µm")
-        self.spin_pitch_x.valueChanged.connect(
-            lambda val: (
-                setattr(self.engine.project.settings, "pitch_x", val),
-                self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED),
-            )
-        )
+        self.spin_pitch_x.valueChanged.connect(self._on_pitch_x_changed)
         tile_form.addRow("Pitch X Offset:", self.spin_pitch_x)
 
         self.spin_pitch_y = QDoubleSpinBox()
         self.spin_pitch_y.setRange(10.0, 50000.0)
         self.spin_pitch_y.setValue(self.engine.project.settings.pitch_y)
         self.spin_pitch_y.setSuffix(" µm")
-        self.spin_pitch_y.valueChanged.connect(
-            lambda val: (
-                setattr(self.engine.project.settings, "pitch_y", val),
-                self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED),
-            )
-        )
+        self.spin_pitch_y.valueChanged.connect(self._on_pitch_y_changed)
         tile_form.addRow("Pitch Y Offset:", self.spin_pitch_y)
 
         layout.addWidget(tile_group)
@@ -219,7 +199,7 @@ class ProjectSubpanelWidget(QTabWidget):
         for i, layer in enumerate(layers):
             item_name = QTableWidgetItem(layer.name)
             item_mask = QTableWidgetItem("✓ Loaded" if layer.pattern_path else "None")
-            item_runs = QTableWidgetItem(str(len(layer.exposures)))
+            item_runs = QTableWidgetItem(str(len(getattr(layer, "exposures", []))))
             self.layers_table.setItem(i, 0, item_name)
             self.layers_table.setItem(i, 1, item_mask)
             self.layers_table.setItem(i, 2, item_runs)
@@ -236,6 +216,26 @@ class ProjectSubpanelWidget(QTabWidget):
         self.spin_default_exp.blockSignals(True)
         self.spin_default_exp.setValue(int(s.exposure_time))
         self.spin_default_exp.blockSignals(False)
+
+        self.chk_default_tiling.blockSignals(True)
+        self.chk_default_tiling.setChecked(s.tiling_enabled)
+        self.chk_default_tiling.blockSignals(False)
+
+        self.spin_tile_w.blockSignals(True)
+        self.spin_tile_w.setValue(s.tile_width)
+        self.spin_tile_w.blockSignals(False)
+
+        self.spin_tile_h.blockSignals(True)
+        self.spin_tile_h.setValue(s.tile_height)
+        self.spin_tile_h.blockSignals(False)
+
+        self.spin_pitch_x.blockSignals(True)
+        self.spin_pitch_x.setValue(s.pitch_x)
+        self.spin_pitch_x.blockSignals(False)
+
+        self.spin_pitch_y.blockSignals(True)
+        self.spin_pitch_y.setValue(s.pitch_y)
+        self.spin_pitch_y.blockSignals(False)
 
     def _refresh_layer_selection(self):
         active_idx = self.engine.project.active_layer_index
@@ -277,12 +277,22 @@ class ProjectSubpanelWidget(QTabWidget):
             self.bridge.status_message.emit(f"Saved project: {Path(path).name}")
 
     def _on_default_exp_changed(self, val: int):
-        self.engine.project.settings.exposure_time = float(val)
-        self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+        self.engine.project.update_settings(exposure_time=float(val))
 
     def _on_default_tiling_toggled(self, checked: bool):
-        self.engine.project.settings.tiling_enabled = checked
-        self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+        self.engine.project.update_settings(tiling_enabled=checked)
+
+    def _on_tile_w_changed(self, val: int):
+        self.engine.project.update_settings(tile_width=val)
+
+    def _on_tile_h_changed(self, val: int):
+        self.engine.project.update_settings(tile_height=val)
+
+    def _on_pitch_x_changed(self, val: float):
+        self.engine.project.update_settings(pitch_x=val)
+
+    def _on_pitch_y_changed(self, val: float):
+        self.engine.project.update_settings(pitch_y=val)
 
 
 # =============================================================================
@@ -309,6 +319,7 @@ class LayerSubpanelWidget(QTabWidget):
         # Signals
         self.bridge.project_changed.connect(lambda _: self._refresh_layer_view())
         self.bridge.active_layer_changed.connect(lambda _: self._refresh_layer_view())
+        self.bridge.active_tile_changed.connect(lambda _: self._refresh_tile_preview())
         self.bridge.exposure_config_changed.connect(lambda: self._refresh_layer_view())
         self.bridge.projector_image_changed.connect(lambda _: self._refresh_layer_view())
         self._refresh_layer_view()
@@ -363,23 +374,59 @@ class LayerSubpanelWidget(QTabWidget):
         mid_row.addWidget(adj_group)
         layout.addLayout(mid_row)
 
-        # Tiling preview & slicing section
-        tiling_box = QGroupBox("Tiling Preview & Slicing")
+        # Tiling preview & navigation section
+        tiling_box = QGroupBox("Tiling & Tile Navigation")
         tiling_layout = QVBoxLayout(tiling_box)
         tiling_layout.setContentsMargins(6, 6, 6, 6)
-        tiling_layout.setSpacing(4)
+        tiling_layout.setSpacing(6)
 
         self.lbl_tiling_status = QLabel("Tiling: Disabled (Single Pattern Mode)")
         self.lbl_tiling_status.setStyleSheet("font-weight: bold; color: #38bdf8;")
         tiling_layout.addWidget(self.lbl_tiling_status)
 
-        self.lbl_tiling_details = QLabel("Project default tiling is inactive.")
+        self.lbl_tiling_details = QLabel("Standard single-shot exposure mode.")
         self.lbl_tiling_details.setStyleSheet("color: #9ca3af; font-size: 11px;")
         tiling_layout.addWidget(self.lbl_tiling_details)
 
-        self.btn_segment = QPushButton("Segment Large Image into Tiles")
-        self.btn_segment.clicked.connect(self._on_segment_clicked)
-        tiling_layout.addWidget(self.btn_segment)
+        # Tile Navigation Row
+        nav_row = QHBoxLayout()
+        nav_row.addWidget(QLabel("Active Tile:"))
+
+        self.btn_prev_tile = QPushButton("◀ Prev")
+        self.btn_prev_tile.clicked.connect(self._on_prev_tile_clicked)
+        nav_row.addWidget(self.btn_prev_tile)
+
+        self.spin_tile_index = QSpinBox()
+        self.spin_tile_index.setRange(0, 0)
+        self.spin_tile_index.valueChanged.connect(self._on_tile_index_changed)
+        nav_row.addWidget(self.spin_tile_index)
+
+        self.lbl_tile_count = QLabel("of 1")
+        nav_row.addWidget(self.lbl_tile_count)
+
+        self.btn_next_tile = QPushButton("Next ▶")
+        self.btn_next_tile.clicked.connect(self._on_next_tile_clicked)
+        nav_row.addWidget(self.btn_next_tile)
+
+        tiling_layout.addLayout(nav_row)
+
+        # Tile Preview
+        preview_row = QHBoxLayout()
+        self.lbl_tile_preview = QLabel("No Tile")
+        self.lbl_tile_preview.setFixedSize(160, 90)
+        self.lbl_tile_preview.setStyleSheet("background-color: #09090b; border: 1px solid #3f3f46;")
+        self.lbl_tile_preview.setAlignment(Qt.AlignCenter)
+        preview_row.addWidget(self.lbl_tile_preview)
+
+        preview_actions = QVBoxLayout()
+        self.btn_regenerate_tiles = QPushButton("Regenerate Tiling Patterns")
+        self.btn_regenerate_tiles.clicked.connect(self._on_regenerate_tiles_clicked)
+        preview_actions.addWidget(self.btn_regenerate_tiles)
+        preview_actions.addStretch()
+        preview_row.addLayout(preview_actions)
+
+        preview_row.addStretch()
+        tiling_layout.addLayout(preview_row)
 
         layout.addWidget(tiling_box)
         layout.addStretch()
@@ -467,11 +514,13 @@ class LayerSubpanelWidget(QTabWidget):
                 f"Tile: {effective.tile_width}x{effective.tile_height} px | "
                 f"Pitch: dx={effective.pitch_x}µm, dy={effective.pitch_y}µm"
             )
-            self.btn_segment.setEnabled(bool(layer.pattern_path))
+            self.btn_regenerate_tiles.setEnabled(bool(layer.pattern_path))
         else:
             self.lbl_tiling_status.setText("Tiling: Disabled (Single Pattern Mode)")
             self.lbl_tiling_details.setText("Standard single-shot exposure will be used.")
-            self.btn_segment.setEnabled(False)
+            self.btn_regenerate_tiles.setEnabled(False)
+
+        self._refresh_tile_preview()
 
         # Overrides UI
         self.chk_override_exp.blockSignals(True)
@@ -500,6 +549,53 @@ class LayerSubpanelWidget(QTabWidget):
             f"({'Overridden' if has_tile_override else 'Default'})"
         )
 
+    def _refresh_tile_preview(self):
+        tile_count = self.engine.project.get_active_layer_tile_count(self.engine.projector.size())
+        active_idx = self.engine.project.active_tile_index
+
+        self.spin_tile_index.blockSignals(True)
+        self.spin_tile_index.setMaximum(max(0, tile_count - 1))
+        self.spin_tile_index.setValue(min(active_idx, max(0, tile_count - 1)))
+        self.spin_tile_index.blockSignals(False)
+
+        self.lbl_tile_count.setText(f"of {max(1, tile_count)}")
+        self.btn_prev_tile.setEnabled(active_idx > 0)
+        self.btn_next_tile.setEnabled(active_idx < max(0, tile_count - 1))
+
+        # Render preview for the active tile
+        layer = self.engine.project.active_layer
+        tile = layer.get_tile(active_idx, self.engine.project.settings, self.engine.projector.size())
+        if tile is not None:
+            thumb = tile.resize((160, 90))
+            if thumb.mode != "RGBA":
+                thumb = thumb.convert("RGBA")
+            data = thumb.tobytes("raw", "RGBA")
+            qimg = QImage(data, 160, 90, QImage.Format_RGBA8888)
+            self.lbl_tile_preview.setPixmap(QPixmap.fromImage(qimg))
+        else:
+            self.lbl_tile_preview.clear()
+            self.lbl_tile_preview.setText("No Tile")
+
+    def _on_tile_index_changed(self, val: int):
+        self.engine.project.select_tile(val)
+
+    def _on_prev_tile_clicked(self):
+        cur = self.engine.project.active_tile_index
+        if cur > 0:
+            self.engine.project.select_tile(cur - 1)
+
+    def _on_next_tile_clicked(self):
+        cur = self.engine.project.active_tile_index
+        max_idx = max(0, self.engine.project.get_active_layer_tile_count(self.engine.projector.size()) - 1)
+        if cur < max_idx:
+            self.engine.project.select_tile(cur + 1)
+
+    def _on_regenerate_tiles_clicked(self):
+        layer = self.engine.project.active_layer
+        layer.regenerate_tiles()
+        self._refresh_tile_preview()
+        self.bridge.status_message.emit("Regenerated tiling patterns for active layer.")
+
     def _load_thumbnail(self, path: str):
         if os.path.exists(path):
             try:
@@ -519,68 +615,39 @@ class LayerSubpanelWidget(QTabWidget):
         )
         if filename:
             layer = self.engine.project.active_layer
-            layer.pattern_path = filename
-            layer.invalidate_render_cache()
+            layer.set_pattern_path(filename)
+            self.engine.event_bus.emit(Event.PROJECT_CHANGED, self.engine.project)
             self.bridge.status_message.emit(f"Loaded mask: {Path(filename).name}")
 
     def _on_adjust_changed(self):
         layer = self.engine.project.active_layer
-        layer.image_adjust = (
+        layer.set_image_adjust((
             self.spin_shift_x.value(),
             self.spin_shift_y.value(),
             self.spin_theta.value(),
-        )
-        layer.invalidate_render_cache()
-
-    def _on_segment_clicked(self):
-        layer = self.engine.project.active_layer
-        effective = layer.get_effective_settings(self.engine.project.settings)
-        if not layer.pattern_path or not os.path.exists(layer.pattern_path):
-            self.bridge.warning_emitted.emit("Please select a valid pattern image first.")
-            return
-
-        try:
-            nx, ny, total, (w, h) = split_image_with_overlap(
-                image_path=layer.pattern_path,
-                tile_width=effective.tile_width,
-                tile_height=effective.tile_height,
-                overlap_x=effective.overlap_x,
-                overlap_y=effective.overlap_y,
-                output_dir="tiles",
-            )
-            self.bridge.status_message.emit(f"Generated {total} tiles in 'tiles/' ({nx}x{ny})")
-        except Exception as e:
-            self.bridge.warning_emitted.emit(f"Segmentation failed: {e}")
+        ))
 
     def _on_override_exp_toggled(self, checked: bool):
         layer = self.engine.project.active_layer
         self.spin_override_exp.setEnabled(checked)
-        if checked:
-            layer.overrides.exposure_time = float(self.spin_override_exp.value())
-        else:
-            layer.overrides.exposure_time = None
-        self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+        val = float(self.spin_override_exp.value()) if checked else None
+        layer.set_exposure_override(val)
 
     def _on_override_exp_value_changed(self, val: int):
         layer = self.engine.project.active_layer
         if self.chk_override_exp.isChecked():
-            layer.overrides.exposure_time = float(val)
-            self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+            layer.set_exposure_override(float(val))
 
     def _on_override_tiling_toggled(self, checked: bool):
         layer = self.engine.project.active_layer
         self.chk_override_tiling_enable.setEnabled(checked)
-        if checked:
-            layer.overrides.tiling_enabled = self.chk_override_tiling_enable.isChecked()
-        else:
-            layer.overrides.tiling_enabled = None
-        self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+        val = self.chk_override_tiling_enable.isChecked() if checked else None
+        layer.set_tiling_override(val)
 
     def _on_override_tiling_enable_toggled(self, checked: bool):
         layer = self.engine.project.active_layer
         if self.chk_override_tiling.isChecked():
-            layer.overrides.tiling_enabled = checked
-            self.engine.events.emit(Event.EXPOSURE_CONFIG_CHANGED)
+            layer.set_tiling_override(checked)
 
 
 # =============================================================================
@@ -682,8 +749,9 @@ class ActionSubpanelWidget(QWidget):
             self.btn_expose.setText("Expose Layer")
 
         # History table
-        self.table_history.setRowCount(len(layer.exposures))
-        for i, exp in enumerate(reversed(layer.exposures)):
+        exps = getattr(layer, "exposures", [])
+        self.table_history.setRowCount(len(exps))
+        for i, exp in enumerate(reversed(exps)):
             time_str = exp.time.strftime("%H:%M:%S")
             dur_str = f"{int(exp.duration)}ms"
             status_str = "Aborted" if exp.aborted else "Success"

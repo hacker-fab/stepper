@@ -52,6 +52,8 @@ class StepperEngine:
 
         # 1. Chip Project Data Object
         self.project = ChipProject(events=self.event_bus)
+        if hasattr(self.projector, "set_project"):
+            self.projector.set_project(self.project)
 
         # 2. Execution Context & Operation Manager
         self.context = ExecutionContext(
@@ -82,9 +84,10 @@ class StepperEngine:
     def load_project(self, path: str):
         self.project = ChipProject.load(path, events=self.event_bus)
         self.context.project = self.project
+        if hasattr(self.projector, "set_project"):
+            self.projector.set_project(self.project)
         self.event_bus.emit(Event.PROJECT_CHANGED, self.project)
         self.event_bus.emit(Event.ACTIVE_LAYER_CHANGED, self.project.active_layer_index)
-        self.event_bus.emit(Event.PROJECTOR_IMAGE_CHANGED)
 
     def save_project(self, path: str):
         self.project.save(path)
@@ -92,9 +95,10 @@ class StepperEngine:
     def new_project(self):
         self.project = ChipProject(events=self.event_bus)
         self.context.project = self.project
+        if hasattr(self.projector, "set_project"):
+            self.projector.set_project(self.project)
         self.event_bus.emit(Event.PROJECT_CHANGED, self.project)
         self.event_bus.emit(Event.ACTIVE_LAYER_CHANGED, self.project.active_layer_index)
-        self.event_bus.emit(Event.PROJECTOR_IMAGE_CHANGED)
 
     # -------------------------------------------------------------------------
     # 2. Operations

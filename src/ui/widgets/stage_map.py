@@ -101,13 +101,14 @@ class StageMapCanvas(QFrame):
         painter.setPen(QPen(QColor("#f59e0b"), 1))
         painter.setBrush(QBrush(QColor(245, 158, 11, 80)))
         for layer in chip_project.layers:
-            for exp in layer.exposures:
-                ex_x, ex_y, _ = exp.coords
-                sx, sy = to_screen(ex_x, ex_y)
-                # Draw exposure tile footprint (~1mm x 0.5mm approx)
-                tile_w = max(4.0, (1.0 / span_x) * dw)
-                tile_h = max(3.0, (0.5 / span_y) * dh)
-                painter.drawRect(QRectF(sx - tile_w / 2, sy - tile_h / 2, tile_w, tile_h))
+            if hasattr(layer, "exposures"):
+                for exp in layer.exposures:
+                    ex_x, ex_y, _ = exp.coords
+                    sx, sy = to_screen(ex_x, ex_y)
+                    # Draw exposure tile footprint (~1mm x 0.5mm approx)
+                    tile_w = max(4.0, (1.0 / span_x) * dw)
+                    tile_h = max(3.0, (0.5 / span_y) * dh)
+                    painter.drawRect(QRectF(sx - tile_w / 2, sy - tile_h / 2, tile_w, tile_h))
 
         # Draw current stage position indicator
         cx, cy, _ = self.parent_widget.engine.stage.get_position()

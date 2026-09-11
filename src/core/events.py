@@ -9,15 +9,19 @@ class StrAutoEnum(str, Enum):
         return name.lower()
 
 
-class ShownImage(StrAutoEnum):
-    """The type of image currently being displayed by the projector"""
+class ColorMode(StrAutoEnum):
+    """Projector color display mode."""
 
-    CLEAR = auto()
-    PATTERN = auto()
-    FLATFIELD = auto()
-    RED_FOCUS = auto()
-    UV_FOCUS = auto()
+    DISABLE = auto()
+    RED = auto()
+    UV = auto()
 
+
+class ProjectorImageSource(StrAutoEnum):
+    """Source of the pattern/image displayed by the projector."""
+
+    ACTIVE_LAYER = auto()
+    CUSTOM_FILE = auto()
 
 
 class Event(StrAutoEnum):
@@ -26,13 +30,16 @@ class Event(StrAutoEnum):
     # Project related
     PROJECT_CHANGED = auto()  # Emitted when a project is loaded, created, saved, or layer structure changes
     ACTIVE_LAYER_CHANGED = auto()  # Emitted when the selected active layer index changes
+    ACTIVE_TILE_CHANGED = auto()  # Emitted when the selected active tile index changes
     EXPOSURE_CONFIG_CHANGED = auto()  # Emitted when patterning/exposure config changes (global settings or per-layer overrides)
 
     # Stage
     STAGE_POSITION_CHANGED = auto()  # Emitted when stage position coordinates change
 
     # Projector
-    PROJECTOR_IMAGE_CHANGED = auto()  # Emitted on any projector display change (layer pattern, test color, focus mode, clear, etc.)
+    PROJECTOR_COLOR_MODE_CHANGED = auto()  # Emitted when the projector color mode changes
+    PROJECTOR_IMAGE_SOURCE_CHANGED = auto()  # Emitted when the projector image source changes
+    PROJECTOR_IMAGE_CHANGED = auto()  # Emitted exclusively by the projector when displayed image changes
 
     # Camera
     CAMERA_FRAME_READY = auto()  # Emitted when a new camera frame is captured and ready
