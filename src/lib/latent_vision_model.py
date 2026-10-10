@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 DEFAULT_LATENT_VISION_CHECKPOINT = Path("checkpoints/latent_vision/latest_model.pth")
@@ -23,6 +24,60 @@ def resolve_checkpoint_path(path: Union[str, Path] = DEFAULT_LATENT_VISION_CHECK
     return p
 
 
+
+class RecursiveLevel(nn.Module):
+
+    def __init__(self, in_channels: int, channels: int, depth: int):
+        super().__init__()
+        self.depth = depth
+
+        # Input goes through two conv2d to get x1
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, channels, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(channels, channels, kernel_size=5, padding=2, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+        )
+
+        self.sub_level = None
+        if depth > 1:
+            # Smaller recursive level
+            self.sub_level = RecursiveLevel(
+                in_channels=channels,
+                channels=channels,
+                depth=depth - 1,
+            )
+            post_in_channels = channels * 2
+        else:
+            post_in_channels = channels
+
+        # Two conv layers before the final output on each level
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(post_in_channels, channels, kernel_size=5, padding=2, bias=True),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x1 = self.conv1(x)
+
+        if self.sub_level is not None:
+            x_down = F.max_pool2d(x1, kernel_size=2, stride=2)
+            x_sub = self.sub_level(x_down)
+            x2 = F.interpolate(x_sub, size=x1.shape[2:], mode="bilinear", align_corners=False)
+            stacked = torch.cat([x1, x2], dim=1)
+            out = self.conv2(stacked)
+        else:
+            out = self.conv2(x1)
+
+        return out
+
+
 class LatentVisionCNN(nn.Module):
     """
     Explicit convolutional neural network for same-size image-to-image mapping:
@@ -30,53 +85,40 @@ class LatentVisionCNN(nn.Module):
       - Output: Single-channel heatmap with shape (B, 1, H, W)
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 1, base_filters: int = 16):
+    def __init__(
+        self,
+        in_channels: int = 3,
+        out_channels: int = 1,
+        latent_channels: int = 32,
+        depth: int = 8,
+    ):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.base_filters = base_filters
+        self.latent_channels = latent_channels
+        self.depth = depth
 
-        f = base_filters  # e.g., 32
 
-        self.net = nn.Sequential(
-            nn.Conv2d(in_channels, f, kernel_size=5, padding=2, bias=False),
-            nn.BatchNorm2d(f),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(f, f, kernel_size=5, padding=2, stride=2, bias=True),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(f, f*2, kernel_size=5, padding=2, bias=False),
-            nn.BatchNorm2d(f*2),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(f*2, f*2, kernel_size=5, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(f*2, f*2, kernel_size=5, padding=2, stride=2, bias=False),
-            nn.BatchNorm2d(f*2),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(f*2, f, kernel_size=5, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(f, f, kernel_size=5, padding=2, bias=False),
-            nn.BatchNorm2d(f),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(f, f, kernel_size=5, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(f, out_channels, kernel_size=5, padding=2, bias=True),
+        # Recursive multi-scale network
+        self.net = RecursiveLevel(
+            in_channels=in_channels,
+            channels=self.latent_channels,
+            depth=self.depth,
         )
 
+        # Final projection to desired output channels (same spatial dimensions)
+        self.out_conv = nn.Conv2d(self.latent_channels, self.out_channels, kernel_size=1)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        feat = self.net(x)
+        return self.out_conv(feat)
 
     @torch.no_grad()
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         self.eval()
         return torch.sigmoid(self.forward(x))
+
+
 
 
 def load_latent_vision_model(
@@ -181,7 +223,7 @@ class LatentVisionWorker(threading.Thread):
                 # 4. Torch Tensor (1, 3, down_h, down_w)
                 tensor = torch.from_numpy(img_float).permute(2, 0, 1).unsqueeze(0).to(self.device)
 
-                # 5. Predict: output is input/4 size
+                # 5. Predict: output is same as input size
                 out = self.model.predict(tensor)
                 out_mask = out.squeeze().cpu().numpy()
 
@@ -192,7 +234,3 @@ class LatentVisionWorker(threading.Thread):
                 self.on_mask_ready(scaled_mask)
             except Exception as e:
                 print(f"[Latent Vision] Inference error: {e}")
-
-
-
-
