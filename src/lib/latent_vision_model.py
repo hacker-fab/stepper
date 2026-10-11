@@ -24,10 +24,9 @@ def resolve_checkpoint_path(path: Union[str, Path] = DEFAULT_LATENT_VISION_CHECK
     return p
 
 
-
 class RecursiveLevel(nn.Module):
 
-    def __init__(self, in_channels: int, channels: int, depth: int):
+    def __init__(self, in_channels: int, channels: int, out_channels: int, depth: int):
         super().__init__()
         self.depth = depth
 
@@ -45,8 +44,9 @@ class RecursiveLevel(nn.Module):
         if depth > 1:
             # Smaller recursive level
             self.sub_level = RecursiveLevel(
-                in_channels=channels,
-                channels=channels,
+                in_channels = channels,
+                channels = channels * 2,
+                out_channels = channels,
                 depth=depth - 1,
             )
             post_in_channels = channels * 2
@@ -58,8 +58,8 @@ class RecursiveLevel(nn.Module):
             nn.Conv2d(post_in_channels, channels, kernel_size=5, padding=2, bias=True),
             nn.ReLU(inplace=True),
 
-            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(channels),
+            nn.Conv2d(channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
 
@@ -103,6 +103,7 @@ class LatentVisionCNN(nn.Module):
         self.net = RecursiveLevel(
             in_channels=in_channels,
             channels=self.latent_channels,
+            out_channels=self.latent_channels,
             depth=self.depth,
         )
 
