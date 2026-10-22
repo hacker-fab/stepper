@@ -2581,7 +2581,7 @@ class OffsetAmountFrame:
         )
         self.amount_spinbox.grid(row=0, column=3)
 
-
+# Will to changes
 class TilingFrame:
     def __init__(self, parent, model: EventDispatcher):
         self.frame = ttk.LabelFrame(parent, text="Tiling")
