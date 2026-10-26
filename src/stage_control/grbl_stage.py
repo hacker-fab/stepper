@@ -20,8 +20,18 @@ class GrblStage(StageController):
     # only x, y, and z axes are supported by this interface
     # may support alternative axes schemes in the future
     # controller_target must be an open file (may be serial port for example)
-    def __init__(self, controller_target, enable_homing, enable_tiling, autofocus_offset):
+    def __init__(
+        self,
+        controller_target,
+        enable_homing,
+        enable_tiling,
+        autofocus_offset,
+        swap_xy: bool = False,
+        invert_x: bool = False,
+        invert_y: bool = False,
+    ):
         self.controller_target = controller_target
+        self._set_axis_map(swap_xy, invert_x, invert_y)
         self.enable_homing = enable_homing  # homes on start
         self.enable_tiling = enable_tiling  # allow for tiling feature that requires homing
         self.autofocus_estimate = (
@@ -345,7 +355,55 @@ class GrblStage(StageController):
     def __del__(self):
         self._send_msg(b"G91\n")
 
+    def _set_axis_map(self, swap_xy: bool, invert_x: bool, invert_y: bool):
+        """
+        Optional conversion between the GUI's axes (X right, Y up in the camera view) and
+        this stage's own X/Y, for a stage whose axes are swapped or reversed relative to the
+        camera. GRBL itself can only reverse an axis ($3), not swap two, so it is done here.
+        With every flag off (the default) all coordinates pass through untouched.
+
+        GUI -> stage: if swap_xy, GUI X drives stage Y and GUI Y drives stage X; then
+        invert_x / invert_y reverse the direction of that stage axis.
+        Example (+X moves the view down, +Y moves it left): all three True, which gives
+        stage_x = -gui_y and stage_y = -gui_x.
+        """
+        self._axis = {"x": "y", "y": "x"} if swap_xy else {"x": "x", "y": "y"}
+        self._sign = {"x": -1.0 if invert_x else 1.0, "y": -1.0 if invert_y else 1.0}
+        if swap_xy or invert_x or invert_y:
+            print(
+                f"Axis mapping active: swap-xy={swap_xy}, invert-x={invert_x}, invert-y={invert_y}"
+            )
+
+    def _to_stage_axes(self, coords: dict[str, float]) -> dict[str, float]:
+        """GUI coordinates (or deltas) -> stage coordinates. Missing axes stay missing."""
+        out: dict[str, float] = {}
+        for key, value in coords.items():
+            if key in self._axis:
+                stage_axis = self._axis[key]
+                out[stage_axis] = self._sign[stage_axis] * value
+            else:
+                out[key] = value
+        return out
+
+    def _to_gui_position(self, pos: tuple[float, float, float]) -> tuple[float, float, float]:
+        """Stage (x, y, z) -> GUI (x, y, z)."""
+        stage = {"x": pos[0], "y": pos[1]}
+        gui_x = self._sign[self._axis["x"]] * stage[self._axis["x"]]
+        gui_y = self._sign[self._axis["y"]] * stage[self._axis["y"]]
+        return (gui_x, gui_y, pos[2])
+
+    def _bounds_to_gui(self, bounds: dict[str, list[float]]) -> dict[str, list[float]]:
+        out = dict(bounds)
+        for gui_axis in ("x", "y"):
+            stage_axis = self._axis[gui_axis]
+            lo, hi = bounds[stage_axis]
+            if self._sign[stage_axis] < 0:
+                lo, hi = -hi, -lo
+            out[gui_axis] = [lo, hi]
+        return out
+
     def _move(self, microns: dict[str, float], relative):
+        microns = self._to_stage_axes(microns)  # GUI axes -> stage axes (identity by default)
         # Note: depending on $10, G91 and G90 will move wrt WPos or MPos
         if relative:
             self._send_msg(b"G91\n")
@@ -504,7 +562,7 @@ class GrblStage(StageController):
         micron_x = positions[0] * 1000
         micron_y = positions[1] * 1000
         micron_z = positions[2] * 1000
-        return (micron_x, micron_y, micron_z)
+        return self._to_gui_position((micron_x, micron_y, micron_z))
 
     def get_on_start_location(self) -> tuple[float, float, float]:
         return self.on_start_location
@@ -533,11 +591,13 @@ class GrblStage(StageController):
             usable = cfg[travel_param] * 1000 - pulloff_microns
             return (min(usable, 0.0), max(usable, 0.0))
 
-        return {
-            'x': list(axis_bounds(130)),
-            'y': list(axis_bounds(131)),
-            'z': list(axis_bounds(132)),
-        }
+        return self._bounds_to_gui(
+            {
+                'x': list(axis_bounds(130)),
+                'y': list(axis_bounds(131)),
+                'z': list(axis_bounds(132)),
+            }
+        )
 
     """
     # pass in list of amounts to move by. Dictionary in "axis: amount" format

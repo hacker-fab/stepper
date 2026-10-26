@@ -3517,9 +3517,17 @@ def main():
                 stage_config["homing"],
                 stage_config["tiling"],
                 stage_config["autofocus"],
+                swap_xy=bool(stage_config.get("swap-xy", False)),
+                invert_x=bool(stage_config.get("invert-x", False)),
+                invert_y=bool(stage_config.get("invert-y", False)),
             )
     else:
         stage = StageController()
+
+    if not isinstance(stage, GrblStage) and any(
+        stage_config.get(k, False) for k in ("swap-xy", "invert-x", "invert-y")
+    ):
+        print("Note: swap-xy / invert-x / invert-y only apply to the GRBL stage; ignoring them")
 
     # CAMERA CONFIG
 
