@@ -1,52 +1,45 @@
-# This section configures the camera used for the GUI's preview.
 [camera]
-# Available options are:
-# "webcam" (for a generic USB camera),
-# "basler" (for a Basler/Pylon camera)
-# "flir" (for a FLIR camera)
-# "none" (to disable camera)
-type = "none"
-# The index field is optional and is only used to select which of multiple webcams or basler/pylon cameras should be used,
-# e.g. on a laptop where there may be a builtin webcam in addition to an external USB camera.
-index = 1
-# The output from the camera is typically too large to show at full resolution.
-# This parameter adjusts the size of the camera feed before it is displayed in the GUI.
-gui-scale = 0.25
-# The following two values adjust the *camera* exposure in microseconds when viewing red or UV light.
-# Note that using values that are not a multiple of 4167 can lead to flickering.
-red-exposure = 4167.0
-uv-exposure = 25000.0
+# camera type, can be "dummy", "webcam", or "pylon"
+type = "webcam"
 
-# This section configures the motion stage
+[camera.dummy]
+width = 640
+height = 480
+
+[camera.webcam]
+index = 0
+
+[camera.pylon]
+index = 0
+
+######
+
 [stage]
-# Set enabled to false to disable all motion.
-enabled = true
+# stage type, can be dummy, omm, or grbl
+type = "omm"
 
+[stage.dummy]
+
+[stage.omm]
+port = "COM6"
+baud-rate = 921600
+
+[stage.grbl]
+port = "COM6"
+baud-rate = 115200
 # Set homing to false if your stage does not have limit sensors
 homing = false
 
-# Enable tiling if user wishes to use tiling features
-tiling = false
 
-# Set autofocus offset, requires homing to be true. Set 0 for no autofocus 
-autofocus = 0
+######
 
-# Select the correct serial port for the device running GRBL.
-# The correct serial port can be checked with Device Manager on Windows.
-port = "COM6"
-# Select the type of stage for the stepper. Use `grbl` for most cases while `omm` is 
-# experimental
-type = "grbl"
-# GRBL's baud rate is almost always 115200 while omm is almost always 921600 
-baud-rate = 115200
-[stage.omm]
-z-max = -1
 
+[projector]
 # This section configures the DLPC6540 projector controller over USB.
 # When enabled, the software will hardware-disable LED channels whose image
 # channel is zeroed out (e.g. red LED off during UV exposure, blue LED off
 # during red alignment mode). This prevents stray light from unused channels.
-[projector]
+
 # Set to true to enable USB control of the DLPC6540 via pyusb.
 dlpc_enabled = false
 # Optional USB product ID to disambiguate if multiple TI devices are present.
@@ -57,6 +50,17 @@ dlpc_enabled = false
 # or if unset, fall back to the safe default of 150. Red/Green always default to 150.
 # OutputCurrent = ((DriveLevel + 1)/1024)*((0.15/0.036)) // confirm the eqn for your DLPC projector model
 # uv_led_drive_level = 150
+
+
+[tiling]
+enabled = false
+
+[autofocus]
+enabled = true
+# UV-Red Z focal offset in micrometers (chromatic aberration offset)
+uv_z_offset = 0.0
+# Minimum ArUco tag detection rate required to continue refinement (0.0 to 1.0)
+min_detection_rate = 0.5
 
 # This section configures alignment marker detection
 [alignment]
@@ -70,5 +74,5 @@ top_marker_y = 269.0     # y-coordinate for markers on the top
 bottom_marker_y = 1075.0 # y-coordinate for markers on the bottom
 left_marker_x = 280.0    # x-coordinate for markers on the left side
 # Scaling factors for converting normalized differences to stage movements (in µm)
-x_scale_factor = -1100   # Scaling factor for x-axis movements
-y_scale_factor = 800     # Scaling factor for y-axis movements
+x_scale_factor = -1100 # Scaling factor for x-axis movements
+y_scale_factor = 800   # Scaling factor for y-axis movements

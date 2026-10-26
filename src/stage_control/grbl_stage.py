@@ -5,7 +5,7 @@
 import time
 
 from stage_control.stage_controller import StageController, UnsupportedCommand
-
+from core.events import Event
 
 def clamp(value, lo, hi):
     if value > hi:
@@ -15,47 +15,36 @@ def clamp(value, lo, hi):
     else:
         return value
 
-
 class GrblStage(StageController):
     # only x, y, and z axes are supported by this interface
     # may support alternative axes schemes in the future
     # controller_target must be an open file (may be serial port for example)
-    def __init__(self, controller_target, enable_homing, enable_tiling, autofocus_offset):
+    def __init__(self, controller_target, enable_homing, enable_tiling):
+        super().__init__()
         self.controller_target = controller_target
-        self.enable_homing = enable_homing  # homes on start
-        self.enable_tiling = enable_tiling  # allow for tiling feature that requires homing
-        self.autofocus_estimate = (
-            autofocus_offset  # a value offset that estimates current focus z-coordinates
-        )
+        self.enable_homing = enable_homing # homes on start
+        self.enable_tiling = enable_tiling # allow for tiling feature that requires homing
         self.valid_position = True
         self.configuration = None
-        self.on_start_location = (0, 0, 0)
 
         # Doing checks to ensure quality of following features
-        if self.enable_tiling and not self.enable_homing:
-            raise RuntimeError(
-                "Error: Tiling enabled, but homing is not. Homing is required. Please change config and restart."
-            )
+        if self.enable_tiling and not self.enable_homing: 
+            raise RuntimeError("Error: Tiling enabled, but homing is not. Homing is required. Please change config and restart.")
 
-        if self.autofocus_estimate != 0 and not self.enable_homing:
-            raise RuntimeError(
-                "Error: Autofocus set, but homing is not. Homing is required. Please change config and restart."
-            )
-
-        time.sleep(3.0)  # allow time for grbl to boot
+        time.sleep(3.0) # allow time for grbl to boot
         print(self.controller_target.read_all())
 
         self.axes = ("x", "y", "z")
         self.resp_buffer = b""
+        
+        print(f"WPos startup (mm): {self._query_state()}") # queries for current position and state
+        self._send_msg(b'$X\n') # exit out of any alarms
 
-        print(f"WPos startup (mm): {self._query_state()}")  # queries for current position and state
-        self._send_msg(b'$X\n')  # exit out of any alarms
-
-        self._query_config()  # query for grbl config settings, which we will need to determine bounds and other features
+        self._query_config() # query for grbl config settings, which we will need to determine bounds and other features
 
     def _fill_resp_buffer(self):
         self.resp_buffer += self.controller_target.read_all()
-
+    
     def _wait_for_idle(self, timeout=10):
         """
         To ensure we are accurantely moving the stage, we'll only send
@@ -85,7 +74,7 @@ class GrblStage(StageController):
         """
         GRBL Alarm codes:
             ALARM:1  - Hard limit triggered
-            ALARM:2  - Soft limit triggered
+            ALARM:2  - Soft limit triggered  
             ALARM:3  - Reset while in motion
             ALARM:4  - Probe fail (initial state open)
             ALARM:5  - Probe fail (contact not detected)
@@ -100,13 +89,14 @@ class GrblStage(StageController):
             try:
                 code = int(response.split(":")[1].strip())
             except ValueError:
-                pass
-
+                pass  
+        
         try:
-            self.soft_reset()  # soft reset and unlock first
+            self.soft_reset() # soft reset and unlock first
         except (Exception, RuntimeError, TimeoutError, ValueError) as e:
             print(f"Error: {str(e)}")
             return
+
 
         # GRBL alarms -> Once in alarm-mode, Grbl will lock out and shut down everything until the user issues a reset
         # --- Soft limit (ALARM:2) ---
@@ -175,15 +165,13 @@ class GrblStage(StageController):
             - []: All feedback messages are sent in brackets (parameter and g-code parser state print-outs)
             - <>: Status reports are sent in chevrons.
         """
-        self.controller_target.write(msg)  # write gcode command
+        self.controller_target.write(msg) # write gcode command
         deadline = time.time() + 30.0
         while True:
-            while (
-                b"\r\n" not in self.resp_buffer
-            ):  # sometimes grbl may take time to respond, so we wait until
-                self._fill_resp_buffer()  # the response actually arrives. This is really important.
+            while b"\r\n" not in self.resp_buffer: # sometimes grbl may take time to respond, so we wait until
+                self._fill_resp_buffer()             # the response actually arrives. This is really important.
                 if time.time() > deadline:
-                    raise TimeoutError("No response from GRBL")
+                    raise TimeoutError("No response from GRBL")      
                 time.sleep(0.01)  # yield the CPU
 
             resp = self.resp_buffer.split(b"\r\n")
@@ -201,14 +189,14 @@ class GrblStage(StageController):
                     return  # happy path, command completed, successful
                 elif item.startswith("error:"):
                     print(f"[GRBL error]: {item}")
-                    return  # not going to block normal operations, command blocked, session stays active
+                    return # not going to block normal operations, command blocked, session stays active
                 elif item.upper().startswith("ALARM:"):
                     self._handle_alarms(item)
                     return
                 else:
                     print(f"[GRBL unknown]: {item}")
                     continue
-
+        
     def _query_state(self):
         """
         Status Report: \
@@ -254,13 +242,13 @@ class GrblStage(StageController):
             elif part.startswith("WPos:"):
                 x, y, z = part.removeprefix("WPos:").split(",")
                 work_position = (float(x), float(y), float(z))
-
+        
         resolved_position = position or work_position
         print(f"resolved position: {resolved_position}, Idle: {idle}")
         if resolved_position is None:
             raise ValueError(f"GRBL status response contained no position data: {buff!r}")
         return idle, resolved_position
-
+    
     def _query_config(self):
         """
         queries for entire grbl settings ->
@@ -311,7 +299,7 @@ class GrblStage(StageController):
         raw = self.resp_buffer.split(b"\r\n")
         self.resp_buffer = b""
         buff = [r.decode("ascii", errors="replace").strip() for r in raw]
-
+        
         # parse the buffer
         for setting in buff:
             if not setting or '$' not in setting:
@@ -319,15 +307,13 @@ class GrblStage(StageController):
             if "ok" in setting:
                 break
             if setting.startswith("error:"):
-                raise Exception(
-                    f"GRBL error: query config failed -> {setting}"
-                )  # double check this
+                raise Exception(f"GRBL error: query config failed -> {setting}") # double check this
             lines.append(setting)
-
+        
         # parse string splits
         for line in lines:
             if "$" in line:
-                part = line.split("$")[-1].strip()  # => [0=10]
+                part = line.split("$")[-1].strip() # => [0=10]
                 if "=" in part:
                     key, value = part.split("=", 1)
                     key = int(key.strip())
@@ -346,6 +332,7 @@ class GrblStage(StageController):
         self._send_msg(b"G91\n")
 
     def _move(self, microns: dict[str, float], relative):
+
         # Note: depending on $10, G91 and G90 will move wrt WPos or MPos
         if relative:
             self._send_msg(b"G91\n")
@@ -363,9 +350,9 @@ class GrblStage(StageController):
             z_mm = microns["z"] / 1000.0
             msg += f" z{z_mm:.3f}"
         msg += "\n"
-
+        
         self._send_msg(msg.encode("ascii"))
-
+    
     def move_relative(self, microns: dict[str, float]):
         """
         Moves relative to WPos
@@ -375,11 +362,14 @@ class GrblStage(StageController):
         0 >= microns[1] >= -$131   (for Y)
         0 >= microns[2] >= -$132   (for Z)
         """
-        if not self.valid_position and self.enable_tiling:  # only block if users are doing tiling
+        if not self.valid_position and self.enable_tiling: # only block if users are doing tiling
             raise RuntimeError("Position is invalid — please exit and re-open the application.")
-
+        
         print("moving relative", microns)
         self._move(microns, relative=True)
+        if self.event_bus is not None:
+            self.event_bus.emit(Event.STAGE_POSITION_CHANGED, self.get_position())
+        return True
 
     def move_absolute(self, microns: dict[str, float]):
         """
@@ -390,20 +380,23 @@ class GrblStage(StageController):
         0 >= microns[1] >= -$131   (for Y)
         0 >= microns[2] >= -$132   (for Z)
         """
-        if not self.valid_position and self.enable_tiling:  # only block if users are doing tiling
+        if not self.valid_position and self.enable_tiling: # only block if users are doing tiling
             raise RuntimeError("Position is invalid — please exit and re-open the application.")
-
+        
         print("moving absolute", microns)
         self._move(microns, relative=False)
-
+        if self.event_bus is not None:
+            self.event_bus.emit(Event.STAGE_POSITION_CHANGED, self.get_position())
+        return True
+    
     def soft_reset(self):
-        """
+        """ 
         This is used when handling GrblAlarm that locks GRBL interface and disallows
-        us from sending more g-code messages, thereby creating a freezing gui interface.
+        us from sending more g-code messages, thereby creating a freezing gui interface. 
         Steps to unlock include a full soft reset, and an unlock g-code command to escape out
         """
         self.controller_target.write(b"\x18")  # soft reset
-
+        
         deadline = time.time() + 5.0
         startup_seen = False
 
@@ -413,7 +406,7 @@ class GrblStage(StageController):
                 startup_seen = True
                 break
             time.sleep(0.05)
-
+        
         if not startup_seen:
             raise RuntimeError("GRBL did not send startup greeting after reset — check connection.")
 
@@ -434,7 +427,7 @@ class GrblStage(StageController):
 
         self.resp_buffer = b""
         print("Stage Reset and Unlocked")
-
+    
     def home(self):
         """
         Homes the stage (assume proximity sensors exist for each axis, then sets WPos
@@ -446,19 +439,19 @@ class GrblStage(StageController):
         are enabled to home deterministically (works 99% of the time)
         - To change max travel: set $130-$132
         - To change soft limits: set $20=1
-
-        When $H runs, GRBL moves all axes toward their endstops until the limit switches trigger.
-        Then it pulls off by $27 (pull-off distance, default 1mm). After that sequence completes,
+        
+        When $H runs, GRBL moves all axes toward their endstops until the limit switches trigger. 
+        Then it pulls off by $27 (pull-off distance, default 1mm). After that sequence completes, 
         GRBL automatically sets MPos to (0,0,0) at the endstop location internally.
 
         Because of pull-off dinstance, you may see MPos at a negative location upon sending a ?
-        right after homing.
+        right after homing. 
 
-        Because MPos can sometimes contain random values (which makes sense), we want to set a
+        Because MPos can sometimes contain random values (which makes sense), we want to set a 
         WPos, which allows us to set the (0,0,0) position to any location we're at. This is just
         so developers and gui users find it easier to work off of coordinates with an origin of (0,0,0)
 
-        For more info, please visit GRBL documentation wiki.
+        For more info, please visit GRBL documentation wiki. 
 
         """
         print("Sending Home Command...")
@@ -469,46 +462,30 @@ class GrblStage(StageController):
             # "pinning" WPos (0,0,0) to the physical end-stops (limit switch locations)
             # MPos = (some triplet of negative values depending on $27)
             # WPos = (0,0,0) -> establish current position as home (0,0,0)
-            self._send_msg(b"G10 L20 P1 X0 Y0 Z0\n")
+            self._send_msg(b"G10 L20 P1 X0 Y0 Z0\n") 
             self.valid_position = True
-
+            if self.event_bus is not None:
+                self.event_bus.emit(Event.STAGE_POSITION_CHANGED, self.get_position())
+            return True
+                
         else:
             raise UnsupportedCommand()
-
-    def set_on_start_location(self):
-        self.on_start_location = self.get_position()
-
+        
     def has_homing(self) -> bool:
         return self.enable_homing
-
-    def get_autofocus(self) -> float:
-        """
-        Returns offset from z-axis home coordinate
-        that can get the stage to reach an estimated
-        focused position.
-
-        Note: developers will still need to run their custom
-        autofocus function that can fine-tune the focus score,
-        but this provides a good point to start the gradient
-        descent search.
-        """
-        return self.autofocus_estimate
-
+        
     def get_position(self) -> tuple[float, float, float]:
         """
         Returns GUI / Wpos of stage in microns
         IMPORTANT: WPos is different from MPos, so
         ensure that $10 is set to reveal WPos instead of MPos
         """
-        _, positions = self._query_state()  # in microns
+        _, positions = self._query_state() # in microns
         micron_x = positions[0] * 1000
         micron_y = positions[1] * 1000
         micron_z = positions[2] * 1000
         return (micron_x, micron_y, micron_z)
-
-    def get_on_start_location(self) -> tuple[float, float, float]:
-        return self.on_start_location
-
+    
     def get_bounds(self):
         """
         Gets soft boundaries based on configuration for $3 and $27
@@ -521,8 +498,6 @@ class GrblStage(StageController):
         which allows +x to travel in the positive WPos coorindate space
         """
         cfg = self.configuration
-        if cfg is None:
-            return  # or print an error, or raise an exception
 
         if cfg.get(22, 0) != 1:
             return None
@@ -538,61 +513,3 @@ class GrblStage(StageController):
             'y': list(axis_bounds(131)),
             'z': list(axis_bounds(132)),
         }
-
-    """
-    # pass in list of amounts to move by. Dictionary in "axis: amount" format
-    def move_by(self, amounts: dict[str, float]):
-        # first make sure axes are valid
-        if self.__axes_valid__(list(amounts.keys())):
-            x, y, z = self.__adjust_coordinates__(amounts, True)
-            self._move_relative((x, y, z))
-            # if that worked, update internal position
-            self.position[0] += x
-            self.position[1] += y
-            self.position[2] += z
-            print(f"moved by {x} {y} {z}")
-        else:
-            print('Error: tried to move on invalid axis')
-
-    def move_to(self, amounts: dict[str, float]):
-        # first make sure axes are valid
-        if self.__axes_valid__(list(amounts.keys())):
-            x, y, z = self.__adjust_coordinates__(amounts, False)
-            self._move_absolute((x, y, z))
-            # if that worked, update internal position
-            self.position[0] = x
-            self.position[1] = y
-            self.position[2] = z
-
-    def __axes_valid__(self, axes):
-        for axis in axes:
-            if axis not in self.axes or (axis != 'x' and axis != 'y' and axis != 'z'):
-                return False
-        return True
-    
-    def __adjust_coordinates__(self, amounts: dict[str, float], relative: bool):
-        coords = [0.0, 0.0, 0.0]
-        clamped_amt = [0.0, 0.0, 0.0]
-        coords[0] = amounts.get('x')
-        coords[1] = amounts.get('y')
-        coords[2] = amounts.get('z')
-
-        for i in range(0, len(coords)):
-            bounds_lo, bounds_hi = self.bounds[i]
-            if coords[i] is None:
-                if relative:
-                    coords[i] = 0
-                else:
-                    coords[i] = self.position[i]
-            else:
-                # if bounds exceeded, set target coordinate to the boundary
-                if relative:
-                    clamped_amt[i] = clamp(coords[i] + self.position[i], bounds_lo, bounds_hi) - self.position[i]
-                else:
-                    clamped_amt[i] = clamp(coords[i], bounds_lo, bounds_hi)
-        print('a')
-        print(self.position)
-        print(coords)
-        print(clamped_amt)
-        return clamped_amt
-    """
