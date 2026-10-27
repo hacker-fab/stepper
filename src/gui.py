@@ -3504,9 +3504,7 @@ def main():
             stage = OMMStage(
                 stage_config["autofocus"],
                 stage_config["omm"]["z-max"],
-                swap_xy=bool(stage_config.get("swap-xy", False)),
-                invert_x=bool(stage_config.get("invert-x", False)),
-                invert_y=bool(stage_config.get("invert-y", False)),
+                flip_xy=bool(stage_config.get("flip-xy", False)),
             )
             stage.connect(stage_config["port"], stage_config["baud-rate"])
         else:
@@ -3523,17 +3521,14 @@ def main():
                 stage_config["homing"],
                 stage_config["tiling"],
                 stage_config["autofocus"],
-                swap_xy=bool(stage_config.get("swap-xy", False)),
-                invert_x=bool(stage_config.get("invert-x", False)),
-                invert_y=bool(stage_config.get("invert-y", False)),
             )
     else:
         stage = StageController()
 
-    if not isinstance(stage, (GrblStage, OMMStage)) and any(
-        stage_config.get(k, False) for k in ("swap-xy", "invert-x", "invert-y")
-    ):
-        print("Note: swap-xy / invert-x / invert-y only apply to the GRBL and OMM stages; ignoring them")
+    if stage_config.get("flip-xy", False) and not isinstance(stage, OMMStage):
+        print("Note: flip-xy only applies to the OMM stage; ignoring it")
+    if any(k in stage_config for k in ("swap-xy", "invert-x", "invert-y")):
+        print("Note: swap-xy / invert-x / invert-y are no longer used; set flip-xy = true instead")
 
     # CAMERA CONFIG
 

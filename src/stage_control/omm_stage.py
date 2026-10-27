@@ -35,36 +35,33 @@ class OMMStage(StageController):
         self,
         autofocus_offset,
         z_max: float,
-        swap_xy: bool = False,
-        invert_x: bool = False,
-        invert_y: bool = False,
+        flip_xy: bool = False,
     ):
         """
         Initialize the OMM stage controller.
 
-        swap_xy / invert_x / invert_y optionally convert between the GUI's axes (X right, Y up
-        in the camera view) and this stage's own axes; see _set_axis_map. All default to False,
-        which leaves every coordinate untouched.
+        flip_xy optionally converts between the GUI's axes (X right, Y up in the camera view)
+        and this stage's own axes; see _set_axis_map. It defaults to False, which leaves every
+        coordinate untouched.
         """
-        self._set_axis_map(swap_xy, invert_x, invert_y)
+        self._set_axis_map(flip_xy)
         self._current_position: Position = Position(0.0, 0.0, 0.0)
         self.omm = OpenMicroStageInterface(False, False)
         self._autofocus_offset = autofocus_offset
         self._z_max = z_max
 
-    def _set_axis_map(self, swap_xy: bool, invert_x: bool, invert_y: bool):
+    def _set_axis_map(self, flip_xy: bool):
         """
-        GUI -> stage: if swap_xy, GUI X drives stage Y and GUI Y drives stage X; then
-        invert_x / invert_y reverse the direction of that stage axis.
-        Example (+X moves the view down, +Y moves it left): all three True, which gives
-        stage_x = -gui_y and stage_y = -gui_x.
+        Builds the GUI <-> stage axis tables. With flip_xy the stage is treated as swapped and
+        reversed on both axes relative to the camera view (+X moves the view down, +Y moves it
+        left): GUI X drives stage Y, GUI Y drives stage X, and both stage axes run backwards,
+        so stage_x = -gui_y and stage_y = -gui_x. Without it every value passes through as is.
         """
+        swap_xy = invert_x = invert_y = flip_xy
         self._axis = {"x": "y", "y": "x"} if swap_xy else {"x": "x", "y": "y"}
         self._sign = {"x": -1.0 if invert_x else 1.0, "y": -1.0 if invert_y else 1.0}
-        if swap_xy or invert_x or invert_y:
-            print(
-                f"Axis mapping active: swap-xy={swap_xy}, invert-x={invert_x}, invert-y={invert_y}"
-            )
+        if flip_xy:
+            print("X/Y flip active: GUI axes are mapped to the stage's swapped, reversed axes")
 
     def _to_stage_axes(self, coords: dict[str, float]) -> dict[str, float]:
         """GUI coordinates (or deltas) -> stage coordinates. Missing axes stay missing."""

@@ -31,15 +31,10 @@ tiling = false
 # Set autofocus offset, requires homing to be true. Set 0 for no autofocus 
 autofocus = 0
 
-# Optional axis mapping (GRBL and OMM stages) between the GUI (X to the right, Y up in the
-# camera view) and the stage's own X/Y axes. Leave all three false unless the stage moves the view in the wrong
-# direction and the stepper wiring / GRBL settings ($3, $23) cannot be changed.
-# swap-xy exchanges the stage X and Y axes; invert-x / invert-y then reverse the stage's X / Y.
-# Example for a stage where +X moves the view down and +Y moves it left:
-#   swap-xy = true, invert-x = true, invert-y = true
-swap-xy = false
-invert-x = false
-invert-y = false
+# Set flip-xy = true if the stage moves the camera view in the wrong direction
+# (+X should move the view right, +Y should move it up). Only used by the OMM stage.
+# Leave it false unless you know your stage needs it.
+flip-xy = false
 
 # Select the correct serial port for the device running GRBL.
 # The correct serial port can be checked with Device Manager on Windows.
