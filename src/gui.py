@@ -3501,7 +3501,13 @@ def main():
     stage_config = config["stage"]
     if stage_config["enabled"]:
         if stage_config.get("type") == "omm":
-            stage = OMMStage(stage_config["autofocus"], stage_config["omm"]["z-max"])
+            stage = OMMStage(
+                stage_config["autofocus"],
+                stage_config["omm"]["z-max"],
+                swap_xy=bool(stage_config.get("swap-xy", False)),
+                invert_x=bool(stage_config.get("invert-x", False)),
+                invert_y=bool(stage_config.get("invert-y", False)),
+            )
             stage.connect(stage_config["port"], stage_config["baud-rate"])
         else:
             serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
@@ -3524,10 +3530,10 @@ def main():
     else:
         stage = StageController()
 
-    if not isinstance(stage, GrblStage) and any(
+    if not isinstance(stage, (GrblStage, OMMStage)) and any(
         stage_config.get(k, False) for k in ("swap-xy", "invert-x", "invert-y")
     ):
-        print("Note: swap-xy / invert-x / invert-y only apply to the GRBL stage; ignoring them")
+        print("Note: swap-xy / invert-x / invert-y only apply to the GRBL and OMM stages; ignoring them")
 
     # CAMERA CONFIG
 

@@ -31,14 +31,59 @@ class Position:
 class OMMStage(StageController):
     """Open Micro Manipulator stage controller implementation."""
 
-    def __init__(self, autofocus_offset, z_max: float):
+    def __init__(
+        self,
+        autofocus_offset,
+        z_max: float,
+        swap_xy: bool = False,
+        invert_x: bool = False,
+        invert_y: bool = False,
+    ):
         """
         Initialize the OMM stage controller.
+
+        swap_xy / invert_x / invert_y optionally convert between the GUI's axes (X right, Y up
+        in the camera view) and this stage's own axes; see _set_axis_map. All default to False,
+        which leaves every coordinate untouched.
         """
+        self._set_axis_map(swap_xy, invert_x, invert_y)
         self._current_position: Position = Position(0.0, 0.0, 0.0)
         self.omm = OpenMicroStageInterface(False, False)
         self._autofocus_offset = autofocus_offset
         self._z_max = z_max
+
+    def _set_axis_map(self, swap_xy: bool, invert_x: bool, invert_y: bool):
+        """
+        GUI -> stage: if swap_xy, GUI X drives stage Y and GUI Y drives stage X; then
+        invert_x / invert_y reverse the direction of that stage axis.
+        Example (+X moves the view down, +Y moves it left): all three True, which gives
+        stage_x = -gui_y and stage_y = -gui_x.
+        """
+        self._axis = {"x": "y", "y": "x"} if swap_xy else {"x": "x", "y": "y"}
+        self._sign = {"x": -1.0 if invert_x else 1.0, "y": -1.0 if invert_y else 1.0}
+        if swap_xy or invert_x or invert_y:
+            print(
+                f"Axis mapping active: swap-xy={swap_xy}, invert-x={invert_x}, invert-y={invert_y}"
+            )
+
+    def _to_stage_axes(self, coords: dict[str, float]) -> dict[str, float]:
+        """GUI coordinates (or deltas) -> stage coordinates. Missing axes stay missing."""
+        out: dict[str, float] = {}
+        for key, value in coords.items():
+            gui_axis = key.lower()
+            if gui_axis in self._axis:
+                stage_axis = self._axis[gui_axis]
+                out[stage_axis] = self._sign[stage_axis] * value
+            else:
+                out[key] = value
+        return out
+
+    def _to_gui_position(self, pos: tuple[float, float, float]) -> tuple[float, float, float]:
+        """Stage (x, y, z) -> GUI (x, y, z)."""
+        stage = {"x": pos[0], "y": pos[1]}
+        gui_x = self._sign[self._axis["x"]] * stage[self._axis["x"]]
+        gui_y = self._sign[self._axis["y"]] * stage[self._axis["y"]]
+        return (gui_x, gui_y, pos[2])
 
     def connect(self, port: str, baud_rate: int = 921600):
         """Connect to the OMM stage."""
@@ -63,6 +108,7 @@ class OMMStage(StageController):
         :param amounts: Dictionary with keys like 'X', 'Y', 'Z' and float values
         """
         self._update_position()
+        amounts = self._to_stage_axes(amounts)
 
         x = self._current_position.x + amounts.get("X", amounts.get("x", 0.0))
         y = self._current_position.y + amounts.get("Y", amounts.get("y", 0.0))
@@ -78,6 +124,7 @@ class OMMStage(StageController):
         :param amounts: Dictionary with keys like 'X', 'Y', 'Z' and float values
         """
         self._update_position()
+        amounts = self._to_stage_axes(amounts)
 
         x = amounts.get("X", amounts.get("x", self._current_position.x))
         y = amounts.get("Y", amounts.get("y", self._current_position.y))
@@ -103,6 +150,7 @@ class OMMStage(StageController):
 
     def move_relative(self, microns: dict[str, float]):
         self._update_position()
+        microns = self._to_stage_axes(microns)
 
         x_um = microns.get("x", microns.get("X", 0.0))
         y_um = microns.get("y", microns.get("Y", 0.0))
@@ -117,6 +165,7 @@ class OMMStage(StageController):
 
     def move_absolute(self, microns: dict[str, float]):
         self._update_position()
+        microns = self._to_stage_axes(microns)
 
         x_um = microns.get("x", microns.get("X", None))
         y_um = microns.get("y", microns.get("Y", None))
@@ -141,10 +190,12 @@ class OMMStage(StageController):
 
     def get_position(self):
         self._update_position()
-        return (
-            self._current_position.x * 1000.0,
-            self._current_position.y * 1000.0,
-            self._current_position.z * 1000.0,
+        return self._to_gui_position(
+            (
+                self._current_position.x * 1000.0,
+                self._current_position.y * 1000.0,
+                self._current_position.z * 1000.0,
+            )
         )
 
     def get_on_start_location(self):
@@ -158,8 +209,15 @@ class OMMStage(StageController):
         return res
 
     def get_bounds(self):
-        return {
+        stage_bounds = {
             "x": (-12 * 1000.0, 12 * 1000.0),
             "y": (-12 * 1000.0, 12 * 1000.0),
-            "z": (-12 * 1000.0, self._z_max * 1000.0),
         }
+        bounds = {"z": (-12 * 1000.0, self._z_max * 1000.0)}
+        for gui_axis in ("x", "y"):
+            stage_axis = self._axis[gui_axis]
+            lo, hi = stage_bounds[stage_axis]
+            if self._sign[stage_axis] < 0:
+                lo, hi = -hi, -lo
+            bounds[gui_axis] = (lo, hi)
+        return {"x": bounds["x"], "y": bounds["y"], "z": bounds["z"]}
