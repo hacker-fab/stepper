@@ -31,11 +31,6 @@ tiling = false
 # Set autofocus offset, requires homing to be true. Set 0 for no autofocus 
 autofocus = 0
 
-# Set flip-xy = true if the stage moves the camera view in the wrong direction
-# (+X should move the view right, +Y should move it up). Only used by the OMM stage.
-# Leave it false unless you know your stage needs it.
-flip-xy = false
-
 # Select the correct serial port for the device running GRBL.
 # The correct serial port can be checked with Device Manager on Windows.
 port = "COM6"

@@ -3501,11 +3501,7 @@ def main():
     stage_config = config["stage"]
     if stage_config["enabled"]:
         if stage_config.get("type") == "omm":
-            stage = OMMStage(
-                stage_config["autofocus"],
-                stage_config["omm"]["z-max"],
-                flip_xy=bool(stage_config.get("flip-xy", False)),
-            )
+            stage = OMMStage(stage_config["autofocus"], stage_config["omm"]["z-max"])
             stage.connect(stage_config["port"], stage_config["baud-rate"])
         else:
             serial_port = serial.Serial(stage_config["port"], stage_config["baud-rate"])
@@ -3524,11 +3520,6 @@ def main():
             )
     else:
         stage = StageController()
-
-    if stage_config.get("flip-xy", False) and not isinstance(stage, OMMStage):
-        print("Note: flip-xy only applies to the OMM stage; ignoring it")
-    if any(k in stage_config for k in ("swap-xy", "invert-x", "invert-y")):
-        print("Note: swap-xy / invert-x / invert-y are no longer used; set flip-xy = true instead")
 
     # CAMERA CONFIG
 
