@@ -1,0 +1,615 @@
+"""tkinter front end for Will Map (matches the old UI: plain tkinter/ttk, no new dependencies).
+
+* ``PatternPickerDialog``      asks for pattern 1, 2, 3 ... with a little grid that highlights the
+                               slot currently being picked.
+* ``PlacementApprovalWindow``  shows the placement on the white area (optionally over the camera
+                               map), seam checks, nudge buttons and an Approve button.
+* ``run_will_map``             the whole flow for the real machine (needs the old UI's model).
+* ``python will_map_ui.py``    runs the same flow against the virtual white chip.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import tkinter as tk
+from dataclasses import dataclass, field
+from tkinter import filedialog, messagebox, ttk
+from typing import Callable, List, Optional, Sequence, Tuple
+
+import cv2
+import numpy as np
+from PIL import Image, ImageTk
+
+from will_map import (
+    DEFAULT_CAM_UM_PER_PX,
+    PROJ_UM_PER_PX,
+    CrossGeometry,
+    MapConfig,
+    MapResult,
+    PlacementMap,
+    TilingTimeModel,
+    background_from_map,
+    budget_report,
+    build_placement_map,
+    check_seams,
+    exposure_mask,
+    load_image,
+    measure_cross_geometry,
+    render_placement,
+    same_layout,
+    spec_mismatches,
+    will_map,
+)
+from will_map_runs import RunRecorder, map_finished_piece
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SAMPLE_DIR = os.path.join(HERE, "will_map_samples")
+# reading order TL, TR, BL, BR.  Patterns 3, 2, 1 are the TR, BL and BR tiles (their crosses only
+# line up in that arrangement); the top-left tile was not supplied, so it is crosses-only.
+SAMPLE_SET = [
+    "pattern_4_crosses_only.png",
+    "pattern_3.png",
+    "pattern_2.png",
+    "pattern_1.png",
+]
+
+
+def slot_name(r: int, c: int, rows: int, cols: int) -> str:
+    if rows == 2 and cols == 2:
+        return ("top" if r == 0 else "bottom") + "-" + ("left" if c == 0 else "right")
+    return f"row {r + 1}, column {c + 1}"
+
+
+# --------------------------------------------------------------------------------------
+# Pattern picker
+# --------------------------------------------------------------------------------------
+class PatternPickerDialog:
+    CELL_W, CELL_H, GAP = 168, 95, 14  # 16:9 cells like the frames themselves
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        rows: int = 2,
+        cols: int = 2,
+        sample_paths: Optional[Sequence[str]] = None,
+        title: str = "Select pattern images",
+    ):
+        self.rows, self.cols = rows, cols
+        self.n = rows * cols
+        self.sample_paths = list(sample_paths) if sample_paths else None
+        self.paths: List[Optional[str]] = [None] * self.n
+        self.geos: List[Optional[CrossGeometry]] = [None] * self.n
+        self.thumbs: List[Optional[ImageTk.PhotoImage]] = [None] * self.n
+        self.current = 0
+        self.result: Optional[List[str]] = None
+
+        self.win = tk.Toplevel(parent)
+        self.win.title(title)
+        self.win.resizable(False, False)
+        try:
+            self.win.transient(parent)
+        except tk.TclError:
+            pass
+
+        self.header = ttk.Label(self.win, font=("TkDefaultFont", 12, "bold"), wraplength=520)
+        self.header.grid(row=0, column=0, columnspan=2, padx=14, pady=(12, 4), sticky="w")
+        w = self.cols * (self.CELL_W + self.GAP) + self.GAP
+        h = self.rows * (self.CELL_H + self.GAP) + self.GAP
+        self.canvas = tk.Canvas(self.win, width=w, height=h, bg="white", highlightthickness=1, highlightbackground="#bbb")
+        self.canvas.grid(row=1, column=0, padx=14, pady=6, sticky="n")
+        side = ttk.Frame(self.win)
+        side.grid(row=1, column=1, padx=(0, 14), pady=6, sticky="nsew")
+        side.columnconfigure(0, minsize=300)
+        self.path_var = tk.StringVar(value="(no file chosen)")
+        ttk.Label(side, textvariable=self.path_var, wraplength=300, justify="left").grid(row=0, column=0, sticky="w")
+        self.status_var = tk.StringVar()
+        self.status = tk.Label(side, textvariable=self.status_var, wraplength=300, justify="left", fg="#444")
+        self.status.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.browse_btn = ttk.Button(side, text="Browse...", command=self.browse)
+        self.browse_btn.grid(row=2, column=0, sticky="w", pady=(10, 0))
+        self.sample_btn = ttk.Button(side, text="Use sample set", command=self.use_samples)
+        self.sample_btn.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        if not self.sample_paths:
+            self.sample_btn.state(["disabled"])
+
+        bar = ttk.Frame(self.win)
+        bar.grid(row=2, column=0, columnspan=2, padx=14, pady=(6, 12), sticky="e")
+        ttk.Button(bar, text="Cancel", command=self.cancel).grid(row=0, column=0, padx=4)
+        self.back_btn = ttk.Button(bar, text="< Back", command=self.back)
+        self.back_btn.grid(row=0, column=1, padx=4)
+        self.next_btn = ttk.Button(bar, text="Next >", command=self.next)
+        self.next_btn.grid(row=0, column=2, padx=4)
+        self._refresh()
+
+    # ---- logic (also callable from tests) ----
+    def try_set(self, path: str) -> Optional[str]:
+        """Accept ``path`` for the current slot.  Returns an error message, or None on success."""
+        try:
+            img = load_image(path)
+            geo = measure_cross_geometry(img)
+        except Exception as e:  # noqa: BLE001 - shown to the user
+            return str(e)
+        for k, g in enumerate(self.geos):
+            if g is not None and k != self.current and not same_layout(g, geo):
+                return (
+                    f"Cross layout differs from pattern {k + 1} (frame {geo.frame_w}x{geo.frame_h}, "
+                    f"crosses {geo.cross_w}x{geo.cross_h}). All tiles must share one layout."
+                )
+        tw, th = self.CELL_W - 8, self.CELL_H - 8
+        small = cv2.resize(img[..., :3] if img.ndim == 3 else img, (tw, th), interpolation=cv2.INTER_AREA)
+        small = np.clip(small.astype(np.float32) * 2.0, 0, 255).astype(np.uint8)  # keep thin lines visible
+        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB) if small.ndim == 3 else cv2.cvtColor(small, cv2.COLOR_GRAY2RGB)
+        self.thumbs[self.current] = ImageTk.PhotoImage(Image.fromarray(rgb))
+        self.paths[self.current] = path
+        self.geos[self.current] = geo
+        self._ok = (
+            f"OK: {geo.frame_w}x{geo.frame_h} px, crosses {geo.cross_w}x{geo.cross_h} px, "
+            f"cross pitch {geo.pitch_x} x {geo.pitch_y} px"
+        )
+        return None
+
+    def browse(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self.win,
+            title=f"Image for pattern {self.current + 1}",
+            initialdir=SAMPLE_DIR if os.path.isdir(SAMPLE_DIR) else None,
+            filetypes=[("Pattern images", "*.png *.bmp *.jpg *.jpeg *.tif *.tiff"), ("All files", "*.*")],
+        )
+        if path:
+            self.choose(path)
+
+    def choose(self, path: str) -> bool:
+        err = self.try_set(path)
+        if err:
+            self.status.configure(fg="#B00020")
+            self.status_var.set("Not accepted: " + err)
+            return False
+        self.status.configure(fg="#1B6E2D")
+        self.status_var.set(self._ok)
+        self._refresh()
+        return True
+
+    def use_samples(self) -> None:
+        if not self.sample_paths:
+            return
+        for k, p in enumerate(self.sample_paths[: self.n]):
+            self.current = k
+            if not self.choose(p):
+                break
+        else:
+            self.current = self.n - 1
+        self._refresh()
+
+    def next(self) -> None:
+        if self.paths[self.current] is None:
+            return
+        if self.current < self.n - 1:
+            self.current += 1
+            self.status_var.set("")
+            self._refresh()
+        else:
+            self.result = [p for p in self.paths if p is not None]
+            self.win.destroy()
+
+    def back(self) -> None:
+        if self.current > 0:
+            self.current -= 1
+            self.status_var.set("")
+            self._refresh()
+
+    def cancel(self) -> None:
+        self.result = None
+        self.win.destroy()
+
+    def show(self) -> Optional[List[str]]:
+        self.win.grab_set()
+        self.win.wait_window()
+        return self.result
+
+    # ---- drawing ----
+    def _refresh(self) -> None:
+        r, c = divmod(self.current, self.cols)
+        self.header.configure(
+            text=f"Pattern {self.current + 1} of {self.n}: choose the image for the "
+            f"{slot_name(r, c, self.rows, self.cols)} tile (row {r + 1}, column {c + 1})"
+        )
+        p = self.paths[self.current]
+        self.path_var.set(f"{os.path.basename(os.path.dirname(p))}/{os.path.basename(p)}" if p else "(no file chosen)")
+        self.next_btn.configure(text="Finish" if self.current == self.n - 1 else "Next >")
+        self.next_btn.state(["!disabled"] if p else ["disabled"])
+        self.back_btn.state(["!disabled"] if self.current > 0 else ["disabled"])
+        cv = self.canvas
+        cv.delete("all")
+        for s in range(self.n):
+            rr, cc = divmod(s, self.cols)
+            x0 = self.GAP + cc * (self.CELL_W + self.GAP)
+            y0 = self.GAP + rr * (self.CELL_H + self.GAP)
+            x1, y1 = x0 + self.CELL_W, y0 + self.CELL_H
+            if s == self.current:
+                cv.create_rectangle(x0 - 5, y0 - 5, x1 + 5, y1 + 5, fill="#FFE2B0", outline="#E07B00", width=4)
+            fill = "#F4F4F4" if self.thumbs[s] is None else "#000000"
+            cv.create_rectangle(x0, y0, x1, y1, fill=fill, outline="#888" if s != self.current else "#E07B00", width=2)
+            if self.thumbs[s] is not None:
+                cv.create_image(x0 + 4, y0 + 4, image=self.thumbs[s], anchor="nw")
+                cv.create_rectangle(x0, y0, x0 + 26, y0 + 22, fill="#FFFFFF", outline="")
+                cv.create_text(x0 + 13, y0 + 11, text=str(s + 1), font=("TkDefaultFont", 11, "bold"), fill="#1B6E2D")
+            else:
+                cv.create_text(
+                    (x0 + x1) / 2, (y0 + y1) / 2 - (8 if s == self.current else 0), text=str(s + 1),
+                    font=("TkDefaultFont", 26, "bold"), fill="#E07B00" if s == self.current else "#999",
+                )
+                if s == self.current:
+                    cv.create_text((x0 + x1) / 2, y1 - 14, text="picking this one", fill="#9A5400", font=("TkDefaultFont", 9))
+
+
+# --------------------------------------------------------------------------------------
+# Placement approval
+# --------------------------------------------------------------------------------------
+@dataclass
+class ApprovedPlacement:
+    placement: PlacementMap
+    stage_targets: List[Tuple[float, float]]
+    area_center_um: Tuple[float, float]
+    seams: List[dict]
+    images: List[np.ndarray] = field(default_factory=list, repr=False)  # the patterns, for the run folder
+    paths: List[str] = field(default_factory=list)
+    map_result: Optional[MapResult] = field(default=None, repr=False)
+
+    def lines(self) -> List[str]:
+        out = self.placement.report()
+        for k, (x, y) in enumerate(self.stage_targets):
+            out.append(f"stage target tile {k + 1}: x {x:.1f} um, y {y:.1f} um")
+        return out
+
+
+class PlacementApprovalWindow:
+    CANVAS_W, CANVAS_H = 880, 500
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        images: Sequence[np.ndarray],
+        paths: Optional[Sequence[str]] = None,
+        rows: int = 2,
+        cols: int = 2,
+        area_rows: int = 3,
+        area_cols: int = 3,
+        area_center_um: Tuple[float, float] = (0.0, 0.0),
+        map_result: Optional[MapResult] = None,
+        um_per_px: Tuple[float, float] = PROJ_UM_PER_PX,
+        on_approve: Optional[Callable[[ApprovedPlacement], None]] = None,
+        sign: Tuple[int, int] = (1, -1),
+    ):
+        self.images = list(images)
+        self.masks = [exposure_mask(i) for i in self.images]  # cached; used by every redraw
+        self.paths = list(paths) if paths else []
+        self.rows, self.cols, self.area_rows, self.area_cols = rows, cols, area_rows, area_cols
+        self.area_center = area_center_um
+        self.map_result = map_result
+        self.um_per_px = um_per_px
+        self.on_approve = on_approve
+        self.sign = sign
+        self.geo = measure_cross_geometry(self.images[0])
+        self.seams = check_seams(self.images, rows, cols, self.geo)
+        self.spec_notes = spec_mismatches(self.geo)  # differences from the CROSS_* inputs in will_map.py
+        self.nudge = [0.0, 0.0]
+        self.result: Optional[ApprovedPlacement] = None
+        self._photo: Optional[ImageTk.PhotoImage] = None
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("Placement map: review and approve")
+        self.win.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.canvas = tk.Canvas(self.win, width=self.CANVAS_W, height=self.CANVAS_H, bg="#e8e8e8", highlightthickness=0)
+        self.canvas.grid(row=0, column=0, padx=10, pady=10, sticky="n")
+        side = ttk.Frame(self.win)
+        side.grid(row=0, column=1, padx=(0, 10), pady=10, sticky="ns")
+
+        self.mode_var = tk.StringVar(value="trimmed")
+        box = ttk.LabelFrame(side, text="Exposure mode")
+        box.grid(row=0, column=0, sticky="ew")
+        ttk.Radiobutton(box, text="Split at the crosses (footprints)", value="trimmed", variable=self.mode_var, command=self.refresh).grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(box, text="Whole frames at half-frame offset", value="whole", variable=self.mode_var, command=self.refresh).grid(row=1, column=0, sticky="w")
+        self.bg_var = tk.BooleanVar(value=False)
+        self.bg_check = ttk.Checkbutton(side, text="Show camera map underneath", variable=self.bg_var, command=self.refresh)
+        self.bg_check.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        if map_result is None or map_result.mosaic is None:
+            self.bg_check.state(["disabled"])
+
+        nb = ttk.LabelFrame(side, text="Nudge placement (um)")
+        nb.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.step_var = tk.StringVar(value="10")
+        ttk.Entry(nb, textvariable=self.step_var, width=6).grid(row=0, column=1)
+        ttk.Button(nb, text="^", width=3, command=lambda: self.move(0, -1)).grid(row=0, column=3)
+        ttk.Button(nb, text="<", width=3, command=lambda: self.move(-1, 0)).grid(row=1, column=2)
+        ttk.Button(nb, text="Reset", width=6, command=self.reset_nudge).grid(row=1, column=3)
+        ttk.Button(nb, text=">", width=3, command=lambda: self.move(1, 0)).grid(row=1, column=4)
+        ttk.Button(nb, text="v", width=3, command=lambda: self.move(0, 1)).grid(row=2, column=3)
+        ttk.Label(nb, text="step").grid(row=0, column=0)
+
+        self.info = tk.Text(side, width=64, height=24, font=("Courier", 9), wrap="word", state="disabled")
+        self.info.grid(row=3, column=0, pady=(8, 0), sticky="nsew")
+        side.rowconfigure(3, weight=1)
+        bar = ttk.Frame(side)
+        bar.grid(row=4, column=0, pady=(10, 0), sticky="e")
+        ttk.Button(bar, text="Cancel", command=self.cancel).grid(row=0, column=0, padx=4)
+        self.approve_btn = ttk.Button(bar, text="Approve placement", command=self.approve)
+        self.approve_btn.grid(row=0, column=1, padx=4)
+        self.refresh()
+
+    # ---- state ----
+    def placement(self) -> PlacementMap:
+        return build_placement_map(
+            self.geo, self.rows, self.cols, self.area_rows, self.area_cols,
+            mode=self.mode_var.get(), um_per_px=self.um_per_px, nudge_um=(self.nudge[0], self.nudge[1]),
+        )
+
+    def move(self, dx: int, dy: int) -> None:
+        try:
+            step = float(self.step_var.get())
+        except ValueError:
+            step = 10.0
+        self.nudge[0] += dx * step
+        self.nudge[1] += dy * step
+        self.refresh()
+
+    def reset_nudge(self) -> None:
+        self.nudge = [0.0, 0.0]
+        self.refresh()
+
+    # ---- drawing ----
+    def refresh(self) -> None:
+        pm = self.placement()
+        pad = 600
+        total_w = pm.area_size_px[0] + 2 * pad
+        scale = min(self.CANVAS_W / total_w, self.CANVAS_H / (pm.area_size_px[1] + 2 * pad))
+        bg = None
+        if self.bg_var.get() and self.map_result is not None and self.map_result.mosaic is not None:
+            bg = background_from_map(self.map_result, pm, scale)
+        img, _ = render_placement(pm, self.masks, scale=scale, background=bg, pad_px=pad)
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        self._photo = ImageTk.PhotoImage(Image.fromarray(rgb))
+        self.canvas.delete("all")
+        self.canvas.create_image(self.CANVAS_W // 2, self.CANVAS_H // 2, image=self._photo)
+
+        lines = pm.report()
+        lines.append(f"nudge: {self.nudge[0]:+.0f} um x, {self.nudge[1]:+.0f} um y")
+        lines.append("")
+        lines.append("crosses that must coincide between neighbours:")
+        for s in self.seams:
+            a, b = s["a"] + 1, s["b"] + 1
+            where = "left|right" if s["dir"] == "h" else "top|bottom"
+            lines.append(f"  tile {a} / tile {b} ({where}): " + ("match" if s["ok"] else f"MISMATCH, {s['mismatch_px']} px differ - wrong order?"))
+        lines.append("")
+        if self.spec_notes:
+            lines.append("cross inputs (CROSS_* in will_map.py) DIFFER from this pattern:")
+            lines += [f"  {n}" for n in self.spec_notes]
+            lines.append("  keep cross size and distances identical on every tile!")
+        else:
+            lines.append("cross size/distances match the CROSS_* inputs in will_map.py")
+        targets = pm.stage_targets(self.area_center, self.sign)
+        lines.append("")
+        lines.append("stage targets (um):")
+        for k, (x, y) in enumerate(targets):
+            lines.append(f"  tile {k + 1}: x {x:9.1f}   y {y:9.1f}")
+        if self.map_result is not None:
+            rep = budget_report(self.map_result.timing.get("total_s", 0.0), n_tiles=len(pm.tiles), model=TilingTimeModel())
+            lines.append("")
+            lines.append(f"map took {rep['map_s']:.0f} s (limit {rep['map_limit_s']:.0f} s)")
+            lines.append(
+                f"tiling overhead ~{rep['tile_overhead_s']:.0f} s (assumed), leaves up to "
+                f"{rep['max_exposure_per_tile_s']:.0f} s exposure per tile in {rep['tile_limit_s']:.0f} s"
+            )
+        self.info.configure(state="normal")
+        self.info.delete("1.0", "end")
+        self.info.insert("1.0", "\n".join(lines))
+        self.info.configure(state="disabled")
+        bad = any(not s["ok"] for s in self.seams)
+        self.approve_btn.configure(text="Approve placement (seam mismatch!)" if bad else "Approve placement")
+
+    # ---- actions ----
+    def approve(self) -> None:
+        pm = self.placement()
+        self.result = ApprovedPlacement(
+            pm, pm.stage_targets(self.area_center, self.sign), self.area_center, self.seams,
+            self.images, self.paths, self.map_result,
+        )
+        if self.on_approve:
+            self.on_approve(self.result)
+        self.win.destroy()
+
+    def cancel(self) -> None:
+        self.result = None
+        self.win.destroy()
+
+
+# --------------------------------------------------------------------------------------
+# Whole flow
+# --------------------------------------------------------------------------------------
+class ModelRig:
+    """Rig for the old UI: wraps the EventDispatcher ('model') the way TilingCheckFrame uses it."""
+
+    def __init__(self, model, z: Optional[float] = None):
+        self.model = model
+        self.z = model.stage_setpoint[2] if z is None else z
+
+    def move_to(self, x_um: float, y_um: float) -> None:
+        # move_absolute fills missing axes with 0, so always pass z
+        if self.model.move_absolute({"x": x_um, "y": y_um, "z": self.z}) is False:
+            raise RuntimeError(f"stage refused the move to ({x_um:.0f}, {y_um:.0f}) um (out of bounds?)")
+
+    def settle(self, seconds: float) -> None:
+        self.model.non_blocking_delay(seconds)
+
+    def grab(self) -> np.ndarray:
+        img = self.model.camera_image
+        if img is None:
+            raise RuntimeError("no camera image available")
+        return np.array(img)
+
+
+class _Progress:
+    def __init__(self, parent: tk.Misc, title: str = "Will Map"):
+        self.win = tk.Toplevel(parent)
+        self.win.title(title)
+        self.win.resizable(False, False)
+        self.label = ttk.Label(self.win, text="starting...", width=60)
+        self.label.grid(row=0, column=0, padx=14, pady=(14, 6))
+        self.bar = ttk.Progressbar(self.win, length=420, maximum=1.0)
+        self.bar.grid(row=1, column=0, padx=14, pady=6)
+        self.aborted = False
+        ttk.Button(self.win, text="Abort", command=self._abort).grid(row=2, column=0, pady=(6, 14))
+
+    def _abort(self) -> None:
+        self.aborted = True
+
+    def update(self, frac: float, msg: str) -> None:
+        self.bar["value"] = frac
+        self.label.configure(text=msg)
+        self.win.update()
+
+    def close(self) -> None:
+        self.win.destroy()
+
+
+def run_will_map(
+    parent: tk.Misc,
+    model,
+    cam_um_per_px: float = DEFAULT_CAM_UM_PER_PX,
+    on_approved: Optional[Callable[[ApprovedPlacement], None]] = None,
+) -> Optional[ApprovedPlacement]:
+    """Pattern picker -> camera map around the current stage position -> placement approval."""
+    sample_paths = [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]
+    sample_paths = sample_paths if all(os.path.exists(p) for p in sample_paths) else None
+    paths = PatternPickerDialog(parent, 2, 2, sample_paths).show()
+    if not paths:
+        return None
+    images = [load_image(p) for p in paths]
+    geo = measure_cross_geometry(images[0])
+    pm0 = build_placement_map(geo)
+    cam = np.asarray(model.camera_image)
+    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=(cam.shape[1], cam.shape[0]))
+    center = (float(model.stage_setpoint[0]), float(model.stage_setpoint[1]))
+    recorder = RunRecorder(label="map")  # one folder per run, next to this file
+    try:
+        model.will_run = recorder  # the finished-piece scan writes into the same folder
+    except Exception:  # noqa: BLE001
+        pass
+    prog = _Progress(parent)
+    try:
+        result = will_map(ModelRig(model), cfg, pm0.area_size_um, center, prog.update, lambda: prog.aborted)
+    except Exception as e:  # noqa: BLE001
+        prog.close()
+        recorder.log(f"mapping stopped: {e}")
+        messagebox.showerror("Will Map", f"Mapping stopped: {e}")
+        return None
+    prog.close()
+    print("\n".join(result.report()))
+    recorder.save_map(result)  # photos + combined map are kept even when the map fails (useful for debugging)
+    if not result.ok:
+        messagebox.showwarning("Will Map", "\n".join(result.report()) + f"\n\nPhotos saved in:\n{recorder.dir}")
+        return None
+    win = PlacementApprovalWindow(
+        parent, images, paths, area_center_um=center, map_result=result, on_approve=on_approved,
+    )
+    win.win.grab_set()
+    win.win.wait_window()
+    if win.result is not None:
+        print("\n".join(win.result.lines()))
+        recorder.save_placement(win.result.placement, images, paths, center, result)
+        try:
+            model.will_placement = win.result  # kept for the exposure step that comes next
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        recorder.log("placement not approved")
+    return win.result
+
+
+def run_finished_piece(parent: tk.Misc, model, cam_um_per_px: float = DEFAULT_CAM_UM_PER_PX) -> Optional[MapResult]:
+    """After patterning: quick re-map of the same area, saved as separate photos + one stitched image
+    in the run folder of the approved placement (4_finished_piece)."""
+    placement: Optional[ApprovedPlacement] = getattr(model, "will_placement", None)
+    recorder: Optional[RunRecorder] = getattr(model, "will_run", None)
+    if placement is None or recorder is None:
+        messagebox.showinfo("Will Map", "Run Will Map and approve a placement first.")
+        return None
+    cam = np.asarray(model.camera_image)
+    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=(cam.shape[1], cam.shape[0]))
+    prog = _Progress(parent, "Will Map: finished piece")
+    try:
+        res = map_finished_piece(
+            ModelRig(model), cfg, placement.placement.area_size_um, placement.area_center_um, recorder,
+            placement.placement, prog.update, lambda: prog.aborted,
+        )
+    except Exception as e:  # noqa: BLE001
+        prog.close()
+        recorder.log(f"finished-piece scan stopped: {e}")
+        messagebox.showerror("Will Map", f"Finished-piece scan stopped: {e}")
+        return None
+    prog.close()
+    messagebox.showinfo("Will Map", "\n".join(res.report()) + f"\n\nSaved in:\n{recorder.dir}")
+    return res
+
+
+def _virtual_demo() -> None:
+    """Run the whole flow against the virtual white chip (no hardware)."""
+    from will_map_virtual import VirtualChip, VirtualRig, simulate_patterning
+
+    root = tk.Tk()
+    root.title("Will Map - virtual test")
+    closed = tk.BooleanVar(value=True)
+
+    def go() -> None:
+        sample_paths = [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]
+        paths = PatternPickerDialog(root, 2, 2, sample_paths).show()
+        if not paths:
+            return
+        images = [load_image(p) for p in paths]
+        pm0 = build_placement_map(measure_cross_geometry(images[0]))
+        center = (5000.0, 3000.0)
+        rig = VirtualRig(VirtualChip(pm0.area_size_um), center_um=center)
+        rec = RunRecorder(label="virtual")
+        prog = _Progress(root)
+        res = will_map(rig, MapConfig(), pm0.area_size_um, center, prog.update, lambda: prog.aborted)
+        prog.close()
+        print("\n".join(res.report()))
+        rec.save_map(res)
+        if not res.ok:
+            messagebox.showwarning("Will Map", "\n".join(res.report()))
+            return
+        win = PlacementApprovalWindow(root, images, paths, area_center_um=center, map_result=res)
+        win.win.wait_window()
+        if not win.result:
+            return
+        print("\n".join(win.result.lines()))
+        pm = win.result.placement
+        rec.save_placement(pm, images, paths, center, res)
+        if messagebox.askyesno(
+            "Virtual patterning",
+            "Simulate patterning (align each tile with the closed-loop algorithm if ticked, 'expose' it onto "
+            "the virtual chip) and map the finished piece?",
+        ):
+            prog = _Progress(root, "Virtual patterning")
+            try:
+                sim = simulate_patterning(rig, res, pm, images, MapConfig(), center, closed.get(), rec, lambda m: prog.update(0.5, m))
+                fin = map_finished_piece(rig, MapConfig(), pm.area_size_um, center, rec, pm, prog.update)
+            finally:
+                prog.close()
+            messagebox.showinfo(
+                "Virtual patterning",
+                f"tile spacing error vs ideal: {', '.join(f'{v:.1f}' for v in sim['spacing_error_um'])} um "
+                f"({'closed-loop' if closed.get() else 'open-loop'}, {sim['photos']} alignment photos)\n\n"
+                + "\n".join(fin.report()) + f"\n\nRun folder:\n{rec.dir}",
+            )
+
+    ttk.Label(root, text="The chip is white; scratches and dust give the camera something to register on.").grid(row=0, column=0, padx=16, pady=(14, 6))
+    ttk.Checkbutton(root, text="Closed-loop alignment before each virtual exposure", variable=closed).grid(row=1, column=0)
+    ttk.Button(root, text="Run virtual test", command=go).grid(row=2, column=0, pady=6)
+    ttk.Button(root, text="Quit", command=root.destroy).grid(row=3, column=0, pady=(0, 14))
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    sys.path.insert(0, HERE)
+    _virtual_demo()

@@ -1,0 +1,570 @@
+"""Self-test for Will Map, run against the virtual white chip (no hardware needed).
+
+    python src/will_map_selftest.py                 # all tests (UI test runs if a display exists)
+    python src/will_map_selftest.py --visuals OUT   # also write the explanatory pictures to OUT/
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import sys
+import traceback
+from typing import Callable, List, Tuple
+
+import cv2
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import will_map as wm  # noqa: E402
+from will_map_virtual import VirtualChip, VirtualRig  # noqa: E402
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SAMPLES = os.path.join(HERE, "will_map_samples")
+CENTER = (5000.0, 3000.0)  # pretend stage position at the middle of the area
+
+
+def _load_samples() -> Tuple[List[np.ndarray], wm.CrossGeometry]:
+    p = [wm.load_image(os.path.join(SAMPLES, f"pattern_{i}.png")) for i in (1, 2, 3)]
+    cross = wm.load_image(os.path.join(SAMPLES, "pattern_4_crosses_only.png"))
+    geo = wm.measure_cross_geometry(p[2])
+    return [cross, p[2], p[1], p[0]], geo  # reading order TL, TR, BL, BR
+
+
+# ---------------------------------------------------------------- tests
+def test_geometry() -> None:
+    imgs, geo = _load_samples()
+    for img in imgs:
+        assert wm.same_layout(wm.measure_cross_geometry(img), geo), "all tiles must share one cross layout"
+    assert (geo.frame_w, geo.frame_h) == (3840, 2160)
+    assert (geo.cross_w, geo.cross_h) == (314, 198)
+    assert geo.tl == (17, 17)
+    assert (geo.pitch_x, geo.pitch_y) == (3492, 1928)
+    assert (geo.overlap_x, geo.overlap_y) == (348, 232)
+    sizes = lambda r, c: (geo.footprint(r, c)[2] - geo.footprint(r, c)[0], geo.footprint(r, c)[3] - geo.footprint(r, c)[1])
+    assert sizes(0, 0) == (3806, 2126)  # left+top: both crosses, whole footprint
+    assert sizes(0, 1) == (3492, 2126)  # has a left neighbour: left cross dropped
+    assert sizes(1, 0) == (3806, 1928)  # has a top neighbour: top cross dropped
+    assert sizes(1, 1) == (3492, 1928)  # both dropped, and equals the pitch
+    assert sizes(2, 2) == sizes(1, 1)
+
+
+def test_placement() -> None:
+    imgs, geo = _load_samples()
+    pm = wm.build_placement_map(geo)
+    assert pm.area_size_px == (10790, 5982)
+    t0, t1, t2, t3 = pm.tiles
+    # 2x2 centred in 3x3: equal margins, each exactly half a pitch
+    assert t0.dest[0] - pm.area_box[0] == pm.area_box[2] - t1.dest[2] == geo.pitch_x // 2
+    assert t0.dest[1] - pm.area_box[1] == pm.area_box[3] - t2.dest[3] == geo.pitch_y // 2
+    # shared crosses coincide: right cross of the left tile == left cross of the right tile
+    assert t1.frame_origin[0] + geo.tl[0] == t0.frame_origin[0] + geo.tr[0]
+    assert t2.frame_origin[1] + geo.tl[1] == t0.frame_origin[1] + geo.bl[1]
+    # footprints tile the 2x2 region with no gap and no overlap
+    assert t0.dest[2] == t1.dest[0] and t0.dest[3] == t2.dest[1]
+    assert t2.dest[2] == t3.dest[0] and t1.dest[3] == t3.dest[1]
+    # stage targets: symmetric about the centre, step = pitch in um
+    tg = pm.stage_targets(CENTER)
+    assert abs((tg[1][0] - tg[0][0]) - pm.step_um[0]) < 1e-6 and abs((tg[0][1] - tg[2][1]) - pm.step_um[1]) < 1e-6
+    assert abs(pm.step_um[0] - 943.0) < 0.5 and abs(pm.step_um[1] - 520.4) < 0.5
+    assert abs(np.mean([t[0] for t in tg]) - CENTER[0]) < 1e-6 and abs(np.mean([t[1] for t in tg]) - CENTER[1]) < 1e-6
+    # stage +y is up and mosaic y is down: tile row 1 (top) has the HIGHER stage y
+    assert tg[0][1] > tg[2][1]
+    # nudging +10 um right / +20 um down moves stage x by +10 and stage y by -20
+    pn = wm.build_placement_map(geo, nudge_um=(10.0, 20.0))
+    tn = pn.stage_targets(CENTER)
+    assert abs(tn[0][0] - tg[0][0] - 10) < 0.3 and abs(tn[0][1] - tg[0][1] + 20) < 0.3
+    for mode in ("trimmed", "whole"):
+        img, _ = wm.render_placement(wm.build_placement_map(geo, mode=mode), imgs)
+        assert img.ndim == 3 and img.shape[0] > 100
+
+
+def test_seams() -> None:
+    imgs, geo = _load_samples()
+    assert all(s["ok"] for s in wm.check_seams(imgs, 2, 2, geo)), "sample set must line up"
+    swapped = wm.check_seams([imgs[0], imgs[2], imgs[1], imgs[3]], 2, 2, geo)
+    assert any(not s["ok"] for s in swapped), "a wrong slot order must be flagged"
+
+
+def _area() -> Tuple[float, float]:
+    return wm.build_placement_map(_load_samples()[1]).area_size_um
+
+
+def _run(chip: VirtualChip, cfg: wm.MapConfig = None, **rig_kw):
+    cfg = cfg or wm.MapConfig()
+    rig = VirtualRig(chip, center_um=CENTER, seed=5, **rig_kw)
+    return rig, cfg, wm.will_map(rig, cfg, _area(), CENTER)
+
+
+def _max_err_px(rig: VirtualRig, cfg: wm.MapConfig, res: wm.MapResult) -> float:
+    order = wm.snake_order(cfg.rows, cfg.cols)
+    a = res.positions_px[order[0]]
+    errs = []
+    for k, t in enumerate(order):
+        tx, ty = rig.true_shift_px(0, k)
+        errs.append(max(abs(res.positions_px[t][0] - a[0] - tx), abs(res.positions_px[t][1] - a[1] - ty)))
+    return max(errs)
+
+
+def test_map_happy_path() -> None:
+    chip = VirtualChip(_area(), seed=11)
+    rig, cfg, res = _run(chip)
+    assert res.ok, res.message
+    assert res.captured == 9 and len(res.pairs) == 10 and len(res.checks) == 2
+    assert all(c.passed for c in res.checks) and all(c.delta_um < 1.5 for c in res.checks)
+    assert _max_err_px(rig, cfg, res) < 1.0, "tile positions should land within a pixel of the truth"
+    rep = wm.budget_report(res.timing["total_s"])
+    assert rep["map_ok"], "map must fit the 5 minute budget"
+    # the check is on the 2nd tile of each new row: rows 2 and 3, column 2 (index 1)
+    assert [c.tile for c in res.checks] == [(1, 1), (2, 1)]
+
+
+def test_map_tolerates_a_bad_config_and_rough_stage() -> None:
+    chip = VirtualChip(_area(), seed=11)
+    rig, cfg, res = _run(chip, true_um_per_px=0.652, rot_deg=0.6)  # config says 0.678, camera is 4% off and rotated
+    assert res.ok and _max_err_px(rig, cfg, res) < 1.5, res.message
+    rig, cfg, res = _run(chip, backlash_um=30.0, noise_um=4.0)
+    assert res.ok and _max_err_px(rig, cfg, res) < 1.5, res.message
+
+
+def test_map_refuses_when_it_cannot_trust_the_registration() -> None:
+    blank = VirtualChip(_area(), seed=11, features=False)
+    _, _, res = _run(blank)
+    assert not res.ok and "weak match" in res.message, res.message
+    periodic = VirtualChip(_area(), seed=11, periodic=True, period_um=50.0)
+    _, _, res = _run(periodic)
+    assert not res.ok and "ambiguous" in res.message, res.message
+
+
+def test_left_top_check_catches_a_false_lock() -> None:
+    chip = VirtualChip(_area(), seed=11)
+    orig = wm.register_pair
+    state = {"n": 0}
+
+    def make(hits):
+        def patched(*a, **k):
+            res = orig(*a, **k)
+            state["n"] += 1
+            if state["n"] in hits:  # call 5 = the 'top' registration of tile (row 2, col 2)
+                res.shift = (res.shift[0] + 12.0, res.shift[1])
+            return res
+
+        return patched
+
+    try:
+        wm.register_pair = make({5})  # wrong once: caught, re-captured, then fine
+        _, _, res = _run(chip)
+        assert res.ok, res.message
+        state["n"] = 0
+        wm.register_pair = make({5, 7})  # wrong on the retry too: map stops
+        _, _, res = _run(chip)
+        assert not res.ok and "left and top disagree" in res.message, res.message
+        assert res.checks and res.checks[-1].delta_um > 3.0
+    finally:
+        wm.register_pair = orig
+
+
+def test_check_every_tile_option() -> None:
+    chip = VirtualChip(_area(), seed=11)
+    rig, cfg, res = _run(chip, cfg=wm.MapConfig(check_all=True))
+    assert res.ok and len(res.checks) == 4  # (2,2) (2,3) (3,2) (3,3)
+    assert res.timing["compute_s"] < 10, "registration must stay cheap"
+
+
+def test_budget() -> None:
+    rep = wm.budget_report(map_s=40.0)
+    assert rep["map_ok"] and abs(rep["tile_overhead_s"] - 4 * wm.TilingTimeModel().overhead_s) < 1e-9
+    assert rep["max_exposure_per_tile_s"] > 100
+    full = wm.budget_report(40.0, exposure_s=100.0)
+    assert full["tile_ok"] and full["total_ok"]
+    assert not wm.budget_report(40.0, exposure_s=200.0)["tile_ok"]
+
+
+def test_ui() -> None:
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+    except Exception:  # no display or no tkinter
+        print("    (skipped: no display / tkinter)")
+        return
+    import will_map_ui as ui
+
+    root.withdraw()
+    samples = [os.path.join(ui.SAMPLE_DIR, f) for f in ui.SAMPLE_SET]
+    d = ui.PatternPickerDialog(root, 2, 2, samples)
+    assert d.next_btn.instate(["disabled"])
+    d.use_samples()
+    assert d.current == 3 and d.next_btn.cget("text") == "Finish"
+    d.next()
+    assert d.result and len(d.result) == 4
+    imgs = [wm.load_image(p) for p in d.result]
+    got: list = []
+    w = ui.PlacementApprovalWindow(root, imgs, d.result, area_center_um=CENTER, on_approve=got.append)
+    w.mode_var.set("whole")
+    w.refresh()
+    w.mode_var.set("trimmed")
+    w.move(1, 0)
+    w.approve()
+    assert got and len(got[0].stage_targets) == 4 and got[0].placement.nudge_um[0] == 10.0
+    root.destroy()
+
+
+# ---------------------------------------------------------------- cross inputs, alignment, run folders
+def test_cross_inputs() -> None:
+    imgs, geo = _load_samples()
+    spec = wm.spec_geometry()
+    assert wm.same_layout(spec, geo), "the CROSS_* inputs must be autofilled with the measured values"
+    assert (wm.CROSS_DIST_LEFT_PX, wm.CROSS_WIDTH_PX, wm.CROSS_DIST_TOP_PX) == (17, 314, 17)
+    assert (wm.CROSS_DIST_RIGHT_PX, wm.CROSS_HEIGHT_PX, wm.CROSS_DIST_BOTTOM_PX) == (17, 198, 17)
+    assert all(wm.spec_mismatches(wm.measure_cross_geometry(i)) == [] for i in imgs)
+    shifted = np.roll(imgs[1], 9, axis=1)  # a pattern whose crosses sit 9 px further right
+    notes = wm.spec_mismatches(wm.measure_cross_geometry(shifted))
+    assert any("left edge" in n for n in notes) and any("right edge" in n for n in notes), notes
+    blank = np.zeros_like(imgs[1])
+    assert wm.same_layout(wm.cross_geometry_for(blank), geo), "no crosses found -> falls back to the typed-in layout"
+
+
+def _session(closed: bool, seed: int):
+    import will_align as wa
+    from will_map_virtual import simulate_patterning
+
+    imgs, geo = _load_samples()
+    pm = wm.build_placement_map(geo)
+    cfg = wm.MapConfig()
+    chip = VirtualChip(pm.area_size_um, seed=11)
+    rig = VirtualRig(chip, center_um=CENTER, seed=seed)
+    mr = wm.will_map(rig, cfg, pm.area_size_um, CENTER)
+    assert mr.ok, mr.message
+    sim = simulate_patterning(rig, mr, pm, imgs, cfg, CENTER, closed_loop=closed)
+    return imgs, geo, pm, cfg, rig, mr, sim, wa
+
+
+def test_align_closed_loop_beats_open_loop() -> None:
+    o_all, c_all = [], []
+    for seed in (1, 2, 3):
+        o = _session(False, seed)[6]["spacing_error_um"]
+        _, _, _, _, _, _, sim, _ = _session(True, seed)
+        o_all += o
+        c_all += sim["spacing_error_um"]
+        assert sim["photos"] <= 4 * 6, "alignment must converge in a handful of photos per tile"
+        assert all(a.ok for a in sim["alignments"]), [a.message for a in sim["alignments"] if not a.ok]
+    assert float(np.mean(c_all)) < 2.0 and max(c_all) < 3.5, c_all
+    assert float(np.mean(o_all)) > 2.0 * float(np.mean(c_all)), (np.mean(o_all), np.mean(c_all))
+
+
+def test_align_backlash_hunting_is_prevented() -> None:
+    import will_align as wa
+
+    imgs, geo = _load_samples()
+    pm = wm.build_placement_map(geo)
+    chip = VirtualChip(pm.area_size_um, seed=11)
+    rig = VirtualRig(chip, center_um=CENTER, seed=2, backlash_um=6.0)
+    cfg = wm.MapConfig()
+    mr = wm.will_map(rig, cfg, pm.area_size_um, CENTER)
+    fm = wa.FeatureMeasurer(mr)
+    T = pm.stage_targets(CENTER)[3]
+    ok_with = wa.align_to_target(rig, T, [fm], cfg).ok
+    assert ok_with
+    # without the back-off approach the loop may need many more photos; it must never be the better choice
+    steps_with = len(wa.align_to_target(rig, T, [fm], cfg).steps)
+    steps_without = len(wa.align_to_target(rig, T, [fm], cfg, approach_um=0.0, max_iter=8).steps)
+    assert steps_with <= max(steps_without, 4)
+
+
+def test_align_fails_loudly_off_the_map() -> None:
+    import will_align as wa
+
+    chip = VirtualChip(_area(), seed=11)
+    rig = VirtualRig(chip, center_um=CENTER, seed=5)
+    cfg = wm.MapConfig()
+    mr = wm.will_map(rig, cfg, _area(), CENTER)
+    fm = wa.FeatureMeasurer(mr)
+    far = wa.align_to_target(rig, (CENTER[0] + 2000.0, CENTER[1]), [fm], cfg)  # beyond the mapped area (+-1457 um)
+    assert not far.ok and far.message, "a target outside the mapped area must be reported, not guessed"
+
+
+def _cross_owner(r: int, c: int, name: str) -> int:
+    """Slot of the tile (2x2 pattern, trimmed footprints) that actually exposes corner ``name`` of tile (r, c).
+    The same physical cross is the TL of one frame, the TR of its left neighbour, and so on."""
+    dr = {"tl": 0, "tr": 0, "bl": 1, "br": 1}[name]
+    dc = {"tl": 0, "tr": 1, "bl": 0, "br": 1}[name]
+    # the physical cross sits at grid vertex (r + dr, c + dc); candidates are the 4 frames around it
+    for rr, cc, nm in ((r + dr, c + dc, "tl"), (r + dr, c + dc - 1, "tr"), (r + dr - 1, c + dc, "bl"), (r + dr - 1, c + dc - 1, "br")):
+        if not (0 <= rr < 2 and 0 <= cc < 2):
+            continue
+        left_ok = nm in ("tr", "br") or cc == 0  # left crosses are dropped by tiles that have a left neighbour
+        top_ok = nm in ("bl", "br") or rr == 0  # top crosses are dropped by tiles that have a tile above
+        if left_ok and top_ok:
+            return rr * 2 + cc
+    raise AssertionError("every cross must have exactly one owner")
+
+
+def test_cross_measurer_and_method_comparison() -> None:
+    import will_align as wa
+
+    imgs, geo, pm, cfg, rig, mr, sim, _ = _session(False, 3)  # layer 1 exposed open-loop (errors of a few um)
+    targets = pm.stage_targets(CENTER)
+    tmpl = wm.cross_patch(imgs[1], geo, "tl")
+    fm = wa.FeatureMeasurer(mr)
+    feature_lost = 0
+    for k, T in enumerate(targets):
+        cm = wa.CrossMeasurer(tmpl, geo.center_in_cross, wa.cross_positions_um(geo, T), cfg)
+        rig.move_to(T[0] - 10, T[1] - 10)
+        rig.move_to(*T)
+        rig.settle(2.5)
+        frame = rig.grab()
+        m = cm.measure(frame, T)
+        assert m.ok and m.n_used >= 3, m.detail
+        # truth: each cross was exposed by the tile whose footprint owns it, with that tile's placement error;
+        # the camera itself sits cam_err away from where the ideal target would put it
+        ideal = [rig.ideal_chip_xy(t) for t in targets]
+        r, c = divmod(k, 2)
+        errs = []
+        for name in ("tl", "tr", "bl", "br"):
+            o = _cross_owner(r, c, name)
+            errs.append(np.subtract(sim["true_positions_um"][o], ideal[o]))
+        cam_err = np.subtract(rig.true_chip_xy(), ideal[k])
+        e = np.mean(errs, axis=0) - cam_err
+        assert math.hypot(m.correction_um[0] - e[0], m.correction_um[1] + e[1]) < 1.0, (k, m.correction_um, tuple(e))
+        feature_lost += 0 if fm.measure(frame, T).ok else 1
+    assert feature_lost >= 1, "after patterning the pre-pattern map should stop matching somewhere (remap needed)"
+    # the loop can switch: features preferred, crosses take over when features fail
+    T = targets[2]
+    cm = wa.CrossMeasurer(tmpl, geo.center_in_cross, wa.cross_positions_um(geo, T), cfg)
+    ar = wa.align_to_target(rig, T, [fm, cm], cfg)
+    assert ar.ok and any(st.used == "crosses" for st in ar.steps), ar.report()
+    assert "crosses" in "\n".join(ar.report())
+
+
+def test_cross_measurer_ml_seed_and_garbage() -> None:
+    import will_align as wa
+
+    imgs, geo, pm, cfg, rig, mr, sim, _ = _session(False, 3)
+    T = pm.stage_targets(CENTER)[0]
+    tmpl = wm.cross_patch(imgs[1], geo, "tl")
+    rig.move_to(T[0] - 10, T[1] - 10)
+    rig.move_to(*T)
+    rig.settle(2.5)
+    frame = rig.grab()
+    plain = wa.CrossMeasurer(tmpl, geo.center_in_cross, wa.cross_positions_um(geo, T), cfg).measure(frame, T)
+    # an ML detector that returns the crosses to within a few px: result must agree with plain template matching
+    cw, ch = cfg.cam_size
+    s, sg = cfg.um_per_px, cfg.sign
+    truth_px = [(cw / 2 + sg[0] * (X - T[0]) / s + plain.correction_um[0] * sg[0] / s * 1.0,
+                 ch / 2 + sg[1] * (Y - T[1]) / s + plain.correction_um[1] * sg[1] / s * 1.0)
+                for X, Y in wa.cross_positions_um(geo, T)]
+    rng = np.random.default_rng(0)
+    seeded = wa.CrossMeasurer(tmpl, geo.center_in_cross, wa.cross_positions_um(geo, T), cfg,
+                              ml_detector=lambda f: [(x + rng.normal(0, 3), y + rng.normal(0, 3)) for x, y in truth_px])
+    ms = seeded.measure(frame, T)
+    assert ms.ok and "ML" in ms.detail and math.hypot(ms.correction_um[0] - plain.correction_um[0], ms.correction_um[1] - plain.correction_um[1]) < 1.0
+    # garbage detections far from every expected cross are ignored (falls back to template search)
+    junk = wa.CrossMeasurer(tmpl, geo.center_in_cross, wa.cross_positions_um(geo, T), cfg, ml_detector=lambda f: [(5.0, 5.0), (1800.0, 1000.0)])
+    mj = junk.measure(frame, T)
+    assert mj.ok and math.hypot(mj.correction_um[0] - plain.correction_um[0], mj.correction_um[1] - plain.correction_um[1]) < 1.0
+
+
+def test_run_folder_and_finished_piece() -> None:
+    import tempfile
+
+    from will_map_virtual import run_virtual_session
+
+    with tempfile.TemporaryDirectory() as tmp:
+        res = run_virtual_session(base_dir=tmp, label="selftest", closed_loop=True, seed=4)
+        run = res["recorder"].dir
+        assert os.path.basename(run).startswith("run_") and os.path.basename(run).endswith("selftest")
+        ls = lambda sub: sorted(os.listdir(os.path.join(run, sub)))
+        assert len(ls("1_map/photos")) == 9 and "combined_map.png" in ls("1_map")
+        assert {"placement_on_white_3x3.png", "placement_on_camera_map.png", "placement.txt", "patterns_used.txt"} <= set(ls("2_placement"))
+        assert any(f.startswith("tile1") for f in ls("3_align")) and len([f for f in ls("3_align") if f.endswith(".txt")]) == 4
+        assert len(ls("4_finished_piece/photos")) == 9
+        assert {"stitched.png", "stitched_expected_outline.png", "map_report.txt"} <= set(ls("4_finished_piece"))
+        assert os.path.exists(os.path.join(run, "run_log.txt"))
+        # a second run never overwrites the first
+        again = run_virtual_session(base_dir=tmp, label="selftest", closed_loop=False, seed=4)
+        assert again["recorder"].dir != run
+        # the finished piece: the exposed 2x2 must really be where the placement says (darker inside, not outside)
+        fin = res["finished"]
+        assert fin.ok, fin.message
+        from will_map_runs import expected_outline_px
+
+        boxes = [b for _, b in expected_outline_px(fin, res["placement"], CENTER)]
+        x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+        x1, y1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
+        mos = fin.mosaic.astype(np.float32)
+        inside = mos[int(y0) + 30 : int(y1) - 30, int(x0) + 30 : int(x1) - 30]
+        outside = np.concatenate([mos[: int(y0) - 30, :].ravel(), mos[int(y1) + 30 :, :].ravel()])
+        assert inside.mean() < outside.mean() - 5, (inside.mean(), outside.mean())
+        # honest accounting: finished-piece scan fits the 5 minute mapping budget too
+        assert wm.budget_report(fin.timing["total_s"])["map_ok"]
+
+
+# ---------------------------------------------------------------- visuals
+def make_visuals(outdir: str) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    os.makedirs(outdir, exist_ok=True)
+    imgs, geo = _load_samples()
+    pm = wm.build_placement_map(geo)
+    W, H = geo.frame_w, geo.frame_h
+    px, py = geo.pitch_x, geo.pitch_y
+    ux, uy = pm.um_per_px
+
+    # a virtual run for the timing numbers
+    chip = VirtualChip(pm.area_size_um, seed=11)
+    _, _, res = _run(chip)
+    budget = wm.budget_report(res.timing["total_s"])
+
+    prev, _ = wm.render_placement(pm, imgs, scale=0.16)
+    cv2.imwrite(os.path.join(outdir, "will_map_placement_preview.png"), prev)
+
+    fig = plt.figure(figsize=(20, 12.6), dpi=100)
+    gs = fig.add_gridspec(2, 2, width_ratios=[1, 1.08], height_ratios=[1, 1], left=0.02, right=0.99, top=0.93, bottom=0.03, wspace=0.05, hspace=0.12)
+    fig.suptitle("Will Map: cross geometry, footprints and placement (numbers measured from your three patterns)", fontsize=17, fontweight="bold")
+    RED, GREY = "#D80027", "#555555"
+
+    def arrow(ax, p0, p1, text, off=(0, 0), color=GREY, fs=11, ha="center", va="center"):
+        ax.annotate("", xy=p1, xytext=p0, arrowprops=dict(arrowstyle="<->", color=color, lw=1.6, shrinkA=0, shrinkB=0))
+        ax.text((p0[0] + p1[0]) / 2 + off[0], (p0[1] + p1[1]) / 2 + off[1], text, color=color, fontsize=fs, ha=ha, va=va,
+                bbox=dict(fc="white", ec="none", alpha=0.85, pad=1.5))
+
+    # ---- A: one frame, measured
+    ax = fig.add_subplot(gs[0, 0])
+    ax.set_title("1. One 3840x2160 frame: the four crosses and their constant distances", fontsize=13, loc="left")
+    show = np.zeros((540, 960, 3), np.uint8)
+    show[cv2.resize(wm.exposure_mask(imgs[3]).astype(np.uint8), (960, 540), interpolation=cv2.INTER_AREA) > 0] = (230, 90, 25)
+    ax.imshow(cv2.cvtColor(show, cv2.COLOR_BGR2RGB), extent=(0, W, H, 0))
+    ax.add_patch(Rectangle((px, 0), W - px, H, fc="#FFD54F", ec="none", alpha=0.28))
+    ax.add_patch(Rectangle((0, py), W, H - py, fc="#FFD54F", ec="none", alpha=0.28))
+    for n in ("tl", "tr", "bl", "br"):
+        x, y = geo.corner(n)
+        ax.add_patch(Rectangle((x, y), geo.cross_w, geo.cross_h, fill=False, ec=RED, lw=2))
+    arrow(ax, (geo.tl[0], -150), (geo.tr[0], -150), f"cross-to-cross pitch  {px} px  (left edge to left edge)", color="#0B5394", fs=12)
+    arrow(ax, (-190, geo.tl[1]), (-190, geo.bl[1]), f"{py} px", color="#0B5394", fs=12)
+    ax.texts[-1].set_rotation(90)
+    arrow(ax, (geo.tl[0] + geo.cross_w, 560), (geo.tr[0], 560), f"gap between crosses  {geo.tr[0] - geo.tl[0] - geo.cross_w} px", color=GREY, fs=11)
+    arrow(ax, (geo.tl[0], -50), (geo.tl[0] + geo.cross_w, -50), f"{geo.cross_w} px", color=RED, fs=10, off=(0, -45))
+    arrow(ax, (-60, geo.tl[1]), (-60, geo.tl[1] + geo.cross_h), f"{geo.cross_h} px", color=RED, fs=10, off=(-95, 0))
+    ax.text(geo.tl[0] + geo.cross_w + 60, geo.tl[1] + geo.cross_h / 2, f"cross box, {geo.tl[0]} px in from the frame edge", color="#ffb3b3", fontsize=11, va="center")
+    ax.text(px + (W - px) / 2, H * 0.50, f"overlaps\nright neighbour\n{geo.overlap_x} px", color="#8a6d00", fontsize=11, ha="center", va="center")
+    ax.text(W / 2, py + (H - py) / 2 + 20, f"overlaps bottom neighbour: {geo.overlap_y} px", color="#8a6d00", fontsize=11, ha="center", va="center")
+    ax.set_xlim(-330, W + 80)
+    ax.set_ylim(H + 60, -300)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    # ---- B: who exposes what
+    ax = fig.add_subplot(gs[0, 1])
+    ax.set_title("2. Footprints: each tile exposes from the neighbour's cross onward (crosses overlap, counted once)", fontsize=13, loc="left")
+    cols = ["#FB8C00", "#43A047", "#AB47BC", "#00ACC1"]
+    for t in pm.tiles:
+        ox, oy = (t.col * px, t.row * py)  # frames shown at pitch spacing, relative
+        x0, y0, x1, y1 = t.crop
+        ax.add_patch(Rectangle((ox, oy), W, H, fill=False, ec="#999", lw=1, ls="--"))
+        ax.add_patch(Rectangle((ox + x0, oy + y0), x1 - x0, y1 - y0, fc=cols[t.slot], ec=cols[t.slot], alpha=0.30, lw=2))
+        if t.col > 0:
+            ax.add_patch(Rectangle((ox + geo.tl[0], oy + geo.tl[1]), geo.cross_w, y1 - geo.tl[1], fc="none", ec="#777", hatch="///", lw=0))
+        if t.row > 0:
+            ax.add_patch(Rectangle((ox + geo.tl[0], oy + geo.tl[1]), x1 - geo.tl[0], geo.cross_h, fc="none", ec="#777", hatch="\\\\\\", lw=0))
+        ax.text(ox + (x0 + x1) / 2, oy + (y0 + y1) / 2 - 40, f"tile {t.slot + 1}", fontsize=17, fontweight="bold", color=cols[t.slot], ha="center")
+        ax.text(ox + (x0 + x1) / 2, oy + (y0 + y1) / 2 + 160, f"exposes x {x0}-{x1}\ny {y0}-{y1}\n= {x1 - x0} x {y1 - y0} px", fontsize=11, ha="center", va="top")
+        for n in ("tl", "tr", "bl", "br"):
+            cx, cy = geo.corner(n)
+            ax.add_patch(Rectangle((ox + cx, oy + cy), geo.cross_w, geo.cross_h, fill=False, ec=RED, lw=1.6))
+    ax.text(0.5, -0.02, "red = crosses (neighbouring frames' crosses sit exactly on each other)\nhatched = cross zone the tile does NOT expose because the neighbour already did",
+            transform=ax.transAxes, ha="center", va="top", fontsize=11, color=GREY)
+    ax.set_xlim(-150, px + W + 150)
+    ax.set_ylim(py + H + 330, -150)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    # ---- C: placement in the white 3x3
+    ax = fig.add_subplot(gs[1, 0])
+    ax.set_title("3. Placement in the white 3x3 area (this is what the Approve window shows)", fontsize=13, loc="left")
+    sc = 0.16
+    img, (bx, by) = wm.render_placement(pm, imgs, scale=sc)
+    ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    to = lambda ax_px, ay_px: ((ax_px - bx) * sc, (ay_px - by) * sc)
+    t0 = pm.tiles[0]
+    arrow(ax, to(0, 1500), to(t0.dest[0], 1500), f"{t0.dest[0]} px\n= {t0.dest[0] * ux:.0f} um\n(half a pitch)", color="#0B5394", fs=10)
+    arrow(ax, to(1000, 0), to(1000, t0.dest[1]), f"{t0.dest[1]} px = {t0.dest[1] * uy:.0f} um", color="#0B5394", fs=10, off=(120, 0), ha="left")
+    ax.text(*to(pm.area_box[2] - 150, pm.area_box[3] + 100), f"area {pm.area_size_px[0]} x {pm.area_size_px[1]} px = {pm.area_size_um[0]:.0f} x {pm.area_size_um[1]:.0f} um   (3x3 cells)",
+            fontsize=11, ha="right", va="top", color=GREY)
+    ax.axis("off")
+
+    # ---- D: numbers + worked example
+    ax = fig.add_subplot(gs[1, 1])
+    ax.axis("off")
+    t3 = pm.tiles[3]
+    tg = pm.stage_targets(CENTER)
+    ovh = wm.TilingTimeModel().overhead_s
+    lines = [
+        "SIZES",
+        f"  projector frame : {W} x {H} px   (old UI tile; {W * ux:.0f} x {H * uy:.0f} um, {ux:.4f} um/px)",
+        f"  camera frame    : 1920 x 1080 px (0.678 um/px -> {1920 * 0.678:.0f} x {1080 * 0.678:.0f} um)",
+        "",
+        "MEASURED FROM YOUR PATTERNS (all three identical)",
+        f"  cross box {geo.cross_w} x {geo.cross_h} px, {geo.tl[0]} px in from the edges",
+        f"  pitch   x {px} px   y {py} px          gap x {px - geo.cross_w} y {py - geo.cross_h} px",
+        f"  overlap with neighbour  x {geo.overlap_x} px   y {geo.overlap_y} px",
+        "",
+        "FOOTPRINT RULE (what each tile exposes, frame px)",
+        f"  first column  x {geo.footprint(0, 0)[0]}-{geo.footprint(0, 0)[2]}  ({geo.footprint(0, 0)[2] - geo.footprint(0, 0)[0]} px, both crosses)",
+        f"  other columns x {geo.footprint(0, 1)[0]}-{geo.footprint(0, 1)[2]}  ({geo.footprint(0, 1)[2] - geo.footprint(0, 1)[0]} px = one pitch)",
+        f"  first row     y {geo.footprint(0, 0)[1]}-{geo.footprint(0, 0)[3]}  ({geo.footprint(0, 0)[3] - geo.footprint(0, 0)[1]} px)",
+        f"  other rows    y {geo.footprint(1, 0)[1]}-{geo.footprint(1, 0)[3]}  ({geo.footprint(1, 0)[3] - geo.footprint(1, 0)[1]} px = one pitch)",
+        "",
+        "WORKED EXAMPLE: tile 4 (row 2, column 2)",
+        f"  frame origin in area = (1.5 x {px} - {geo.tl[0]}, 1.5 x {py} - {geo.tl[1]}) = {t3.frame_origin} px",
+        f"  exposes frame x {t3.crop[0]}-{t3.crop[2]}, y {t3.crop[1]}-{t3.crop[3]}",
+        f"  lands on area x {t3.dest[0]}-{t3.dest[2]}, y {t3.dest[1]}-{t3.dest[3]}",
+        f"  stage target = centre + ({t3.center_um[0]:+.1f}, {-t3.center_um[1]:+.1f}) um",
+        f"     centre ({CENTER[0]:.0f}, {CENTER[1]:.0f}) -> ({tg[3][0]:.1f}, {tg[3][1]:.1f})",
+        f"  step between tiles: {pm.step_um[0]:.1f} um in x, {pm.step_um[1]:.1f} um in y",
+        "",
+        "TIME (virtual run, stage times are estimates)",
+        f"  map: 9 frames, {res.timing['stage_s']:.0f} s stage + {res.timing['compute_s']:.1f} s compute  (limit {budget['map_limit_s']:.0f} s)",
+        f"  tiling overhead ~{ovh:.0f} s/tile assumed -> up to {budget['max_exposure_per_tile_s']:.0f} s exposure per tile in {budget['tile_limit_s']:.0f} s",
+    ]
+    ax.text(0.0, 1.0, "\n".join(lines), family="monospace", fontsize=10.6, va="top", ha="left", linespacing=1.42)
+    fig.savefig(os.path.join(outdir, "will_map_understanding.png"))
+    plt.close(fig)
+    print(f"    wrote {outdir}/will_map_understanding.png and will_map_placement_preview.png")
+
+
+# ---------------------------------------------------------------- runner
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--visuals", metavar="OUTDIR", help="write the explanatory pictures here")
+    args = ap.parse_args()
+    tests: List[Callable[[], None]] = [
+        test_geometry, test_placement, test_seams, test_map_happy_path,
+        test_map_tolerates_a_bad_config_and_rough_stage, test_map_refuses_when_it_cannot_trust_the_registration,
+        test_left_top_check_catches_a_false_lock, test_check_every_tile_option, test_budget,
+        test_cross_inputs, test_align_closed_loop_beats_open_loop, test_align_backlash_hunting_is_prevented,
+        test_align_fails_loudly_off_the_map, test_cross_measurer_and_method_comparison,
+        test_cross_measurer_ml_seed_and_garbage, test_run_folder_and_finished_piece, test_ui,
+    ]
+    failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"PASS  {t.__name__}")
+        except Exception:  # noqa: BLE001
+            failed += 1
+            print(f"FAIL  {t.__name__}")
+            traceback.print_exc()
+    if args.visuals:
+        make_visuals(args.visuals)
+    print("ALL TESTS PASSED" if not failed else f"{failed} TEST(S) FAILED")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
