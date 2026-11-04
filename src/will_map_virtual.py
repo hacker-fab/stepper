@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from typing import List, Optional, Tuple
 
 import cv2
@@ -283,13 +284,15 @@ def simulate_patterning(
     an earlier tile; with this on, the alignment uses those crosses (cross detection on).  Off, the
     alignment only uses the chip's own features (convolution against the map photos)."""
     from will_align import CrossMeasurer, FeatureMeasurer, align_to_target, cross_positions_um, earlier_crosses
-    from will_map import cross_patch, exposure_mask
+    from will_map import cross_patch, exposure_mask, status
 
     note = progress or (lambda m: None)
     targets = pm.stage_targets(center_um, cfg.sign)
     fm = FeatureMeasurer(mr) if closed_loop else None
     tmpl = cross_patch(images[-1], pm.geo, "tl")
     pos, photos, aligns, used = [], 0, [], []
+    t_pat = time.perf_counter()
+    status(f"patterning: {len(pm.tiles)} tiles ({'closed-loop alignment' if closed_loop else 'open loop'})")
     for t, T in zip(pm.tiles, targets):
         note(f"tile {t.slot + 1}: {'aligning' if closed_loop else 'moving'}")
         if closed_loop:
@@ -311,6 +314,7 @@ def simulate_patterning(
                 rig.autofocus()
         note(f"tile {t.slot + 1}: exposing (virtual)")
         pos.append(rig.expose(exposure_mask(images[t.slot]), pm.um_per_px, t.crop))
+        status(f"patterning: tile {len(pos)}/{len(pm.tiles)} done (slot {t.slot + 1}), {time.perf_counter() - t_pat:.0f} s elapsed")
     ideal = [rig.ideal_chip_xy(T) for T in targets]
     spacing = [
         math.hypot(

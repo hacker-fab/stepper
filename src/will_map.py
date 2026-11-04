@@ -27,6 +27,11 @@ from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 import cv2
 import numpy as np
 
+
+def status(msg: str) -> None:
+    """One status line for the terminal (mapping, patterning and stitching all report through this)."""
+    print(f"[Will Map] {msg}", flush=True)
+
 # --------------------------------------------------------------------------------------
 # Machine constants (from the old UI; NOT measured on this machine unless noted)
 # --------------------------------------------------------------------------------------
@@ -622,6 +627,9 @@ class MapConfig:
     autofocus: bool = True
     t_autofocus_s: float = 10.0  # ASSUMPTION until timed on the machine
     af_min_move_um: float = 25.0  # alignment nudges smaller than this do not trigger a refocus
+    # terminal status lines: one per photo taken, occasional ones while stitching
+    verbose: bool = True
+    label: str = "map"  # name used in the status lines ("map", "finished piece")
 
 
 @dataclass
@@ -791,8 +799,13 @@ def _solve_positions(tiles: List[Tile], pairs: List[PairMeasurement]) -> Dict[Ti
     return out
 
 
-def compose_mosaic(frames: Dict[Tile, np.ndarray], pos: Dict[Tile, Tuple[float, float]]) -> Tuple[np.ndarray, Tuple[int, int]]:
-    """Feather-blend gray frames at their solved positions.  Returns (uint8 mosaic, origin px)."""
+def compose_mosaic(
+    frames: Dict[Tile, np.ndarray],
+    pos: Dict[Tile, Tuple[float, float]],
+    say: Optional[Callable[[str], None]] = None,
+) -> Tuple[np.ndarray, Tuple[int, int]]:
+    """Feather-blend gray frames at their solved positions.  Returns (uint8 mosaic, origin px).
+    ``say`` gets an occasional progress line (about every quarter of the frames)."""
     h, w = next(iter(frames.values())).shape[:2]
     ox = int(math.floor(min(p[0] for p in pos.values())))
     oy = int(math.floor(min(p[1] for p in pos.values())))
@@ -803,12 +816,19 @@ def compose_mosaic(frames: Dict[Tile, np.ndarray], pos: Dict[Tile, Tuple[float, 
     ramp_x = np.minimum(np.arange(w), np.arange(w)[::-1]).astype(np.float32) + 1.0
     ramp_y = np.minimum(np.arange(h), np.arange(h)[::-1]).astype(np.float32) + 1.0
     feather = np.minimum.outer(ramp_y, ramp_x)
-    for t, f in frames.items():
+    if say:
+        say(f"stitching: blending {len(frames)} photos into a {W} x {H} px mosaic")
+    quarter = max(1, len(frames) // 4)
+    for n, (t, f) in enumerate(frames.items(), 1):
         x = int(round(pos[t][0])) - ox
         y = int(round(pos[t][1])) - oy
         g = f if f.ndim == 2 else cv2.cvtColor(f, cv2.COLOR_RGB2GRAY)
         acc[y : y + h, x : x + w] += g.astype(np.float32) * feather
         wsum[y : y + h, x : x + w] += feather
+        if say and n % quarter == 0 and n < len(frames):
+            say(f"stitching: {n}/{len(frames)} photos blended ({100 * n // len(frames)}%)")
+    if say:
+        say("stitching: blending done")
     return (acc / np.maximum(wsum, 1e-6)).clip(0, 255).astype(np.uint8), (ox, oy)
 
 
@@ -839,6 +859,13 @@ def will_map(
         search_eff = int(max(16, min(cfg.search_px, ((min(overlaps_px) - 96) // 2) // 4 * 4)))
     af = getattr(rig, "autofocus", None) if cfg.autofocus else None
     n_af = 0
+    say = status if cfg.verbose else (lambda m: None)
+    t_start = time.perf_counter()
+    say(
+        f"{cfg.label}: {cfg.cols} x {cfg.rows} photos ({len(order)} total) over "
+        f"{area_um[0]:.0f} x {area_um[1]:.0f} um, step {step[0]:.0f} x {step[1]:.0f} um, "
+        f"autofocus after every move: {'on' if callable(af) else 'off'}"
+    )
     s = cfg.um_per_px
     sgn = cfg.sign
     raw: Dict[Tile, np.ndarray] = {}
@@ -937,10 +964,24 @@ def will_map(
                 return fail(problem)
             attempt += 1
             note(k / len(order), f"re-capturing tile {k + 1}: {problem}")
+            say(f"{cfg.label}: photo {k + 1}/{len(order)} re-taking, attempt {attempt + 1}: {problem}")
+        elapsed = time.perf_counter() - t_start
+        eta = elapsed / (k + 1) * (len(order) - k - 1)
+        reg_txt = "anchor photo"
+        if k > 0 and pairs:
+            last = pairs[-len(neighbours):]
+            dev = max(math.hypot(p.measured_px[0] - p.predicted_px[0], p.measured_px[1] - p.predicted_px[1]) * s for p in last)
+            reg_txt = f"registered, {dev:.1f} um from the stage prediction, match {min(p.peak for p in last):.2f}"
+        say(
+            f"{cfg.label}: photo {k + 1}/{len(order)} taken (row {r + 1}, col {c + 1}) at stage "
+            f"({plan[tile][0]:.0f}, {plan[tile][1]:.0f}) um, {reg_txt}, {elapsed:.0f} s elapsed, ~{eta:.0f} s left"
+        )
 
+    say(f"{cfg.label}: all {len(order)} photos taken in {time.perf_counter() - t_start:.0f} s, stitching")
     t0 = time.perf_counter()
     solved = _solve_positions(order, pairs)
-    mosaic, (ox, oy) = compose_mosaic(raw, solved)
+    say(f"stitching: solved {len(solved)} photo positions from {len(pairs)} overlaps")
+    mosaic, (ox, oy) = compose_mosaic(raw, solved, say)
     solved = {t: (p[0] - ox, p[1] - oy) for t, p in solved.items()}
     # stage <-> mosaic anchor: average over tiles of (chip position of the commanded stage) - (frame centre)
     cw, ch = cfg.cam_size
@@ -952,6 +993,7 @@ def will_map(
     off = (float(np.mean([o[0] for o in offs])), float(np.mean([o[1] for o in offs])))
     compute_s += time.perf_counter() - t0
     note(1.0, "map complete")
+    say(f"{cfg.label}: done in {time.perf_counter() - t_start:.0f} s")
     total = stage_s + compute_s
     return MapResult(
         True, "all registrations and left/top checks passed", cfg, center_um, plan, solved, pairs, checks,

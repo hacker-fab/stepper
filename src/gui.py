@@ -2861,6 +2861,9 @@ class TilingFrame:
             print(f"x_start {x_start}, y_start = {y_start}")
 
             # Move in Snake pattern with left to right on even rows and right to left on odd rows
+            tiles_done = 0
+            tiling_t0 = time.time()
+            print(f"[Tiling] patterning {x_amount} x {y_amount} tiles")
             for y_idx in range(y_amount):
                 if y_idx % 2 == 0:
                     for x_idx in range(x_amount):
@@ -2878,7 +2881,11 @@ class TilingFrame:
                             y_idx_max=y_amount,
                             x_idx_max=x_amount,
                         )
-                        print("Patterned x_idx:" + str(x_idx) + " y_idx: " + str(y_idx))
+                        tiles_done += 1
+                        print(
+                            f"[Tiling] patterned tile {tiles_done}/{x_amount * y_amount} "
+                            f"(row {y_idx + 1}, col {x_idx + 1}), {time.time() - tiling_t0:.0f} s elapsed"
+                        )
                 else:
                     for x_idx in range(x_amount - 1, -1, -1):
                         pattern_for_tile(
@@ -2895,7 +2902,11 @@ class TilingFrame:
                             y_idx_max=y_amount,
                             x_idx_max=x_amount,
                         )
-                        print("Patterned x_idx:" + str(x_idx) + " y_idx: " + str(y_idx))
+                        tiles_done += 1
+                        print(
+                            f"[Tiling] patterned tile {tiles_done}/{x_amount * y_amount} "
+                            f"(row {y_idx + 1}, col {x_idx + 1}), {time.time() - tiling_t0:.0f} s elapsed"
+                        )
 
         # TODO IMPLEMENT ABORT
         def on_abort():
@@ -2923,7 +2934,12 @@ class TilingFrame:
             # imported on click so a problem in the Will Map module can never stop the main UI starting
             from will_map_ui import run_will_map
 
-            run_will_map(self.frame, model)
+            # the tile grid is whatever the tiling panel already holds (set when a pattern is segmented)
+            run_will_map(
+                self.frame,
+                model,
+                tile_counts=lambda: (self.y_settings.amount_var.get(), self.x_settings.amount_var.get()),
+            )
 
         self.will_map_button = ttk.Button(
             self.frame, text="Will Map + Placement", command=open_will_map, state="enabled"

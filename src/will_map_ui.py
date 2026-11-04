@@ -41,6 +41,7 @@ from will_map import (
     same_layout,
     scan_summary,
     spec_mismatches,
+    status,
     will_map,
 )
 from will_map_runs import RunRecorder, map_finished_piece
@@ -630,23 +631,55 @@ class _Progress:
         self.win.destroy()
 
 
+DEFAULT_TILE_GRID = (2, 2)  # (rows, cols) used when the tiling panel holds no grid yet (the 2x2 proof of concept)
+MAX_TILE_GRID = 8
+
+
+def default_tile_counts(get_panel_counts: Optional[Callable[[], Tuple[object, object]]] = None) -> Tuple[Tuple[int, int], str]:
+    """Tile grid (rows, cols) for the map, taken from the tiling panel instead of being typed in again.
+
+    The tiling panel's X / Y "Amount" fields hold the grid (segmenting a big pattern fills them in).  Negative
+    amounts only mean 'go the other way', so the absolute value is used.  If the panel still has its untouched
+    1 x 1 default (or cannot be read) the 2 x 2 proof-of-concept grid is used.  Returns (rows, cols), why.
+    """
+    if get_panel_counts is not None:
+        try:
+            rows_raw, cols_raw = get_panel_counts()
+            rows, cols = abs(int(float(str(rows_raw)))), abs(int(float(str(cols_raw))))
+        except (TypeError, ValueError):
+            rows = cols = 0
+        if rows * cols > 1:
+            clamped = (min(rows, MAX_TILE_GRID), min(cols, MAX_TILE_GRID))
+            note = "" if clamped == (rows, cols) else f" (limited to {MAX_TILE_GRID} per direction)"
+            return clamped, f"{cols} x {rows} tiles from the tiling panel{note}"
+    r, c = DEFAULT_TILE_GRID
+    return (r, c), f"{c} x {r} tiles (default, the tiling panel holds no grid yet)"
+
+
 def run_will_map(
     parent: tk.Misc,
     model,
     cam_um_per_px: float = DEFAULT_CAM_UM_PER_PX,
     on_approved: Optional[Callable[[ApprovedPlacement], None]] = None,
+    tile_counts: Optional[Callable[[], Tuple[object, object]]] = None,
 ) -> Optional[ApprovedPlacement]:
-    """Tiles wide/high -> area dialog (confirm) -> camera map around the current stage position ->
-    ONLY THEN pick the pattern for each tile -> placement approval."""
+    """Tile grid (taken from the tiling panel, shown in the area dialog to confirm) -> camera map around the
+    current stage position -> ONLY THEN pick the pattern for each tile -> placement approval."""
     cam = np.asarray(model.camera_image)
     cam_size = (cam.shape[1], cam.shape[0])
-    counts = AreaDialog(parent, cam_um_per_px, cam_size).show()
+    (rows0, cols0), why = default_tile_counts(tile_counts)
+    status(f"tile grid: {why}")
+    counts = AreaDialog(parent, cam_um_per_px, cam_size, rows=rows0, cols=cols0).show()
     if not counts:
         return None
     tile_rows, tile_cols = counts
     area_pm = area_for_tiles(tile_rows, tile_cols)
     cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=cam_size)
     center = (float(model.stage_setpoint[0]), float(model.stage_setpoint[1]))
+    status(
+        f"mapping {area_pm.area_size_um[0]:.0f} x {area_pm.area_size_um[1]:.0f} um "
+        f"({tile_cols + 1} x {tile_rows + 1} complete frames) around stage ({center[0]:.0f}, {center[1]:.0f}) um"
+    )
     recorder = RunRecorder(label="map")  # one folder per run, next to this file
     try:
         model.will_run = recorder  # the finished-piece scan writes into the same folder

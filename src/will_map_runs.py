@@ -233,7 +233,7 @@ def map_finished_piece(
 ) -> MapResult:
     """Quick re-map of the area after patterning; saves separate photos and the stitch in the run folder."""
     # a patterned chip is full of repeating features (rings, lines); the stage position breaks the tie
-    cfg = dataclasses.replace(cfg, ambiguity="stage_prior")
+    cfg = dataclasses.replace(cfg, ambiguity="stage_prior", label="finished piece")
     mr = will_map(rig, cfg, area_um, center_um, progress, should_abort)
     recorder.save_finished(mr, pm, center_um)
     return mr
