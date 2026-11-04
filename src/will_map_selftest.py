@@ -98,6 +98,7 @@ def _run(chip: VirtualChip, cfg: wm.MapConfig = None, **rig_kw):
 
 
 def _max_err_px(rig: VirtualRig, cfg: wm.MapConfig, res: wm.MapResult) -> float:
+    cfg = res.cfg  # the grid size is worked out from the area when the config leaves rows/cols empty
     order = wm.snake_order(cfg.rows, cfg.cols)
     a = res.positions_px[order[0]]
     errs = []
@@ -401,6 +402,260 @@ def test_run_folder_and_finished_piece() -> None:
         assert wm.budget_report(fin.timing["total_s"])["map_ok"]
 
 
+# ---------------------------------------------------------------- v3: area from tiles, 3/4 step, autofocus, two areas
+def test_area_for_tiles_plus_one_frame() -> None:
+    for r, c in ((1, 1), (2, 2), (2, 3), (3, 2)):
+        pm = wm.area_for_tiles(r, c)
+        assert (pm.area_rows, pm.area_cols) == (r + 1, c + 1), "one more complete frame than tiles in each direction"
+        assert (pm.rows, pm.cols) == (r, c)
+        geo = pm.geo
+        w = (geo.footprint(0, 0)[2] - geo.footprint(0, 0)[0]) + c * geo.pitch_x  # first column + c more pitches
+        h = (geo.footprint(0, 0)[3] - geo.footprint(0, 0)[1]) + r * geo.pitch_y
+        assert pm.area_size_px == (w, h), (r, c, pm.area_size_px, (w, h))
+        # the pattern block is centred: half a pitch of margin on every side
+        x0 = min(t.dest[0] for t in pm.tiles)
+        x1 = max(t.dest[2] for t in pm.tiles)
+        assert x0 - pm.area_box[0] == pm.area_box[2] - x1 == geo.pitch_x // 2
+    assert wm.area_for_tiles(2, 2).area_size_px == (10790, 5982)
+
+
+def test_map_grid_is_automatic_and_steps_at_most_three_quarters() -> None:
+    cfg = wm.MapConfig()
+    fov = (1920 * cfg.um_per_px, 1080 * cfg.um_per_px)
+    for r, c in ((1, 1), (2, 2), (3, 3), (2, 4)):
+        area = wm.area_for_tiles(r, c).area_size_um
+        sc = wm.scan_summary(area, cfg)
+        assert max(sc["step_fraction"]) <= 0.75 + 1e-9, (r, c, sc)
+        covered = (fov[0] + (sc["cols"] - 1) * sc["step_fraction"][0] * fov[0], fov[1] + (sc["rows"] - 1) * sc["step_fraction"][1] * fov[1])
+        assert covered[0] >= area[0] - 1e-6 and covered[1] >= area[1] - 1e-6, "the photos must cover the whole area"
+        if sc["cols"] > 1:  # and it never takes more photos than needed
+            assert (sc["cols"] - 2) * 0.75 * fov[0] < area[0] - fov[0] + 1e-6
+    assert (wm.scan_summary(wm.area_for_tiles(2, 2).area_size_um)["rows"], wm.scan_summary(wm.area_for_tiles(2, 2).area_size_um)["cols"]) == (3, 3)
+    # an area that needs exactly a 3/4 step (25% overlap) must still map: the registration window shrinks to fit
+    area = (fov[0] * 2.5, fov[1] * 2.5)
+    chip = VirtualChip(area, seed=21)
+    rig = VirtualRig(chip, center_um=CENTER, seed=2)
+    res = wm.will_map(rig, wm.MapConfig(), area, CENTER)
+    assert res.ok, res.message
+    assert (res.cfg.rows, res.cfg.cols) == (3, 3) and abs(res.stage_um[(0, 1)][0] - res.stage_um[(0, 0)][0] - 0.75 * fov[0]) < 1.0
+    assert _max_err_px(rig, res.cfg, res) < 1.5
+
+
+def test_autofocus_after_moves() -> None:
+    import will_align as wa
+
+    chip = VirtualChip(_area(), seed=11)
+    rig = VirtualRig(chip, center_um=CENTER, seed=5)
+    mr = wm.will_map(rig, wm.MapConfig(), _area(), CENTER)
+    assert mr.ok and rig.af_calls == 9 and mr.timing["autofocus_runs"] == 9, "autofocus after every map move"
+    assert mr.timing["total_s"] < 300, "map with autofocus must stay inside the 5 minute target"
+    rig2 = VirtualRig(VirtualChip(_area(), seed=11), center_um=CENTER, seed=5)
+    assert wm.will_map(rig2, wm.MapConfig(autofocus=False), _area(), CENTER).timing["autofocus_runs"] == 0 and rig2.af_calls == 0
+    # alignment: one refocus after the move to the tile; tiny nudges (< af_min_move_um) do not refocus again
+    fm = wa.FeatureMeasurer(mr)
+    T = wm.area_for_tiles(2, 2).stage_targets(CENTER)[1]
+    before = rig.af_calls
+    ar = wa.align_to_target(rig, T, [fm], wm.MapConfig())
+    assert ar.ok and rig.af_calls - before == 1, (rig.af_calls - before, len(ar.steps))
+    # focus really matters in the simulation: unfocused photos correlate worse
+    rig.z_err = 12.0
+    blurred = rig.grab()
+    rig.autofocus()
+    sharp = rig.grab()
+    assert wa.FeatureMeasurer(mr).measure(sharp, T).confidence >= wa.FeatureMeasurer(mr).measure(blurred, T).confidence - 0.02
+
+
+def test_two_areas_cross_on_off_and_both_finished_pieces_mapped() -> None:
+    import tempfile
+
+    from will_map_virtual import run_sample_comparison
+
+    with tempfile.TemporaryDirectory() as tmp:
+        r = run_sample_comparison(base_dir=tmp, label="selftest", seed=5)
+        w, h = r["area_um"]
+        assert not r["areas_overlap"] and r["separation_um"] > w, "the two runs must use different, non-overlapping areas"
+        cA, cB = r["runs"]["A"]["center_um"], r["runs"]["B"]["center_um"]
+        assert abs(cB[0] - cA[0]) >= w + 100 and cA[1] == cB[1]
+        for key in ("A", "B"):
+            run = r["runs"][key]
+            assert run["map"].ok and run["finished"].ok, f"{key}: map and finished-piece map must both succeed"
+            assert run["map"].timing["total_s"] < 300
+        A, B = r["runs"]["A"]["patterning"], r["runs"]["B"]["patterning"]
+        assert set(A["driven_by"]) == {"features"}, A["driven_by"]  # cross detection off: convolution only
+        assert B["driven_by"][0] == "features" and set(B["driven_by"][1:]) == {"crosses"}, B["driven_by"]  # first tile has no crosses yet
+        # both ways must stitch well; (over ten seeds neither method was measurably better on seams, ~1.1-1.3 um mean)
+        for name, P in (("A", A), ("B", B)):
+            assert max(P["seam_error_um"]) < 5.0 and np.mean(P["seam_error_um"]) < 2.5, (name, P["seam_error_um"])
+        top = r["recorder"].dir
+        for sub in ("A_convolution_only", "B_cross_detection"):
+            for d in ("1_map", "2_placement", "3_align", "4_finished_piece"):
+                assert os.path.isdir(os.path.join(top, sub, d)), (sub, d)
+            assert len(os.listdir(os.path.join(top, sub, "4_finished_piece", "photos"))) == 9
+            assert os.path.exists(os.path.join(top, sub, "4_finished_piece", "stitched.png"))
+        assert os.path.exists(os.path.join(top, "comparison.txt")) and os.path.exists(os.path.join(top, "both_finished_pieces.png"))
+        # the second area really is untouched by the first run's pattern before its own run: A's pattern is inside A only
+        rig = r["rig"]
+        world = rig.chip.world.astype(np.float32)
+        ox, oy = rig.chip.origin_um
+        xa = int((cA[0] - CENTER[0] + rig.chip_offset[0] - ox) / rig.chip.res)
+        xb = int((cB[0] - CENTER[0] + rig.chip_offset[0] - ox) / rig.chip.res)
+        mid = int((rig.chip_offset[1] - oy) / rig.chip.res)
+        dark = lambda x: float((world[mid - 300 : mid + 300, x - 700 : x + 700] < 200).mean())
+        gap_x = (xa + xb) // 2
+        assert dark(gap_x) < dark(xa) and dark(gap_x) < dark(xb), "nothing may be printed in the gap between the areas"
+
+
+def test_earlier_crosses_logic() -> None:
+    import will_align as wa
+
+    pm = wm.area_for_tiles(2, 2)
+    assert wa.earlier_crosses(pm, 0) == []
+    assert wa.earlier_crosses(pm, 1) == ["tl", "bl"]
+    assert wa.earlier_crosses(pm, 2) == ["tl", "tr"]
+    assert wa.earlier_crosses(pm, 3) == ["tl", "tr", "bl"]
+    whole = wm.area_for_tiles(2, 2, mode="whole")  # whole frames: every tile prints all four crosses
+    assert wa.earlier_crosses(whole, 3) == ["tl", "tr", "bl"]
+    pm3 = wm.area_for_tiles(2, 3)
+    assert wa.earlier_crosses(pm3, 4) == ["tl", "tr", "bl"] and wa.earlier_crosses(pm3, 1) == ["tl", "bl"]
+
+
+def test_yolo_model_as_cross_seed() -> None:
+    try:
+        from ultralytics import YOLO
+    except Exception:  # noqa: BLE001
+        print("    (skipped: ultralytics not installed)")
+        return
+    import will_align as wa
+
+    model_path = os.path.join(os.path.dirname(HERE), "ckpts", "best.pt")
+    if not os.path.exists(model_path):
+        print("    (skipped: ckpts/best.pt missing)")
+        return
+    det = wa.yolo_detector(YOLO(model_path))
+    imgs, geo, pm, cfg, rig, mr, sim, _ = _session(False, 3)
+    T = pm.stage_targets(CENTER)[0]
+    rig.move_to(T[0] - 10, T[1] - 10)
+    rig.move_to(*T)
+    rig.autofocus()
+    frame = rig.grab()
+    pts = det(frame)
+    cw, ch = cfg.cam_size
+    exp = [(cw / 2 + (X - T[0]) / cfg.um_per_px, ch / 2 - (Y - T[1]) / cfg.um_per_px) for X, Y in wa.cross_positions_um(geo, T)]
+    hits = sum(any(math.hypot(px - ex, py - ey) < 30 for px, py in pts) for ex, ey in exp)
+    assert hits >= 2, (hits, pts)  # the model was trained on real photos; it finds most virtual crosses, not all
+    cm = wa.CrossMeasurer(wm.cross_patch(imgs[1], geo, "tl"), geo.center_in_cross, wa.cross_positions_um(geo, T), cfg, ml_detector=det)
+    m = cm.measure(frame, T)
+    plain = wa.CrossMeasurer(wm.cross_patch(imgs[1], geo, "tl"), geo.center_in_cross, wa.cross_positions_um(geo, T), cfg).measure(frame, T)
+    assert m.ok and "ML" in m.detail and math.hypot(m.correction_um[0] - plain.correction_um[0], m.correction_um[1] - plain.correction_um[1]) < 1.0
+
+
+def test_ui_area_dialog_and_map_before_tiles() -> None:
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+    except Exception:  # noqa: BLE001
+        print("    (skipped: no display / tkinter)")
+        return
+    import will_map_ui as ui
+
+    root.withdraw()
+    try:
+        _ui_area_checks(root, ui)
+    finally:
+        root.destroy()
+
+
+def _ui_area_checks(root, ui) -> None:
+    d = ui.AreaDialog(root)
+    text = "\n".join(d.info_lines())
+    assert "3 x 3 complete frames" in text and "2914 x 1615 um" in text and "(2.91 x 1.61 mm)" in text, text
+    assert "3 x 3 (9)" in text and "% x" in text and "max 75%" in text
+    d.cols_var.set(3)
+    d.rows_var.set(1)
+    text = "\n".join(d.info_lines())
+    assert "4 x 2 complete frames" in text, text
+    d.confirm()
+    assert d.result == (1, 3)
+    d2 = ui.AreaDialog(root)
+    d2.cols_var.set(0)
+    assert d2._counts() is None and d2.confirm_btn.instate(["disabled"])
+    d2.cancel()
+    assert d2.result is None
+
+    # run_will_map: the picker must not open before the map is done, and not at all when the map fails
+    chip = VirtualChip(wm.area_for_tiles(2, 2).area_size_um, seed=11)
+
+    def make_model(features=True):
+        rig = VirtualRig(VirtualChip(wm.area_for_tiles(2, 2).area_size_um, seed=11, features=features), center_um=CENTER, seed=5)
+
+        class Model:
+            stage_setpoint = [CENTER[0], CENTER[1], 0.0]
+            af_args: list = []
+
+            def move_absolute(self, d):
+                rig.move_to(d["x"], d["y"])
+                return True
+
+            def non_blocking_delay(self, t):
+                rig.settle(t)
+
+            def autofocus(self, blue_only, log=False):
+                self.af_args.append(blue_only)
+                rig.autofocus()
+
+            @property
+            def camera_image(self):
+                return rig.grab()
+
+        return Model(), rig
+
+    events = []
+    real = (ui.AreaDialog, ui.PatternPickerDialog, ui.PlacementApprovalWindow, ui.messagebox.showwarning, ui.messagebox.showinfo, ui.RunRecorder)
+    import tempfile
+
+    tmp = tempfile.mkdtemp()
+    try:
+        for features in (True, False):
+            events.clear()
+            model, rig = make_model(features)
+
+            class FakeArea:
+                def __init__(self, *a, **k):
+                    events.append("area dialog")
+
+                def show(self):
+                    return (2, 2)
+
+            class FakePicker:
+                def __init__(self, parent, rows, cols, samples):
+                    events.append(f"picker opened after {len(rig.log)} photos")
+                    self.rows, self.cols = rows, cols
+
+                def show(self):
+                    return [os.path.join(ui.SAMPLE_DIR, f) for f in ui.SAMPLE_SET]
+
+            class FakeApproval:
+                def __init__(self, parent, images, paths, **k):
+                    events.append(f"approval {k['rows']}x{k['cols']} in {k['area_rows']}x{k['area_cols']}, mapped area {k['mapped_area_um'][0]:.0f} um")
+                    self.result = None
+                    self.win = type("W", (), {"grab_set": lambda s: None, "wait_window": lambda s: None})()
+
+            ui.AreaDialog, ui.PatternPickerDialog, ui.PlacementApprovalWindow = FakeArea, FakePicker, FakeApproval
+            ui.messagebox.showwarning = lambda t, m: events.append("warning")
+            ui.RunRecorder = lambda label="": real[5](tmp, label)
+            ui.run_will_map(root, model)
+            if features:
+                # 9 map photos + the one photo run_will_map grabs first to learn the camera size
+                assert events[0] == "area dialog" and events[1] == "picker opened after 10 photos", events
+                assert events[2] == "approval 2x2 in 3x3, mapped area 2914 um", events
+                assert model.af_args and set(model.af_args) == {False}, "old-UI red autofocus after every map move"
+            else:
+                assert events == ["area dialog", "warning"], events  # blank chip: map refuses, tiles can never be inserted
+    finally:
+        ui.AreaDialog, ui.PatternPickerDialog, ui.PlacementApprovalWindow, ui.messagebox.showwarning, ui.messagebox.showinfo, ui.RunRecorder = real
+
+
 # ---------------------------------------------------------------- visuals
 def make_visuals(outdir: str) -> None:
     import matplotlib
@@ -549,7 +804,10 @@ def main() -> int:
         test_left_top_check_catches_a_false_lock, test_check_every_tile_option, test_budget,
         test_cross_inputs, test_align_closed_loop_beats_open_loop, test_align_backlash_hunting_is_prevented,
         test_align_fails_loudly_off_the_map, test_cross_measurer_and_method_comparison,
-        test_cross_measurer_ml_seed_and_garbage, test_run_folder_and_finished_piece, test_ui,
+        test_cross_measurer_ml_seed_and_garbage, test_run_folder_and_finished_piece,
+        test_area_for_tiles_plus_one_frame, test_map_grid_is_automatic_and_steps_at_most_three_quarters,
+        test_autofocus_after_moves, test_earlier_crosses_logic, test_two_areas_cross_on_off_and_both_finished_pieces_mapped,
+        test_yolo_model_as_cross_seed, test_ui_area_dialog_and_map_before_tiles, test_ui,
     ]
     failed = 0
     for t in tests:

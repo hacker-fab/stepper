@@ -29,6 +29,7 @@ from will_map import (
     MapResult,
     PlacementMap,
     TilingTimeModel,
+    area_for_tiles,
     background_from_map,
     budget_report,
     build_placement_map,
@@ -38,6 +39,7 @@ from will_map import (
     measure_cross_geometry,
     render_placement,
     same_layout,
+    scan_summary,
     spec_mismatches,
     will_map,
 )
@@ -244,6 +246,140 @@ class PatternPickerDialog:
 
 
 # --------------------------------------------------------------------------------------
+# Area dialog: how many tiles -> how much area gets mapped
+# --------------------------------------------------------------------------------------
+class AreaDialog:
+    """Asks for the number of tiles (wide x high) and shows the area that will be mapped: one more complete
+    frame than tiles in each direction, centred on the current stage position.  Confirm starts the map."""
+
+    CANVAS_W, CANVAS_H = 400, 240
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        cam_um_per_px: float = DEFAULT_CAM_UM_PER_PX,
+        cam_size: Tuple[int, int] = (1920, 1080),
+        rows: int = 2,
+        cols: int = 2,
+    ):
+        self.cam_um_per_px = cam_um_per_px
+        self.cam_size = cam_size
+        self.result: Optional[Tuple[int, int]] = None  # (tile rows, tile cols)
+        self.win = tk.Toplevel(parent)
+        self.win.title("Will Map: area to map")
+        self.win.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.win.resizable(False, False)
+        ttk.Label(self.win, text="Map the area around the current stage position.\nHow many tiles will the pattern have?").grid(
+            row=0, column=0, columnspan=2, padx=14, pady=(14, 8), sticky="w"
+        )
+        self.cols_var = tk.IntVar(value=cols)
+        self.rows_var = tk.IntVar(value=rows)
+        form = ttk.Frame(self.win)
+        form.grid(row=1, column=0, columnspan=2, padx=14, sticky="w")
+        ttk.Label(form, text="tiles wide").grid(row=0, column=0, sticky="w")
+        ttk.Spinbox(form, from_=1, to=8, width=4, textvariable=self.cols_var, command=self.refresh).grid(row=0, column=1, padx=8)
+        ttk.Label(form, text="tiles high").grid(row=1, column=0, sticky="w")
+        ttk.Spinbox(form, from_=1, to=8, width=4, textvariable=self.rows_var, command=self.refresh).grid(row=1, column=1, padx=8)
+        for v in (self.cols_var, self.rows_var):
+            v.trace_add("write", lambda *_: self.refresh())
+        self.canvas = tk.Canvas(self.win, width=self.CANVAS_W, height=self.CANVAS_H, bg="#e8e8e8", highlightthickness=0)
+        self.canvas.grid(row=2, column=0, padx=14, pady=10)
+        self.info = tk.Text(self.win, width=58, height=15, font=("Courier", 9), wrap="word", state="disabled")
+        self.info.grid(row=2, column=1, padx=(0, 14), pady=10, sticky="n")
+        bar = ttk.Frame(self.win)
+        bar.grid(row=3, column=0, columnspan=2, pady=(0, 14), padx=14, sticky="e")
+        ttk.Button(bar, text="Cancel", command=self.cancel).grid(row=0, column=0, padx=4)
+        self.confirm_btn = ttk.Button(bar, text="Confirm and map", command=self.confirm)
+        self.confirm_btn.grid(row=0, column=1, padx=4)
+        self.refresh()
+
+    def _counts(self) -> Optional[Tuple[int, int]]:
+        try:
+            r, c = int(self.rows_var.get()), int(self.cols_var.get())
+        except (tk.TclError, ValueError):
+            return None
+        return (r, c) if 1 <= r <= 8 and 1 <= c <= 8 else None
+
+    def info_lines(self) -> List[str]:
+        counts = self._counts()
+        if counts is None:
+            return ["enter 1 to 8 tiles in each direction"]
+        r, c = counts
+        pm = area_for_tiles(r, c)
+        w_um, h_um = pm.area_size_um
+        cfg = MapConfig(um_per_px=self.cam_um_per_px, cam_size=self.cam_size)
+        sc = scan_summary((w_um, h_um), cfg)
+        x0 = min(t.dest[0] for t in pm.tiles)
+        y0 = min(t.dest[1] for t in pm.tiles)
+        x1 = max(t.dest[2] for t in pm.tiles)
+        y1 = max(t.dest[3] for t in pm.tiles)
+        bw, bh = (x1 - x0) * pm.um_per_px[0], (y1 - y0) * pm.um_per_px[1]
+        lines = [
+            f"pattern: {c} wide x {r} high = {c * r} tiles",
+            f"area to map: {c + 1} x {r + 1} complete frames",
+            f"space occupied: {w_um:.0f} x {h_um:.0f} um  ({w_um / 1000:.2f} x {h_um / 1000:.2f} mm)",
+            f"pattern block inside: {bw:.0f} x {bh:.0f} um, centred",
+            "",
+            f"map photos: {sc['cols']} x {sc['rows']} ({sc['photos']}), step "
+            f"{sc['step_fraction'][0] * 100:.0f}% x / {sc['step_fraction'][1] * 100:.0f}% y of a frame (max 75%)",
+            f"estimated mapping time: {sc['est_s']:.0f} s (limit 300 s), with autofocus after each move",
+            "",
+            "The current stage position becomes the centre of the area.",
+            "Tiles can be inserted once the map is done.",
+        ]
+        if sc["est_s"] > 300:
+            lines.insert(7, "WARNING: this is over the 5 minute mapping target")
+        return lines
+
+    def refresh(self) -> None:
+        lines = self.info_lines()
+        self.info.configure(state="normal")
+        self.info.delete("1.0", "end")
+        self.info.insert("1.0", "\n".join(lines))
+        self.info.configure(state="disabled")
+        self.canvas.delete("all")
+        counts = self._counts()
+        self.confirm_btn.state(["!disabled"] if counts else ["disabled"])
+        if counts is None:
+            return
+        r, c = counts
+        fr, fc = r + 1, c + 1
+        pad = 22
+        cell = min((self.CANVAS_W - 2 * pad) / fc, (self.CANVAS_H - 2 * pad) / fr * 16 / 9)  # cell width; frames are 16:9
+        cell_h = cell * 9 / 16
+        x0 = (self.CANVAS_W - cell * fc) / 2
+        y0 = (self.CANVAS_H - cell_h * fr) / 2
+        self.canvas.create_rectangle(x0, y0, x0 + cell * fc, y0 + cell_h * fr, fill="white", outline="#888")
+        for i in range(1, fc):
+            self.canvas.create_line(x0 + i * cell, y0, x0 + i * cell, y0 + cell_h * fr, fill="#d0d0d0")
+        for j in range(1, fr):
+            self.canvas.create_line(x0, y0 + j * cell_h, x0 + cell * fc, y0 + j * cell_h, fill="#d0d0d0")
+        # the pattern block sits half a frame in from every edge, one tile per cell
+        for j in range(r):
+            for i in range(c):
+                tx, ty = x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell_h
+                self.canvas.create_rectangle(tx, ty, tx + cell, ty + cell_h, fill="#cfe3ff", outline="#2b6cb0")
+                self.canvas.create_text(tx + cell / 2, ty + cell_h / 2, text=str(j * c + i + 1), fill="#2b6cb0", font=("TkDefaultFont", 11, "bold"))
+        self.canvas.create_text(self.CANVAS_W / 2, y0 + cell_h * fr + 12, text=f"{fc} x {fr} frames", fill="#555")
+
+    def confirm(self) -> None:
+        counts = self._counts()
+        if counts is None:
+            return
+        self.result = counts
+        self.win.destroy()
+
+    def cancel(self) -> None:
+        self.result = None
+        self.win.destroy()
+
+    def show(self) -> Optional[Tuple[int, int]]:
+        self.win.grab_set()
+        self.win.wait_window()
+        return self.result
+
+
+# --------------------------------------------------------------------------------------
 # Placement approval
 # --------------------------------------------------------------------------------------
 @dataclass
@@ -280,7 +416,9 @@ class PlacementApprovalWindow:
         um_per_px: Tuple[float, float] = PROJ_UM_PER_PX,
         on_approve: Optional[Callable[[ApprovedPlacement], None]] = None,
         sign: Tuple[int, int] = (1, -1),
+        mapped_area_um: Optional[Tuple[float, float]] = None,
     ):
+        self.mapped_area_um = mapped_area_um
         self.images = list(images)
         self.masks = [exposure_mask(i) for i in self.images]  # cached; used by every redraw
         self.paths = list(paths) if paths else []
@@ -387,6 +525,15 @@ class PlacementApprovalWindow:
             lines.append("  keep cross size and distances identical on every tile!")
         else:
             lines.append("cross size/distances match the CROSS_* inputs in will_map.py")
+        self.too_big = False
+        if self.mapped_area_um is not None:
+            over = (pm.area_size_um[0] - self.mapped_area_um[0], pm.area_size_um[1] - self.mapped_area_um[1])
+            if max(over) > 25.0:
+                self.too_big = True
+                lines.append(
+                    f"WARNING: this placement needs {pm.area_size_um[0]:.0f} x {pm.area_size_um[1]:.0f} um but only "
+                    f"{self.mapped_area_um[0]:.0f} x {self.mapped_area_um[1]:.0f} um was mapped (cross layout differs from CROSS_*)"
+                )
         targets = pm.stage_targets(self.area_center, self.sign)
         lines.append("")
         lines.append("stage targets (um):")
@@ -405,7 +552,10 @@ class PlacementApprovalWindow:
         self.info.insert("1.0", "\n".join(lines))
         self.info.configure(state="disabled")
         bad = any(not s["ok"] for s in self.seams)
-        self.approve_btn.configure(text="Approve placement (seam mismatch!)" if bad else "Approve placement")
+        self.approve_btn.configure(
+            text="Approve placement (outside the mapped area!)" if self.too_big
+            else "Approve placement (seam mismatch!)" if bad else "Approve placement"
+        )
 
     # ---- actions ----
     def approve(self) -> None:
@@ -440,6 +590,14 @@ class ModelRig:
 
     def settle(self, seconds: float) -> None:
         self.model.non_blocking_delay(seconds)
+
+    def autofocus(self) -> None:
+        """Red autofocus after a movement, as the old tiling loop does (model.autofocus(blue_only=False)).
+        Toby's autofocus lives in his Qt engine and cannot be called from here; when it is ported, swap it in here."""
+        af = getattr(self.model, "autofocus", None)
+        if callable(af):
+            af(blue_only=False)
+        self.z = self.model.stage_setpoint[2]  # autofocus moved z; keep later moves at the focused height
 
     def grab(self) -> np.ndarray:
         img = self.model.camera_image
@@ -478,17 +636,16 @@ def run_will_map(
     cam_um_per_px: float = DEFAULT_CAM_UM_PER_PX,
     on_approved: Optional[Callable[[ApprovedPlacement], None]] = None,
 ) -> Optional[ApprovedPlacement]:
-    """Pattern picker -> camera map around the current stage position -> placement approval."""
-    sample_paths = [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]
-    sample_paths = sample_paths if all(os.path.exists(p) for p in sample_paths) else None
-    paths = PatternPickerDialog(parent, 2, 2, sample_paths).show()
-    if not paths:
-        return None
-    images = [load_image(p) for p in paths]
-    geo = measure_cross_geometry(images[0])
-    pm0 = build_placement_map(geo)
+    """Tiles wide/high -> area dialog (confirm) -> camera map around the current stage position ->
+    ONLY THEN pick the pattern for each tile -> placement approval."""
     cam = np.asarray(model.camera_image)
-    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=(cam.shape[1], cam.shape[0]))
+    cam_size = (cam.shape[1], cam.shape[0])
+    counts = AreaDialog(parent, cam_um_per_px, cam_size).show()
+    if not counts:
+        return None
+    tile_rows, tile_cols = counts
+    area_pm = area_for_tiles(tile_rows, tile_cols)
+    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=cam_size)
     center = (float(model.stage_setpoint[0]), float(model.stage_setpoint[1]))
     recorder = RunRecorder(label="map")  # one folder per run, next to this file
     try:
@@ -497,7 +654,7 @@ def run_will_map(
         pass
     prog = _Progress(parent)
     try:
-        result = will_map(ModelRig(model), cfg, pm0.area_size_um, center, prog.update, lambda: prog.aborted)
+        result = will_map(ModelRig(model), cfg, area_pm.area_size_um, center, prog.update, lambda: prog.aborted)
     except Exception as e:  # noqa: BLE001
         prog.close()
         recorder.log(f"mapping stopped: {e}")
@@ -509,8 +666,18 @@ def run_will_map(
     if not result.ok:
         messagebox.showwarning("Will Map", "\n".join(result.report()) + f"\n\nPhotos saved in:\n{recorder.dir}")
         return None
+
+    # the map is good: now (and only now) the tiles can be inserted
+    sample_paths = [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]
+    sample_paths = sample_paths if (tile_rows, tile_cols) == (2, 2) and all(os.path.exists(p) for p in sample_paths) else None
+    paths = PatternPickerDialog(parent, tile_rows, tile_cols, sample_paths).show()
+    if not paths:
+        recorder.log("no patterns chosen")
+        return None
+    images = [load_image(p) for p in paths]
     win = PlacementApprovalWindow(
-        parent, images, paths, area_center_um=center, map_result=result, on_approve=on_approved,
+        parent, images, paths, rows=tile_rows, cols=tile_cols, area_rows=tile_rows + 1, area_cols=tile_cols + 1,
+        area_center_um=center, map_result=result, on_approve=on_approved, mapped_area_um=area_pm.area_size_um,
     )
     win.win.grab_set()
     win.win.wait_window()
@@ -553,32 +720,42 @@ def run_finished_piece(parent: tk.Misc, model, cam_um_per_px: float = DEFAULT_CA
 
 
 def _virtual_demo() -> None:
-    """Run the whole flow against the virtual white chip (no hardware)."""
-    from will_map_virtual import VirtualChip, VirtualRig, simulate_patterning
+    """The whole flow against the virtual white chip (no hardware)."""
+    from will_map_virtual import (
+        VirtualChip, VirtualRig, load_samples, run_sample_comparison, simulate_patterning,
+    )
 
     root = tk.Tk()
     root.title("Will Map - virtual test")
     closed = tk.BooleanVar(value=True)
+    crosses = tk.BooleanVar(value=True)
 
     def go() -> None:
-        sample_paths = [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]
-        paths = PatternPickerDialog(root, 2, 2, sample_paths).show()
-        if not paths:
+        counts = AreaDialog(root).show()
+        if not counts:
             return
-        images = [load_image(p) for p in paths]
-        pm0 = build_placement_map(measure_cross_geometry(images[0]))
+        tile_rows, tile_cols = counts
+        area_pm = area_for_tiles(tile_rows, tile_cols)
         center = (5000.0, 3000.0)
-        rig = VirtualRig(VirtualChip(pm0.area_size_um), center_um=center)
+        rig = VirtualRig(VirtualChip(area_pm.area_size_um), center_um=center)
         rec = RunRecorder(label="virtual")
         prog = _Progress(root)
-        res = will_map(rig, MapConfig(), pm0.area_size_um, center, prog.update, lambda: prog.aborted)
+        res = will_map(rig, MapConfig(), area_pm.area_size_um, center, prog.update, lambda: prog.aborted)
         prog.close()
         print("\n".join(res.report()))
         rec.save_map(res)
         if not res.ok:
             messagebox.showwarning("Will Map", "\n".join(res.report()))
             return
-        win = PlacementApprovalWindow(root, images, paths, area_center_um=center, map_result=res)
+        sample_paths = [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]  # tiles can be inserted only now
+        paths = PatternPickerDialog(root, tile_rows, tile_cols, sample_paths if (tile_rows, tile_cols) == (2, 2) else None).show()
+        if not paths:
+            return
+        images = [load_image(p) for p in paths]
+        win = PlacementApprovalWindow(
+            root, images, paths, rows=tile_rows, cols=tile_cols, area_rows=tile_rows + 1, area_cols=tile_cols + 1,
+            area_center_um=center, map_result=res, mapped_area_um=area_pm.area_size_um,
+        )
         win.win.wait_window()
         if not win.result:
             return
@@ -587,26 +764,50 @@ def _virtual_demo() -> None:
         rec.save_placement(pm, images, paths, center, res)
         if messagebox.askyesno(
             "Virtual patterning",
-            "Simulate patterning (align each tile with the closed-loop algorithm if ticked, 'expose' it onto "
-            "the virtual chip) and map the finished piece?",
+            "Simulate patterning (closed-loop alignment if ticked, cross detection if ticked, then 'expose' each tile "
+            "onto the virtual chip) and map the finished piece?",
         ):
             prog = _Progress(root, "Virtual patterning")
             try:
-                sim = simulate_patterning(rig, res, pm, images, MapConfig(), center, closed.get(), rec, lambda m: prog.update(0.5, m))
+                sim = simulate_patterning(
+                    rig, res, pm, images, MapConfig(), center, closed.get(), rec, lambda m: prog.update(0.5, m), crosses.get()
+                )
                 fin = map_finished_piece(rig, MapConfig(), pm.area_size_um, center, rec, pm, prog.update)
             finally:
                 prog.close()
             messagebox.showinfo(
                 "Virtual patterning",
                 f"tile spacing error vs ideal: {', '.join(f'{v:.1f}' for v in sim['spacing_error_um'])} um "
-                f"({'closed-loop' if closed.get() else 'open-loop'}, {sim['photos']} alignment photos)\n\n"
+                f"({sim['photos']} alignment photos, driven by {sim['driven_by']})\n\n"
                 + "\n".join(fin.report()) + f"\n\nRun folder:\n{rec.dir}",
             )
 
+    def sample() -> None:
+        """Everything twice, on two different areas of one chip: convolution only, then cross detection on."""
+        prog = _Progress(root, "Sample run (2 areas)")
+        model = None
+        try:
+            try:  # the old UI's YOLO marker model, when ultralytics is installed
+                from ultralytics import YOLO
+
+                model = YOLO(os.path.join(os.path.dirname(HERE), "ckpts", "best.pt"))
+            except Exception:  # noqa: BLE001
+                model = None
+            res = run_sample_comparison(label="sample", ml_model=model, progress=lambda m: prog.update(0.5, m))
+        finally:
+            prog.close()
+        messagebox.showinfo(
+            "Sample run",
+            "\n".join(res["summary"]) + f"\n\nYOLO seed: {'yes' if model is not None else 'no (ultralytics/model not available)'}"
+            f"\n\nRun folder:\n{res['recorder'].dir}",
+        )
+
     ttk.Label(root, text="The chip is white; scratches and dust give the camera something to register on.").grid(row=0, column=0, padx=16, pady=(14, 6))
-    ttk.Checkbutton(root, text="Closed-loop alignment before each virtual exposure", variable=closed).grid(row=1, column=0)
-    ttk.Button(root, text="Run virtual test", command=go).grid(row=2, column=0, pady=6)
-    ttk.Button(root, text="Quit", command=root.destroy).grid(row=3, column=0, pady=(0, 14))
+    ttk.Checkbutton(root, text="Closed-loop alignment before each virtual exposure", variable=closed).grid(row=1, column=0, sticky="w", padx=16)
+    ttk.Checkbutton(root, text="Cross detection (use crosses printed by earlier tiles)", variable=crosses).grid(row=2, column=0, sticky="w", padx=16)
+    ttk.Button(root, text="Run virtual test", command=go).grid(row=3, column=0, pady=6)
+    ttk.Button(root, text="Sample: run twice (convolution only, then cross detection) on two areas", command=sample).grid(row=4, column=0, pady=6, padx=16)
+    ttk.Button(root, text="Quit", command=root.destroy).grid(row=5, column=0, pady=(0, 14))
     root.mainloop()
 
 

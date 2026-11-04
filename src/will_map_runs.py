@@ -75,7 +75,11 @@ def tile_name(tile: Tuple[int, int], order_index: Optional[int] = None) -> str:
 class RunRecorder:
     """Creates the run folder and writes the pieces of a run into it."""
 
-    def __init__(self, base_dir: Optional[str] = None, label: str = ""):
+    def __init__(self, base_dir: Optional[str] = None, label: str = "", exact_dir: Optional[str] = None):
+        if exact_dir is not None:  # a sub-folder of a run (see sub())
+            os.makedirs(exact_dir, exist_ok=True)
+            self.dir = exact_dir
+            return
         base = base_dir or RUNS_DIR
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         slug = re.sub(r"[^A-Za-z0-9_-]+", "-", label).strip("-")
@@ -87,6 +91,10 @@ class RunRecorder:
         os.makedirs(path)
         self.dir = path
         self.log(f"run folder created: {path}")
+
+    def sub(self, name: str) -> "RunRecorder":
+        """A recorder that writes into a sub-folder of this run (e.g. one per process in a comparison)."""
+        return RunRecorder(exact_dir=os.path.join(self.dir, name))
 
     def log(self, text: str) -> None:
         with open(os.path.join(self.dir, "run_log.txt"), "a", encoding="utf-8") as f:

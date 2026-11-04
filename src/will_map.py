@@ -18,6 +18,7 @@ Conventions
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import time
 from dataclasses import dataclass, field
@@ -592,15 +593,17 @@ class Rig(Protocol):
     def move_to(self, x_um: float, y_um: float) -> None: ...
     def settle(self, seconds: float) -> None: ...
     def grab(self) -> np.ndarray: ...
+    # optional:  def autofocus(self) -> None   (called after stage movements when cfg.autofocus is on)
 
 
 @dataclass
 class MapConfig:
-    rows: int = 3
-    cols: int = 3
+    rows: Optional[int] = None  # photos down / across; None = work out from the area (see resolve_grid)
+    cols: Optional[int] = None
     um_per_px: float = DEFAULT_CAM_UM_PER_PX
     cam_size: Tuple[int, int] = CAMERA_SIZE_PX
-    overlap_min: float = 0.25  # at least this fraction of a frame must overlap its neighbour
+    overlap_min: float = 0.25  # at least this fraction of a frame must overlap its neighbour, i.e. a step of
+    #                            at most 3/4 of a frame (the grid is chosen so no step is larger than that)
     margin_um: float = 0.0  # extra border around the area
     sign: Tuple[int, int] = (1, -1)  # stage -> mosaic direction (x right, y down)
     search_px: int = 96  # registration search radius around the stage prediction
@@ -615,6 +618,10 @@ class MapConfig:
     t_settle_s: float = 2.5
     t_capture_s: float = 0.5
     t_retry_extra_settle_s: float = 2.0
+    # autofocus after stage movements (needs rig.autofocus(); the old UI's / Toby's autofocus plugs in there)
+    autofocus: bool = True
+    t_autofocus_s: float = 10.0  # ASSUMPTION until timed on the machine
+    af_min_move_um: float = 25.0  # alignment nudges smaller than this do not trigger a refocus
 
 
 @dataclass
@@ -684,8 +691,8 @@ class MapResult:
             )
         if t:
             lines.append(
-                f"time: stage {t.get('stage_s', 0):.0f} s (estimated) + compute {t.get('compute_s', 0):.1f} s "
-                f"= {t.get('total_s', 0):.0f} s"
+                f"time: stage {t.get('stage_s', 0):.0f} s (estimated, incl. {int(t.get('autofocus_runs', 0))} autofocus) "
+                f"+ compute {t.get('compute_s', 0):.1f} s = {t.get('total_s', 0):.0f} s"
             )
         return lines
 
@@ -697,6 +704,42 @@ def snake_order(rows: int, cols: int) -> List[Tile]:
         cs = range(cols) if r % 2 == 0 else range(cols - 1, -1, -1)
         out.extend((r, c) for c in cs)
     return out
+
+
+def resolve_grid(cfg: MapConfig, area_um: Tuple[float, float]) -> MapConfig:
+    """Fill in rows/cols: the fewest photos such that no step is bigger than (1 - overlap_min) of a frame
+    (3/4 of a frame by default), spread evenly so the area edges are covered."""
+    if cfg.rows is not None and cfg.cols is not None:
+        return cfg
+    fov = (cfg.cam_size[0] * cfg.um_per_px, cfg.cam_size[1] * cfg.um_per_px)
+    need = (area_um[0] + 2 * cfg.margin_um, area_um[1] + 2 * cfg.margin_um)
+    n = []
+    for a in (0, 1):
+        extra = max(need[a] - fov[a], 0.0)
+        n.append(1 + int(math.ceil(extra / ((1.0 - cfg.overlap_min) * fov[a]) - 1e-9)) if extra > 0 else 1)
+    return dataclasses.replace(cfg, rows=cfg.rows or n[1], cols=cfg.cols or n[0])
+
+
+def scan_summary(area_um: Tuple[float, float], cfg: Optional[MapConfig] = None) -> dict:
+    """What mapping this area will involve: photos across/down, the step as a fraction of a frame, time estimate."""
+    cfg = resolve_grid(cfg or MapConfig(), area_um)
+    _, step, fov = plan_scan(cfg, area_um, (0.0, 0.0))
+    n = cfg.rows * cfg.cols
+    per = cfg.t_move_s + cfg.t_settle_s + cfg.t_capture_s + (cfg.t_autofocus_s if cfg.autofocus else 0.0)
+    return {
+        "rows": cfg.rows, "cols": cfg.cols, "photos": n,
+        "step_fraction": (step[0] / fov[0] if cfg.cols > 1 else 0.0, step[1] / fov[1] if cfg.rows > 1 else 0.0),
+        "fov_um": fov, "est_s": n * per,
+    }
+
+
+def area_for_tiles(
+    tile_rows: int, tile_cols: int, geo: Optional[CrossGeometry] = None, mode: str = "trimmed"
+) -> PlacementMap:
+    """The area a tile_rows x tile_cols pattern needs: one more complete frame than tiles in each direction
+    (2x2 tiles -> 3x3 frames), with the pattern in the middle.  Uses the CROSS_* inputs unless a measured
+    geometry is given, so it works before any pattern has been chosen."""
+    return build_placement_map(geo or spec_geometry(), tile_rows, tile_cols, tile_rows + 1, tile_cols + 1, mode=mode)
 
 
 def plan_scan(
@@ -786,8 +829,16 @@ def will_map(
       ``cfg.check_tol_um``.  A tile that fails is re-captured (``cfg.retries``) before giving up.
     """
     note = progress or (lambda f, m: None)
+    cfg = resolve_grid(cfg, area_um)
     plan, step, fov = plan_scan(cfg, area_um, center_um)
     order = snake_order(cfg.rows, cfg.cols)
+    # the registration search window must leave enough overlap to correlate on (small overlaps at 3/4 steps)
+    overlaps_px = [cfg.cam_size[a] - step[a] / cfg.um_per_px for a in (0, 1) if (cfg.cols, cfg.rows)[a] > 1]
+    search_eff = cfg.search_px
+    if overlaps_px:
+        search_eff = int(max(16, min(cfg.search_px, ((min(overlaps_px) - 96) // 2) // 4 * 4)))
+    af = getattr(rig, "autofocus", None) if cfg.autofocus else None
+    n_af = 0
     s = cfg.um_per_px
     sgn = cfg.sign
     raw: Dict[Tile, np.ndarray] = {}
@@ -805,8 +856,13 @@ def will_map(
 
     def capture(tile: Tile, extra_settle: float = 0.0) -> None:
         nonlocal stage_s
+        nonlocal n_af
         rig.move_to(*plan[tile])
         rig.settle(cfg.t_settle_s + extra_settle)
+        if callable(af):
+            af()
+            n_af += 1
+            stage_s += cfg.t_autofocus_s
         raw[tile] = rig.grab()
         stage_s += cfg.t_move_s + cfg.t_settle_s + extra_settle + cfg.t_capture_s
 
@@ -814,7 +870,7 @@ def will_map(
         total = stage_s + compute_s
         return MapResult(
             False, msg, cfg, center_um, plan, {}, pairs, checks, None,
-            timing={"stage_s": stage_s, "compute_s": compute_s, "total_s": total}, captured=len(raw),
+            timing={"stage_s": stage_s, "compute_s": compute_s, "total_s": total, "autofocus_runs": n_af}, captured=len(raw),
             frames=dict(raw),
         )
 
@@ -848,7 +904,7 @@ def will_map(
             est: Dict[str, Tuple[float, float]] = {}
             for kind, nb in neighbours:
                 reg = register_pair(
-                    prep[nb], prep[tile], predicted(nb, tile), cfg.search_px, min_peak=cfg.min_peak,
+                    prep[nb], prep[tile], predicted(nb, tile), search_eff, min_peak=cfg.min_peak,
                     prefer_prior=(cfg.ambiguity == "stage_prior"),
                 )
                 batch.append(PairMeasurement(nb, tile, kind, predicted(nb, tile), reg.shift, reg.peak, reg.second, reg.ok, reg.reason))
@@ -899,7 +955,7 @@ def will_map(
     total = stage_s + compute_s
     return MapResult(
         True, "all registrations and left/top checks passed", cfg, center_um, plan, solved, pairs, checks,
-        mosaic, off, {"stage_s": stage_s, "compute_s": compute_s, "total_s": total}, len(raw), dict(raw),
+        mosaic, off, {"stage_s": stage_s, "compute_s": compute_s, "total_s": total, "autofocus_runs": n_af}, len(raw), dict(raw),
     )
 
 

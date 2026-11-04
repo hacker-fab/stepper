@@ -167,10 +167,11 @@ def cross_positions_um(
     proj_um_per_px: Point = PROJ_UM_PER_PX,
     sign: Tuple[int, int] = (1, -1),
     mirror: Tuple[bool, bool] = (False, False),
+    names: Sequence[str] = ("tl", "tr", "bl", "br"),
 ) -> List[Point]:
-    """Stage um of the centre of each of the four crosses of a frame exposed with its centre at ``target_um``."""
+    """Stage um of the centre of each (named) cross of a frame exposed with its centre at ``target_um``."""
     out: List[Point] = []
-    for name in ("tl", "tr", "bl", "br"):
+    for name in names:
         x, y = geo.corner(name)
         cx, cy = x + geo.center_in_cross[0], y + geo.center_in_cross[1]
         dx = (cx - geo.frame_w / 2.0) * proj_um_per_px[0] * (-1 if mirror[0] else 1)
@@ -179,16 +180,55 @@ def cross_positions_um(
     return out
 
 
+def earlier_crosses(pm, slot: int) -> List[str]:
+    """Names of the crosses of tile ``slot`` that an EARLIER tile has already exposed on the chip.
+
+    The same physical cross is the TL of one frame, the TR of its left neighbour, the BL of the frame above,
+    and so on; with trimmed footprints only one tile exposes it.  A tile that has a left or top neighbour
+    therefore finds some of its own crosses already printed: aligning to those places the new tile relative
+    to what is actually on the chip, whatever the map or the stage says.
+    """
+    geo = pm.geo
+    me = pm.tiles[slot]
+    by_rc = {(t.row, t.col): t for t in pm.tiles}
+    out: List[str] = []
+    for name in ("tl", "tr", "bl", "br"):
+        dr = 1 if name in ("bl", "br") else 0
+        dc = 1 if name in ("tr", "br") else 0
+        found = False
+        # the four frames that share the grid vertex (me.row + dr, me.col + dc)
+        for rr, cc, nm in (
+            (me.row + dr, me.col + dc, "tl"),
+            (me.row + dr, me.col + dc - 1, "tr"),
+            (me.row + dr - 1, me.col + dc, "bl"),
+            (me.row + dr - 1, me.col + dc - 1, "br"),
+        ):
+            t = by_rc.get((rr, cc))
+            if t is None or t.slot >= slot:
+                continue
+            x, y = geo.corner(nm)
+            x0, y0, x1, y1 = t.crop
+            if x0 <= x and x + geo.cross_w <= x1 and y0 <= y and y + geo.cross_h <= y1:
+                found = True
+                break
+        if found:
+            out.append(name)
+    return out
+
+
 MLDetector = Callable[[np.ndarray], List[Point]]
 
 
-def yolo_detector(model) -> MLDetector:
-    """Adapter for the ultralytics YOLO model used by gui.py (ckpts/best.pt): returns box centres in photo px."""
+def yolo_detector(model, conf: float = 0.1) -> MLDetector:
+    """Adapter for the ultralytics YOLO model used by gui.py (ckpts/best.pt): returns box centres in photo px.
+
+    ``conf`` is lower than the model's 0.25 default on purpose: the boxes only seed the template search
+    (which gives the precise position), and on virtual crosses 0.25 found 1 of 4, 0.1 found 3 of 4."""
 
     def detect(frame: np.ndarray) -> List[Point]:
         rgb = frame if frame.ndim == 3 else cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
         h, w = rgb.shape[:2]
-        res = model(cv2.resize(rgb, (640, 640)), verbose=False)
+        res = model(cv2.resize(rgb, (640, 640)), conf=conf, verbose=False)  # low conf: only used as a coarse seed
         pts: List[Point] = []
         for box in res[0].boxes:
             x1, y1, x2, y2 = (float(v) for v in box.xyxy[0].cpu().numpy())
@@ -403,6 +443,7 @@ def align_to_target(
     max_step_um: float = 80.0,
     gain: float = 1.0,
     approach_um: float = 10.0,
+    autofocus: bool = True,
     prefer: Optional[Sequence[str]] = None,
     keep_frames: bool = False,
     progress: Optional[Callable[[str], None]] = None,
@@ -418,6 +459,9 @@ def align_to_target(
     first backs off by ``approach_um`` in -x/-y and then moves to the commanded point, so the last
     motion on both axes is always in the same direction.  Use a value larger than the stage backlash;
     0 turns it off (costs one extra short move per photo).
+
+    ``autofocus``: if the rig has ``autofocus()``, run it after the first move to the target and after any
+    later correction larger than ``cfg.af_min_move_um``; a few-um nudge does not change the focus.
     """
     cfg = cfg or MapConfig()
     note = progress or (lambda m: None)
@@ -427,9 +471,12 @@ def align_to_target(
     frames: List[np.ndarray] = []
     per_photo = cfg.t_move_s * (2 if approach_um > 0 else 1) + cfg.t_settle_s + cfg.t_capture_s
     frame: Optional[np.ndarray] = None
+    af = getattr(rig, "autofocus", None) if autofocus and cfg.autofocus else None
+    af_s = 0.0
+    last_focus: Optional[Point] = None
 
     def finish(ok: bool, msg: str, err: float) -> AlignResult:
-        return AlignResult(ok, msg, target_um, cmd, err, steps, per_photo * len(steps), frame, frames)
+        return AlignResult(ok, msg, target_um, cmd, err, steps, per_photo * len(steps) + af_s, frame, frames)
 
     prev_errs: List[float] = []
     for it in range(max_iter + 1):
@@ -438,6 +485,10 @@ def align_to_target(
             rig.move_to(cmd[0] - approach_um, cmd[1] - approach_um)
         rig.move_to(*cmd)
         rig.settle(cfg.t_settle_s)
+        if callable(af) and (last_focus is None or math.dist(cmd, last_focus) >= cfg.af_min_move_um):
+            af()
+            af_s += cfg.t_autofocus_s
+            last_focus = cmd
         frame = rig.grab()
         if keep_frames:
             frames.append(frame)
@@ -461,7 +512,7 @@ def align_to_target(
         if it == max_iter:
             return finish(False, f"still {err:.2f} um off after {max_iter} corrections (limit {tol_um:.1f} um)", err)
         prev_errs.append(err)
-        if len(prev_errs) >= 3 and prev_errs[-1] > prev_errs[-2] > prev_errs[-3]:
+        if len(prev_errs) >= 3 and prev_errs[-1] > prev_errs[-2] > prev_errs[-3] and prev_errs[-1] > 2.0 * min(prev_errs):
             return finish(False, f"the error is growing ({prev_errs[-3]:.1f} -> {prev_errs[-1]:.1f} um); check the stage direction/sign", err)
         cx, cy = m_used.correction_um
         n = math.hypot(cx, cy)
