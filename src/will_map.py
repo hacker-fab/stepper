@@ -675,6 +675,7 @@ class MapResult:
     timing: Dict[str, float] = field(default_factory=dict)
     captured: int = 0
     frames: Dict[Tile, np.ndarray] = field(default_factory=dict)  # the raw camera photos (for run folders)
+    photo_wall_s: List[float] = field(default_factory=list)  # measured seconds per photo (move+settle+focus+grab+register)
 
     def stage_to_px(self, x_um: float, y_um: float) -> Tuple[float, float]:
         sx, sy = self.cfg.sign
@@ -702,6 +703,11 @@ class MapResult:
                 f"time: stage {t.get('stage_s', 0):.0f} s (estimated, incl. {int(t.get('autofocus_runs', 0))} autofocus) "
                 f"+ compute {t.get('compute_s', 0):.1f} s = {t.get('total_s', 0):.0f} s"
             )
+            if "wall_s" in t:
+                lines.append(
+                    f"measured: {t['wall_s']:.0f} s in total, photos {t.get('wall_photos_s', 0):.0f} s "
+                    f"(autofocus {t.get('wall_autofocus_s', 0):.0f} s), stitching {t.get('wall_stitch_s', 0):.1f} s"
+                )
         return lines
 
 
@@ -859,6 +865,8 @@ def will_map(
         search_eff = int(max(16, min(cfg.search_px, ((min(overlaps_px) - 96) // 2) // 4 * 4)))
     af = getattr(rig, "autofocus", None) if cfg.autofocus else None
     n_af = 0
+    af_wall = 0.0
+    photo_wall: List[float] = []
     say = status if cfg.verbose else (lambda m: None)
     t_start = time.perf_counter()
     say(
@@ -883,11 +891,13 @@ def will_map(
 
     def capture(tile: Tile, extra_settle: float = 0.0) -> None:
         nonlocal stage_s
-        nonlocal n_af
+        nonlocal n_af, af_wall
         rig.move_to(*plan[tile])
         rig.settle(cfg.t_settle_s + extra_settle)
         if callable(af):
+            t_af = time.perf_counter()
             af()
+            af_wall += time.perf_counter() - t_af
             n_af += 1
             stage_s += cfg.t_autofocus_s
         raw[tile] = rig.grab()
@@ -897,8 +907,12 @@ def will_map(
         total = stage_s + compute_s
         return MapResult(
             False, msg, cfg, center_um, plan, {}, pairs, checks, None,
-            timing={"stage_s": stage_s, "compute_s": compute_s, "total_s": total, "autofocus_runs": n_af}, captured=len(raw),
-            frames=dict(raw),
+            timing={
+                "stage_s": stage_s, "compute_s": compute_s, "total_s": total, "autofocus_runs": n_af,
+                "wall_s": time.perf_counter() - t_start, "wall_photos_s": sum(photo_wall), "wall_autofocus_s": af_wall,
+                "wall_stitch_s": 0.0,
+            },
+            captured=len(raw), frames=dict(raw), photo_wall_s=list(photo_wall),
         )
 
     for k, tile in enumerate(order):
@@ -907,6 +921,7 @@ def will_map(
         r, c = tile
         in_row = k % cfg.cols
         note(k / len(order), f"capturing tile {k + 1}/{len(order)} (row {r + 1}, col {c + 1})")
+        t_photo = time.perf_counter()
         prev = order[k - 1] if in_row > 0 else None
         top = (r - 1, c) if r > 0 else None
         want_check = (
@@ -965,6 +980,7 @@ def will_map(
             attempt += 1
             note(k / len(order), f"re-capturing tile {k + 1}: {problem}")
             say(f"{cfg.label}: photo {k + 1}/{len(order)} re-taking, attempt {attempt + 1}: {problem}")
+        photo_wall.append(time.perf_counter() - t_photo)
         elapsed = time.perf_counter() - t_start
         eta = elapsed / (k + 1) * (len(order) - k - 1)
         reg_txt = "anchor photo"
@@ -978,6 +994,7 @@ def will_map(
         )
 
     say(f"{cfg.label}: all {len(order)} photos taken in {time.perf_counter() - t_start:.0f} s, stitching")
+    t_stitch = time.perf_counter()
     t0 = time.perf_counter()
     solved = _solve_positions(order, pairs)
     say(f"stitching: solved {len(solved)} photo positions from {len(pairs)} overlaps")
@@ -993,11 +1010,18 @@ def will_map(
     off = (float(np.mean([o[0] for o in offs])), float(np.mean([o[1] for o in offs])))
     compute_s += time.perf_counter() - t0
     note(1.0, "map complete")
+    wall_stitch = time.perf_counter() - t_stitch
     say(f"{cfg.label}: done in {time.perf_counter() - t_start:.0f} s")
     total = stage_s + compute_s
     return MapResult(
         True, "all registrations and left/top checks passed", cfg, center_um, plan, solved, pairs, checks,
-        mosaic, off, {"stage_s": stage_s, "compute_s": compute_s, "total_s": total, "autofocus_runs": n_af}, len(raw), dict(raw),
+        mosaic, off,
+        {
+            "stage_s": stage_s, "compute_s": compute_s, "total_s": total, "autofocus_runs": n_af,
+            "wall_s": time.perf_counter() - t_start, "wall_photos_s": sum(photo_wall), "wall_autofocus_s": af_wall,
+            "wall_stitch_s": wall_stitch,
+        },
+        len(raw), dict(raw), list(photo_wall),
     )
 
 

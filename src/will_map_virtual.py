@@ -294,6 +294,7 @@ def simulate_patterning(
     t_pat = time.perf_counter()
     status(f"patterning: {len(pm.tiles)} tiles ({'closed-loop alignment' if closed_loop else 'open loop'})")
     for t, T in zip(pm.tiles, targets):
+        t_tile = time.perf_counter()
         note(f"tile {t.slot + 1}: {'aligning' if closed_loop else 'moving'}")
         if closed_loop:
             measurers = [fm]
@@ -315,6 +316,8 @@ def simulate_patterning(
         note(f"tile {t.slot + 1}: exposing (virtual)")
         pos.append(rig.expose(exposure_mask(images[t.slot]), pm.um_per_px, t.crop))
         status(f"patterning: tile {len(pos)}/{len(pm.tiles)} done (slot {t.slot + 1}), {time.perf_counter() - t_pat:.0f} s elapsed")
+        if recorder is not None:
+            recorder.add_timing(f"patterning tile {len(pos)}", time.perf_counter() - t_tile, f"slot {t.slot + 1}", "detail")
     ideal = [rig.ideal_chip_xy(T) for T in targets]
     spacing = [
         math.hypot(

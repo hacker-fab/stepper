@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import time
 import sys
 import tkinter as tk
 from dataclasses import dataclass, field
@@ -669,7 +670,9 @@ def run_will_map(
     cam_size = (cam.shape[1], cam.shape[0])
     (rows0, cols0), why = default_tile_counts(tile_counts)
     status(f"tile grid: {why}")
+    t_dialog = time.perf_counter()
     counts = AreaDialog(parent, cam_um_per_px, cam_size, rows=rows0, cols=cols0).show()
+    dialog_s = time.perf_counter() - t_dialog
     if not counts:
         return None
     tile_rows, tile_cols = counts
@@ -681,11 +684,13 @@ def run_will_map(
         f"({tile_cols + 1} x {tile_rows + 1} complete frames) around stage ({center[0]:.0f}, {center[1]:.0f}) um"
     )
     recorder = RunRecorder(label="map")  # one folder per run, next to this file
+    recorder.add_timing("area dialog", dialog_s, "confirm the tile grid", "user")
     try:
         model.will_run = recorder  # the finished-piece scan writes into the same folder
     except Exception:  # noqa: BLE001
         pass
     prog = _Progress(parent)
+    t_map = time.perf_counter()
     try:
         result = will_map(ModelRig(model), cfg, area_pm.area_size_um, center, prog.update, lambda: prog.aborted)
     except Exception as e:  # noqa: BLE001
@@ -695,7 +700,10 @@ def run_will_map(
         return None
     prog.close()
     print("\n".join(result.report()))
+    recorder.add_timing("map", time.perf_counter() - t_map, f"{result.captured} photos, {'ok' if result.ok else 'FAILED'}", "machine")
+    t_save = time.perf_counter()
     recorder.save_map(result)  # photos + combined map are kept even when the map fails (useful for debugging)
+    recorder.add_timing("saving map photos and files", time.perf_counter() - t_save, "", "detail")
     if not result.ok:
         messagebox.showwarning("Will Map", "\n".join(result.report()) + f"\n\nPhotos saved in:\n{recorder.dir}")
         return None
@@ -703,20 +711,26 @@ def run_will_map(
     # the map is good: now (and only now) the tiles can be inserted
     sample_paths = [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]
     sample_paths = sample_paths if (tile_rows, tile_cols) == (2, 2) and all(os.path.exists(p) for p in sample_paths) else None
+    t_pick = time.perf_counter()
     paths = PatternPickerDialog(parent, tile_rows, tile_cols, sample_paths).show()
+    recorder.add_timing("pattern picking", time.perf_counter() - t_pick, "choose the pattern for each tile", "user")
     if not paths:
         recorder.log("no patterns chosen")
         return None
     images = [load_image(p) for p in paths]
+    t_approve = time.perf_counter()
     win = PlacementApprovalWindow(
         parent, images, paths, rows=tile_rows, cols=tile_cols, area_rows=tile_rows + 1, area_cols=tile_cols + 1,
         area_center_um=center, map_result=result, on_approve=on_approved, mapped_area_um=area_pm.area_size_um,
     )
     win.win.grab_set()
     win.win.wait_window()
+    recorder.add_timing("placement approval", time.perf_counter() - t_approve, "check and approve the placement", "user")
     if win.result is not None:
         print("\n".join(win.result.lines()))
+        t_place = time.perf_counter()
         recorder.save_placement(win.result.placement, images, paths, center, result)
+        recorder.add_timing("saving placement preview", time.perf_counter() - t_place, "", "detail")
         try:
             model.will_placement = win.result  # kept for the exposure step that comes next
         except Exception:  # noqa: BLE001

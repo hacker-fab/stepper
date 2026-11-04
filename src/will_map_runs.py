@@ -9,6 +9,7 @@
         3_align/                    closed-loop alignment reports (and photos, when kept)
         4_finished_piece/photos/    quick re-map of the patterned piece, separate photos
         4_finished_piece/stitched.png and stitched_expected_outline.png
+        timing.txt, timing.json     how long every section took (next to the 1_map folder)
 
 The folders live next to the code that runs them (``src/will_map_runs``).  PNGs are git-ignored; the
 folder is in .gitignore as well so test runs never end up in a commit.
@@ -21,6 +22,8 @@ import json
 import math
 import os
 import re
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -35,6 +38,7 @@ from will_map import (
     background_from_map,
     check_seams,
     render_placement,
+    status,
     will_map,
 )
 
@@ -76,6 +80,8 @@ class RunRecorder:
     """Creates the run folder and writes the pieces of a run into it."""
 
     def __init__(self, base_dir: Optional[str] = None, label: str = "", exact_dir: Optional[str] = None):
+        self.timings: List[dict] = []  # {"section", "seconds", "note", "kind"}; see section()/add_timing()
+        self._t_created = time.perf_counter()
         if exact_dir is not None:  # a sub-folder of a run (see sub())
             os.makedirs(exact_dir, exist_ok=True)
             self.dir = exact_dir
@@ -95,6 +101,56 @@ class RunRecorder:
     def sub(self, name: str) -> "RunRecorder":
         """A recorder that writes into a sub-folder of this run (e.g. one per process in a comparison)."""
         return RunRecorder(exact_dir=os.path.join(self.dir, name))
+
+    # ---- timing: one line per section, saved next to the 1_map folder after every section ----
+    @contextmanager
+    def section(self, name: str, note: str = "", waiting_for_user: bool = False):
+        """Time a block of the run.  ``waiting_for_user`` marks sections that are a person clicking through a
+        dialog (so they can be left out of the machine time)."""
+        t0 = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.add_timing(name, time.perf_counter() - t0, note, "user" if waiting_for_user else "machine")
+
+    def add_timing(self, name: str, seconds: float, note: str = "", kind: str = "detail") -> None:
+        """kind: 'machine' (a section of the run), 'user' (waiting for a person) or 'detail' (part of a section)."""
+        self.timings.append({"section": name, "seconds": round(float(seconds), 2), "note": note, "kind": kind})
+        if kind != "detail":
+            status(f"timing: {name} took {seconds:.1f} s" + (f" ({note})" if note else ""))
+        self.write_timing()
+
+    def add_map_timing(self, name: str, mr: MapResult) -> None:
+        """The measured breakdown of a map / finished-piece scan: photos, autofocus, stitching."""
+        t = mr.timing
+        if "wall_s" not in t:
+            return
+        n = max(1, len(mr.photo_wall_s))
+        self.add_timing(
+            f"{name}: photos", t.get("wall_photos_s", 0.0),
+            f"{len(mr.photo_wall_s)} photos, {t.get('wall_photos_s', 0.0) / n:.1f} s each incl. move, settle, focus, grab, register",
+            "detail",
+        )
+        self.add_timing(f"{name}: autofocus", t.get("wall_autofocus_s", 0.0), f"{int(t.get('autofocus_runs', 0))} runs", "detail")
+        self.add_timing(f"{name}: stitching", t.get("wall_stitch_s", 0.0), "solve positions + blend mosaic", "detail")
+
+    def write_timing(self) -> None:
+        lines = ["section timing (seconds, measured on this run)", ""]
+        machine = user = 0.0
+        for e in self.timings:
+            tag = {"machine": "", "user": "  [waiting for you]", "detail": "      "}.get(e["kind"], "")
+            if e["kind"] == "detail":
+                lines.append(f"      - {e['section']}: {e['seconds']:.1f} s" + (f"  ({e['note']})" if e["note"] else ""))
+            else:
+                lines.append(f"{e['section']}: {e['seconds']:.1f} s{tag}" + (f"  ({e['note']})" if e["note"] else ""))
+                if e["kind"] == "machine":
+                    machine += e["seconds"]
+                else:
+                    user += e["seconds"]
+        lines += ["", f"machine sections total: {machine:.0f} s ({machine / 60:.1f} min)", f"waiting for the user: {user:.0f} s"]
+        _write_text(os.path.join(self.dir, "timing.txt"), lines)
+        with open(os.path.join(self.dir, "timing.json"), "w", encoding="utf-8") as f:
+            json.dump({"sections": self.timings, "machine_total_s": machine, "user_wait_s": user}, f, indent=2)
 
     def log(self, text: str) -> None:
         with open(os.path.join(self.dir, "run_log.txt"), "a", encoding="utf-8") as f:
@@ -133,6 +189,7 @@ class RunRecorder:
         with open(os.path.join(root, "map_data.json"), "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         self.log(f"map saved ({'ok' if mr.ok else 'FAILED'}): {mr.captured} photos -> {root}")
+        self.add_map_timing("finished piece" if subdir.startswith("4_") or "finished" in subdir else "map", mr)
         return root
 
     # ---- 2. placement ----
@@ -234,6 +291,8 @@ def map_finished_piece(
     """Quick re-map of the area after patterning; saves separate photos and the stitch in the run folder."""
     # a patterned chip is full of repeating features (rings, lines); the stage position breaks the tie
     cfg = dataclasses.replace(cfg, ambiguity="stage_prior", label="finished piece")
+    t0 = time.perf_counter()
     mr = will_map(rig, cfg, area_um, center_um, progress, should_abort)
+    recorder.add_timing("finished piece scan", time.perf_counter() - t0, f"{mr.captured} photos, {'ok' if mr.ok else 'FAILED'}", "machine")
     recorder.save_finished(mr, pm, center_um)
     return mr
