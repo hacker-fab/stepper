@@ -32,6 +32,108 @@ def status(msg: str) -> None:
     """One status line for the terminal (mapping, patterning and stitching all report through this)."""
     print(f"[Will Map] {msg}", flush=True)
 
+
+# --------------------------------------------------------------------------------------
+# Focus search (Toby's autofocus: golden-section search on the sharpness of a projected ArUco grid)
+# --------------------------------------------------------------------------------------
+# (grid_n, +- sweep in um, stop when the interval is this narrow in um): his defaults, coarse then fine
+FOCUS_STAGES = ((2, 250.0, 5.0), (4, 10.0, 0.5))
+FOCUS_SETTLE_S = 0.5  # wait after every z move before grabbing (his default is 1.0 s; the old UI sweep waits 0.5 s)
+
+
+def focus_score(img: Optional[np.ndarray], kernel_size: int = 9) -> float:
+    """Sharpness = variance of the Sobel gradient magnitude on a half-size grey image (Toby's compute_focus_score)."""
+    if img is None or getattr(img, "size", 0) == 0:
+        return 0.0
+    g = img
+    if g.shape[0] * 0.5 >= kernel_size and g.shape[1] * 0.5 >= kernel_size:
+        g = cv2.resize(g, None, fx=0.5, fy=0.5)
+    if g.ndim == 3:
+        g = cv2.cvtColor(g, cv2.COLOR_RGB2GRAY)  # camera_image is RGB in the old UI
+    if g.shape[0] < kernel_size or g.shape[1] < kernel_size:
+        return 0.0
+    sx = cv2.Sobel(g, cv2.CV_64F, 1, 0, ksize=kernel_size)
+    sy = cv2.Sobel(g, cv2.CV_64F, 0, 1, ksize=kernel_size)
+    return float(np.hypot(sx, sy).var())
+
+
+def aruco_grid(grid_n: int, canvas_size: Tuple[int, int]) -> np.ndarray:
+    """grid_n x grid_n ArUco tags (DICT_4X4_250, white quiet zones on black), as in Toby's generate_ar_tag_grid.
+    ``canvas_size`` is (width, height) of the projector; returns a grey uint8 image of that size."""
+    width, height = canvas_size
+    grid_n = max(1, int(grid_n))
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
+    mx, my = int(width * 0.05), int(height * 0.05)
+    cell_w, cell_h = (width - 2 * mx) / grid_n, (height - 2 * my) / grid_n
+    marker = max(12, int(min(cell_w, cell_h) * 0.65))
+    quiet = max(4, int(marker * 0.2))
+    box = marker + 2 * quiet
+    canvas = np.zeros((height, width), np.uint8)
+    for r in range(grid_n):
+        for c in range(grid_n):
+            cx, cy = int(mx + (c + 0.5) * cell_w), int(my + (r + 0.5) * cell_h)
+            x1, y1 = cx - box // 2, cy - box // 2
+            if x1 < 0 or y1 < 0 or x1 + box > width or y1 + box > height:
+                continue
+            canvas[y1 : y1 + box, x1 : x1 + box] = 255
+            canvas[y1 + quiet : y1 + quiet + marker, x1 + quiet : x1 + quiet + marker] = cv2.aruco.generateImageMarker(
+                dictionary, (r * grid_n + c) % 250, marker
+            )
+    return canvas
+
+
+def golden_section_focus(
+    measure: Callable[[float], Optional[float]],
+    z_centre: float,
+    half_range: float,
+    threshold: float,
+    max_iterations: int = 10,
+) -> Optional[Tuple[float, float, Dict[float, float]]]:
+    """Golden-section search for the z with the highest sharpness in [z_centre - half_range, z_centre + half_range].
+
+    This is the search in Toby's MaximizeImageSharpnessOperation: two probes, then each step throws away the
+    outer part of the interval that cannot hold the maximum and re-uses the other probe, so every step costs
+    ONE new z move + photo.  It stops when the interval is at most ``threshold`` wide.
+    ``measure(z)`` moves to z, waits, grabs and returns the score (None = the move failed, search aborted).
+    Returns (best_z, best_score, {z: score}) or None.
+    """
+    inv_phi = (5.0 ** 0.5 - 1.0) / 2.0
+    a, b = z_centre - abs(half_range), z_centre + abs(half_range)
+    if b <= a:
+        b = a + threshold
+    seen: Dict[float, float] = {}
+
+    def probe(z: float) -> Optional[float]:
+        key = round(float(z), 4)
+        if key not in seen:
+            v = measure(z)
+            if v is None:
+                return None
+            seen[key] = v
+        return seen[key]
+
+    x1, x2 = a + (1.0 - inv_phi) * (b - a), a + inv_phi * (b - a)
+    s1, s2 = probe(x1), probe(x2)
+    if s1 is None or s2 is None:
+        return None
+    for _ in range(max_iterations):
+        if (b - a) <= threshold:
+            break
+        if s1 < s2:
+            a, x1, s1 = x1, x2, s2
+            x2 = a + inv_phi * (b - a)
+            s2 = probe(x2)
+            if s2 is None:
+                return None
+        else:
+            b, x2, s2 = x2, x1, s1
+            x1 = a + (1.0 - inv_phi) * (b - a)
+            s1 = probe(x1)
+            if s1 is None:
+                return None
+    best = max(seen, key=lambda k: seen[k])
+    return best, seen[best], seen
+
 # --------------------------------------------------------------------------------------
 # Machine constants (from the old UI; NOT measured on this machine unless noted)
 # --------------------------------------------------------------------------------------
@@ -625,7 +727,7 @@ class MapConfig:
     t_retry_extra_settle_s: float = 2.0
     # autofocus after stage movements (needs rig.autofocus(); the old UI's / Toby's autofocus plugs in there)
     autofocus: bool = True
-    t_autofocus_s: float = 10.0  # ASSUMPTION until timed on the machine
+    t_autofocus_s: float = 12.0  # ASSUMPTION until timed on the machine (first photo ~22 z moves, later ones ~10)
     af_min_move_um: float = 25.0  # alignment nudges smaller than this do not trigger a refocus
     # terminal status lines: one per photo taken, occasional ones while stitching
     verbose: bool = True

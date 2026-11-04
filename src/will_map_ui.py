@@ -35,7 +35,12 @@ from will_map import (
     budget_report,
     build_placement_map,
     check_seams,
+    FOCUS_SETTLE_S,
+    FOCUS_STAGES,
+    aruco_grid,
     exposure_mask,
+    focus_score,
+    golden_section_focus,
     load_image,
     measure_cross_geometry,
     render_placement,
@@ -584,6 +589,7 @@ class ModelRig:
     def __init__(self, model, z: Optional[float] = None):
         self.model = model
         self.z = model.stage_setpoint[2] if z is None else z
+        self._focused_once = False  # the first autofocus does the coarse stage, later ones only the fine one
 
     def move_to(self, x_um: float, y_um: float) -> None:
         # move_absolute fills missing axes with 0, so always pass z
@@ -594,12 +600,70 @@ class ModelRig:
         self.model.non_blocking_delay(seconds)
 
     def autofocus(self) -> None:
-        """Red autofocus after a movement, as the old tiling loop does (model.autofocus(blue_only=False)).
-        Toby's autofocus lives in his Qt engine and cannot be called from here; when it is ported, swap it in here."""
-        af = getattr(self.model, "autofocus", None)
-        if callable(af):
-            af(blue_only=False)
-        self.z = self.model.stage_setpoint[2]  # autofocus moved z; keep later moves at the focused height
+        """Toby's autofocus, ported to the old UI: project a red ArUco grid and golden-section search z for the
+        sharpest image (coarse 2x2 grid +-250 um, then fine 4x4 grid +-10 um).
+
+        The first call does both stages.  Later calls (the next photo, a few um of tilt away) run the fine stage
+        only, and fall back to the coarse one when the fine search ends on the edge of its range.  The projector
+        is put back to what it showed before, so the map photos are not taken with the grid on the chip."""
+        m = self.model
+        if not getattr(m, "camera", None):
+            return
+        prev_source, prev_image, prev_shown = m.red_focus_source, m.red_focus_image, m.shown_image
+        sp = m.stage_setpoint
+        z_start = float(sp[2])
+        n_moves = 0
+        # the enum comes from the model: importing gui here would load a second copy of it when gui.py runs as a script
+        focus_source = type(prev_source).IMAGE
+        try:
+            m.set_autofocus_busy(True)
+            proj_size = tuple(m.hardware.projector.size())
+
+            def run_stage(grid_n: int, half: float, thr: float, centre: float):
+                nonlocal n_moves
+                m.set_red_focus_image(Image.fromarray(aruco_grid(grid_n, proj_size)).convert("RGBA"))
+                m.set_red_focus_source(focus_source)
+                m.enter_red_mode(mode_switch_autofocus=False)
+                self.settle(1.0)  # let the grid appear
+
+                def measure(z: float) -> Optional[float]:
+                    nonlocal n_moves
+                    if m.move_absolute({"x": sp[0], "y": sp[1], "z": z}) is False:
+                        return None
+                    n_moves += 1
+                    self.settle(FOCUS_SETTLE_S)
+                    return focus_score(self.grab())
+
+                return golden_section_focus(measure, centre, half, thr)
+
+            centre = z_start
+            res = None
+            stages = FOCUS_STAGES[1:] if self._focused_once else FOCUS_STAGES
+            for k, (grid_n, half, thr) in enumerate(stages):
+                res = run_stage(grid_n, half, thr, centre)
+                if res is None:
+                    break
+                centre = res[0]
+                # a fine search that ends on the edge of its range has not found the peak: do the coarse stage too
+                if self._focused_once and k == 0 and abs(centre - z_start) >= half - 2 * thr:
+                    res = run_stage(*FOCUS_STAGES[0], centre)
+                    if res is not None:
+                        res = run_stage(*FOCUS_STAGES[1], res[0])
+                    break
+            if res is None:
+                status("autofocus: a z move was refused (limit?), staying at the starting height")
+                m.move_absolute({"x": sp[0], "y": sp[1], "z": z_start})
+            else:
+                m.move_absolute({"x": sp[0], "y": sp[1], "z": res[0]})
+                self._focused_once = True
+                status(f"autofocus: z {z_start:.1f} -> {res[0]:.1f} um, {n_moves} z moves")
+            self.settle(FOCUS_SETTLE_S)
+        finally:
+            m.set_red_focus_image(prev_image)
+            m.set_red_focus_source(prev_source)
+            m.set_shown_image(prev_shown)
+            m.set_autofocus_busy(False)
+        self.z = m.stage_setpoint[2]  # autofocus moved z; keep later moves at the focused height
 
     def grab(self) -> np.ndarray:
         img = self.model.camera_image
