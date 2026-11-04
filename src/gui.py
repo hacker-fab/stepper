@@ -2919,6 +2919,27 @@ class TilingFrame:
         )
         self.abort_tiling_button.grid(row=3, column=0)
 
+        def open_will_map():
+            # imported on click so a problem in the Will Map module can never stop the main UI starting
+            from will_map_ui import run_will_map
+
+            run_will_map(self.frame, model)
+
+        self.will_map_button = ttk.Button(
+            self.frame, text="Will Map + Placement", command=open_will_map, state="enabled"
+        )
+        self.will_map_button.grid(row=4, column=0)
+
+        def open_finished_piece():
+            from will_map_ui import run_finished_piece
+
+            run_finished_piece(self.frame, model)
+
+        self.will_finished_button = ttk.Button(
+            self.frame, text="Will Map: finished piece", command=open_finished_piece, state="enabled"
+        )
+        self.will_finished_button.grid(row=5, column=0)
+
 
 class ProjectorDisplayFrame:
     """Frame to display what the projector is currently showing"""
