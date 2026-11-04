@@ -37,3 +37,6 @@ stepper_captures
 
 # Mac Hidden files
 .DS_Store
+
+# Will Map test runs (photos, maps, reports)
+src/will_map_runs/
