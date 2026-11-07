@@ -10,8 +10,6 @@ from lib.gen_calibration_pattern import generate_litho_target
 from operations import (
     AutofocusOperation,
     ExposureOperation,
-    ExposureOperationConfig,
-    ProcessCalibrationConfig,
     ProcessCalibrationOperation,
 )
 from operations.process_calibration import generate_spiral_offsets
@@ -68,8 +66,7 @@ class TestExposureOperationDirect(unittest.TestCase):
         projector.set_generated_image(dummy_img)
         projector.set_image_source(ProjectorImageSource.GENERATED)
 
-        config = ExposureOperationConfig(exposure_time=50.0)
-        op = ExposureOperation(layer_index=None, config=config)
+        op = ExposureOperation(layer_index=None, exposure_time=50.0)
 
         # Execute
         err = op.execute(engine.context, lambda p, m: None)
@@ -137,9 +134,12 @@ class TestProcessCalibrationOperation(unittest.TestCase):
         self.assertIsNotNone(self.projector.generated_image)
         self.assertEqual(self.projector.generated_image.shape, (1080, 1920, 3))
 
+    @patch("operations.process_calibration.ExposureOperation.execute")
     @patch("operations.process_calibration.AutofocusOperation.execute")
-    def test_process_calibration_af_failure(self, mock_af_exec):
-        mock_af_exec.return_value = "Blurry surface"
+    def test_process_calibration_af_failure(self, mock_af_exec, mock_exp_exec):
+        # Step 1 fails AF, step 2 succeeds AF
+        mock_af_exec.side_effect = ["Blurry surface", None]
+        mock_exp_exec.return_value = None
 
         op = ProcessCalibrationOperation(
             min_exposure=1.0,
@@ -148,7 +148,10 @@ class TestProcessCalibrationOperation(unittest.TestCase):
             motion_distance=500.0,
         )
         err = op.execute(self.engine.context, lambda p, m: None)
-        self.assertIn("Autofocus failed at step 1: Blurry surface", err)
+        self.assertIsNone(err)
+        self.assertEqual(mock_af_exec.call_count, 2)
+        # Step 1 exposure was skipped due to AF failure; only step 2 exposed
+        self.assertEqual(mock_exp_exec.call_count, 1)
 
     def test_process_calibration_abort(self):
         op = ProcessCalibrationOperation(
@@ -164,26 +167,23 @@ class TestProcessCalibrationOperation(unittest.TestCase):
     @patch("operations.process_calibration.AutofocusOperation")
     @patch("operations.process_calibration.ExposureOperation.execute")
     def test_process_calibration_uses_autofocus_config(self, mock_exp_exec, mock_af_cls):
-        """Verify that ProcessCalibrationOperation passes autofocus_config to AutofocusOperation."""
+        """Verify that ProcessCalibrationOperation passes uv_z_offset to AutofocusOperation."""
         mock_af_instance = MagicMock()
         mock_af_instance.execute.return_value = None
         mock_af_cls.return_value = mock_af_instance
         mock_exp_exec.return_value = None
 
-        from operations.autofocus import AutofocusConfig
-        af_cfg = AutofocusConfig(enabled=True, uv_z_offset=12.5)
-
         op = ProcessCalibrationOperation(
             min_exposure=1.0,
             max_exposure=1.0,
             sweep_steps=1,
-            autofocus_config=af_cfg,
+            uv_z_offset=12.5,
         )
         err = op.execute(self.engine.context, lambda p, m: None)
         self.assertIsNone(err)
 
         # Inspect constructor call of AutofocusOperation
-        mock_af_cls.assert_called_with(config=af_cfg)
+        mock_af_cls.assert_called_with(uv_z_offset=12.5)
 
     @patch("operations.process_calibration.AutofocusOperation.execute")
     @patch("operations.process_calibration.ExposureOperation.execute")
@@ -254,17 +254,6 @@ class TestProcessCalibrationUI(unittest.TestCase):
         self.assertEqual(tab.spin_max_z_offset.value(), 0.0)
         self.assertEqual(tab.spin_z_steps.value(), 1)
         self.assertEqual(tab.spin_motion_distance.value(), 1000.0)
-
-        # Verify direct aliases on panel
-        self.assertEqual(panel.spin_cal_min_exp.value(), 1.0)
-        self.assertEqual(panel.spin_cal_max_exp.value(), 5.0)
-        self.assertEqual(panel.spin_cal_sweep_steps.value(), 5)
-        self.assertEqual(panel.spin_cal_min_z.value(), 0.0)
-        self.assertEqual(panel.spin_cal_max_z.value(), 0.0)
-        self.assertEqual(panel.spin_cal_z_steps.value(), 1)
-        self.assertEqual(panel.spin_cal_motion_dist.value(), 1000.0)
-        self.assertEqual(panel.btn_start_process_cal, tab.btn_start_cal)
-        self.assertEqual(panel.btn_fem_placeholder, tab.btn_start_cal)
 
     def test_tab_lock_state(self):
         panel = MachineControlPanelWidget(self.engine, self.bridge)

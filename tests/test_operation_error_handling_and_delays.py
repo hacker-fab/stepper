@@ -15,7 +15,7 @@ from camera.camera_module import DummyCamera
 from core.engine import StepperEngine
 from core.events import ColorMode, Event
 from core.operation import ExecutionContext, Operation
-from operations import AutofocusConfig, AutofocusOperation, OpticsCalibrationOperation
+from operations import AutofocusOperation, OpticsCalibrationOperation
 from stage_control.dummy_stage import DummyStage
 from projector import DummyProjector
 from ui.bridge import QtEngineBridge
@@ -92,10 +92,9 @@ class TestOperationErrorHandlingAndDelays(unittest.TestCase):
         cam = MagicMock()
         cam.get_latest_frame.return_value = np.zeros((480, 640, 3), dtype=np.uint8)
 
-        delays_before_detection = []
-        last_delay = [None]
+        delays = []
         def track_delay(s):
-            last_delay[0] = s
+            delays.append(s)
 
         ctx = ExecutionContext(
             stage=stage,
@@ -104,19 +103,13 @@ class TestOperationErrorHandlingAndDelays(unittest.TestCase):
             delay_func=track_delay,
         )
 
-        with patch("operations.autofocus.detect_ar_tags") as mock_detect:
-            def on_detect(*args, **kwargs):
-                delays_before_detection.append(last_delay[0])
-                return 0, [], None
-            mock_detect.side_effect = on_detect
-
-            cfg = AutofocusConfig(enabled=True, min_detection_rate=0.9)
-            op = AutofocusOperation(config=cfg)
+        with patch("operations.maximize_image_sharpness.MaximizeImageSharpnessOperation.execute", return_value=None):
+            op = AutofocusOperation()
             op.execute(ctx, lambda p, m: None)
 
-        self.assertTrue(len(delays_before_detection) > 0)
-        for d in delays_before_detection:
-            self.assertGreaterEqual(d, 1.0, f"Encountered delay {d}s < 1.0s before AR detection in AutofocusOperation")
+        self.assertTrue(len(delays) > 0)
+        for d in delays:
+            self.assertGreaterEqual(d, 1.0, f"Encountered delay {d}s < 1.0s in AutofocusOperation")
 
     def test_optics_calibration_delays_before_ar_detection_are_at_least_1_second(self):
         stage = DummyStage(initial_position=(0.0, 0.0, 50.0))
@@ -124,10 +117,9 @@ class TestOperationErrorHandlingAndDelays(unittest.TestCase):
         cam = MagicMock()
         cam.get_latest_frame.return_value = np.zeros((480, 640, 3), dtype=np.uint8)
 
-        delays_before_detection = []
-        last_delay = [None]
+        delays = []
         def track_delay(s):
-            last_delay[0] = s
+            delays.append(s)
 
         ctx = ExecutionContext(
             stage=stage,
@@ -136,15 +128,10 @@ class TestOperationErrorHandlingAndDelays(unittest.TestCase):
             delay_func=track_delay,
         )
 
-        with patch("operations.optics_calibration.detect_ar_tags") as mock_detect:
-            def on_detect(*args, **kwargs):
-                delays_before_detection.append(last_delay[0])
-                return 0, [], None
-            mock_detect.side_effect = on_detect
-
+        with patch("operations.maximize_image_sharpness.MaximizeImageSharpnessOperation.execute", return_value=None):
             op = OpticsCalibrationOperation()
             op.execute(ctx, lambda p, m: None)
 
-        self.assertTrue(len(delays_before_detection) > 0)
-        for d in delays_before_detection:
-            self.assertGreaterEqual(d, 1.0, f"Encountered delay {d}s < 1.0s before AR detection in OpticsCalibrationOperation")
+        self.assertTrue(len(delays) > 0)
+        for d in delays:
+            self.assertGreaterEqual(d, 1.0, f"Encountered delay {d}s < 1.0s in OpticsCalibrationOperation")

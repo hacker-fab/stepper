@@ -41,6 +41,7 @@ class QtEngineBridge(QObject):
     exposure_config_changed = Signal()
     layer_cache_recomputed = Signal(object)
     exposure_history_changed = Signal(object)
+    chip_progress_changed = Signal(object)
 
     # Stage
     stage_position_changed = Signal(tuple)
@@ -61,6 +62,9 @@ class QtEngineBridge(QObject):
     operation_finished = Signal(str)
     operation_aborted = Signal(str)
     operation_failed = Signal(str, str)
+
+    # Machine Configuration
+    machine_config_changed = Signal(object)
 
     # Warnings & Status
     warning_emitted = Signal(str)
@@ -104,6 +108,12 @@ class QtEngineBridge(QObject):
             Event.EXPOSURE_HISTORY_CHANGED,
             lambda history=None, *args: self.exposure_history_changed.emit(
                 history if history is not None else (self.engine.project.exposure_history if self.engine.project else [])
+            ),
+        )
+        self.engine.event_bus.add_listener(
+            Event.CHIP_PROGRESS_CHANGED,
+            lambda progress=None, *args: self.chip_progress_changed.emit(
+                progress if progress is not None else (self.engine.project.chip_progress if self.engine.project else None)
             ),
         )
 
@@ -177,6 +187,14 @@ class QtEngineBridge(QObject):
         self.engine.event_bus.add_listener(
             Event.WARNING_MESSAGE,
             lambda msg="", *args: self.warning_emitted.emit(str(msg)),
+        )
+
+        # Machine Configuration
+        self.engine.event_bus.add_listener(
+            Event.MACHINE_CONFIG_CHANGED,
+            lambda cfg=None, *args: self.machine_config_changed.emit(
+                cfg if cfg is not None else self.engine.machine_config
+            ),
         )
 
     def start_operation(

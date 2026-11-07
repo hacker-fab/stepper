@@ -36,14 +36,13 @@ except ImportError:
     LatentVisionCNN = None  # type: ignore
     LatentVisionWorker = None  # type: ignore
     load_latent_vision_model = None  # type: ignore
-    DEFAULT_LATENT_VISION_CHECKPOINT = Path("checkpoints/latent_vision/latest_model.pth")
+    DEFAULT_LATENT_VISION_CHECKPOINT = Path("checkpoints/latent_vision/best_model.pth")
     resolve_checkpoint_path = lambda p: Path(p)  # type: ignore
     LATENT_VISION_AVAILABLE = False
 
 
 # Latent vision overlay opacity constant (easy to change)
 LATENT_VISION_OPACITY: float = 0.5
-_resolve_checkpoint_path = resolve_checkpoint_path
 
 
 class MaskRenderWorker(threading.Thread):
@@ -244,7 +243,15 @@ class CameraViewWidget(QWidget):
         # Main viewport canvas
         self.viewport = CameraViewport(self)
         self.viewport.zoom_changed.connect(self._on_viewport_zoom_changed)
+        self.viewport.crosshair_changed.connect(self._on_viewport_crosshair_changed)
         layout.addWidget(self.viewport, stretch=1)
+
+    def _on_viewport_crosshair_changed(self, u: float, v: float, sec: object):
+        self.engine.set_primary_crosshair(u, v)
+        if sec is not None and isinstance(sec, tuple) and len(sec) == 2:
+            self.engine.set_secondary_crosshair((float(sec[0]), float(sec[1])))
+        else:
+            self.engine.set_secondary_crosshair(None)
 
     def _on_viewport_zoom_changed(self, zoom_level: float):
         pct = int(round(zoom_level * 100))
@@ -272,6 +279,8 @@ class CameraViewWidget(QWidget):
             if mask is not None and self._mask_render_worker is not None:
                 self._mask_render_worker.submit_mask(mask)
         else:
+            if self._latent_worker is not None:
+                self._latent_worker.clear_queue()
             with self._latent_mask_lock:
                 self._latest_latent_mask = None
                 self._latest_latent_mask_qimage = None
@@ -315,6 +324,7 @@ class CameraViewWidget(QWidget):
         self.viewport.crosshair_u = 0.5
         self.viewport.crosshair_v = 0.5
         self.viewport.has_secondary_crosshair = False
+        self.viewport._emit_crosshair_changed()
         self.viewport.update()
 
     def _zoom_in(self):

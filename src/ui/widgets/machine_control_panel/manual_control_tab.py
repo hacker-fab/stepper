@@ -1,4 +1,7 @@
-from typing import Optional
+import os
+from typing import Any, Optional
+
+
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -10,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -20,11 +24,14 @@ from PySide6.QtWidgets import (
 from core.engine import StepperEngine
 from core.events import ColorMode, ProjectorImageSource
 from operations import (
-    AlignmentOperation,
     AutofocusOperation,
+    ChipZLevelingOperation,
+    ExposeMarkerAndRecordOperation,
     HomeOperation,
     JogOperation,
+    LocateChipMarkerOperation,
     MaximizeImageSharpnessOperation,
+    ProjectorCameraCalibrationOperation,
 )
 from ui.bridge import QtEngineBridge
 
@@ -216,7 +223,71 @@ class ManualControlTabWidget(QScrollArea):
 
         manual_layout.addWidget(proj_box)
 
-        # 4. Maximize Image Sharpness Group Box
+        # 4. Chip Calibration Group Box
+        chip_box = QGroupBox("Chip Calibration")
+        chip_layout = QVBoxLayout(chip_box)
+        chip_layout.setContentsMargins(6, 6, 6, 6)
+        chip_layout.setSpacing(6)
+
+        chip_size_layout = QHBoxLayout()
+        chip_size_layout.addWidget(QLabel("Chip Size (mm):"))
+        self.spin_chip_size = QDoubleSpinBox()
+        self.spin_chip_size.setRange(0.1, 500.0)
+        self.spin_chip_size.setDecimals(2)
+        self.spin_chip_size.setSingleStep(1.0)
+        self.spin_chip_size.setValue(10.0)
+        self.spin_chip_size.setSuffix(" mm")
+        chip_size_layout.addWidget(self.spin_chip_size)
+        chip_layout.addLayout(chip_size_layout)
+
+        self.btn_chip_z_leveling = QPushButton("Chip Z Leveling")
+        self.btn_chip_z_leveling.clicked.connect(self._on_chip_z_leveling_clicked)
+        chip_layout.addWidget(self.btn_chip_z_leveling)
+
+        marker_row = QHBoxLayout()
+        marker_row.addWidget(QLabel("Marker Index:"))
+        self.marker_idx_btn_group = QButtonGroup(self)
+        self.radio_marker_1 = QRadioButton("1")
+        self.radio_marker_1.setChecked(True)
+        self.radio_marker_2 = QRadioButton("2")
+        self.marker_idx_btn_group.addButton(self.radio_marker_1, 1)
+        self.marker_idx_btn_group.addButton(self.radio_marker_2, 2)
+        marker_row.addWidget(self.radio_marker_1)
+        marker_row.addWidget(self.radio_marker_2)
+        marker_row.addStretch()
+        chip_layout.addLayout(marker_row)
+
+        self.btn_locate_chip_marker = QPushButton("Locate Chip Marker")
+        self.btn_locate_chip_marker.setToolTip(
+            "Records or updates Marker 1 or Marker 2 at the primary camera crosshair"
+        )
+        self.btn_locate_chip_marker.clicked.connect(self._on_locate_chip_marker_clicked)
+        chip_layout.addWidget(self.btn_locate_chip_marker)
+
+        self.btn_expose_marker_and_record = QPushButton("Expose Marker and Record")
+        self.btn_expose_marker_and_record.setToolTip(
+            "Generates fiducial marker pattern with selected index, autofocuses, exposes on projector at center of screen, and records marker location"
+        )
+        self.btn_expose_marker_and_record.clicked.connect(self._on_expose_marker_and_record_clicked)
+        chip_layout.addWidget(self.btn_expose_marker_and_record)
+
+        manual_layout.addWidget(chip_box)
+
+        # 4b. Projector-Camera Calibration Group Box (below Chip Calibration)
+        proj_cam_cal_box = QGroupBox("Projector-Camera Calibration")
+        proj_cam_cal_layout = QVBoxLayout(proj_cam_cal_box)
+        proj_cam_cal_layout.setContentsMargins(6, 6, 6, 6)
+        proj_cam_cal_layout.setSpacing(6)
+
+        self.btn_proj_cam_cal = QPushButton("Calibrate Projector to Camera (2x2 ArUco)")
+        self.btn_proj_cam_cal.setToolTip(
+            "Projects a 2x2 ArUco grid, measures projector pixel size and homography, and saves to machine config"
+        )
+        self.btn_proj_cam_cal.clicked.connect(self._on_proj_cam_cal_clicked)
+        proj_cam_cal_layout.addWidget(self.btn_proj_cam_cal)
+        manual_layout.addWidget(proj_cam_cal_box)
+
+        # 5. Maximize Image Sharpness Group Box
         sharp_box = QGroupBox("Maximize Image Sharpness")
         sharp_layout = QVBoxLayout(sharp_box)
         sharp_layout.setContentsMargins(6, 6, 6, 6)
@@ -229,8 +300,20 @@ class ManualControlTabWidget(QScrollArea):
         self.spin_sharp_z_range.setDecimals(1)
         self.spin_sharp_z_range.setSingleStep(1.0)
         self.spin_sharp_z_range.setValue(20.0)
+        self.spin_sharp_z_range.setSuffix(" µm")
         sharp_range_layout.addWidget(self.spin_sharp_z_range)
         sharp_layout.addLayout(sharp_range_layout)
+
+        sharp_thresh_layout = QHBoxLayout()
+        sharp_thresh_layout.addWidget(QLabel("Convergence Threshold (µm):"))
+        self.spin_sharp_threshold = QDoubleSpinBox()
+        self.spin_sharp_threshold.setRange(0.01, 100.0)
+        self.spin_sharp_threshold.setDecimals(2)
+        self.spin_sharp_threshold.setSingleStep(0.1)
+        self.spin_sharp_threshold.setValue(0.5)
+        self.spin_sharp_threshold.setSuffix(" µm")
+        sharp_thresh_layout.addWidget(self.spin_sharp_threshold)
+        sharp_layout.addLayout(sharp_thresh_layout)
 
         self.btn_maximize_sharpness = QPushButton("Maximize Image Sharpness")
         self.btn_maximize_sharpness.clicked.connect(self._on_maximize_sharpness_clicked)
@@ -243,34 +326,10 @@ class ManualControlTabWidget(QScrollArea):
         af_layout.setContentsMargins(6, 6, 6, 6)
         af_layout.setSpacing(6)
 
-        af_offset_layout = QHBoxLayout()
-        af_offset_layout.addWidget(QLabel("UV-Red Z Offset (µm):"))
-        self.spin_uv_offset = QDoubleSpinBox()
-        self.spin_uv_offset.setRange(-1000.0, 1000.0)
-        self.spin_uv_offset.setDecimals(2)
-        self.spin_uv_offset.setSingleStep(1.0)
-        init_offset = 0.0
-        if hasattr(self.engine, "autofocus_config") and self.engine.autofocus_config is not None:
-            init_offset = getattr(self.engine.autofocus_config, "uv_z_offset", 0.0)
-        self.spin_uv_offset.setValue(init_offset)
-        self.spin_uv_offset.valueChanged.connect(self._on_uv_offset_changed)
-        af_offset_layout.addWidget(self.spin_uv_offset)
-        af_layout.addLayout(af_offset_layout)
-
         self.btn_autofocus = QPushButton("Run Autofocus")
         self.btn_autofocus.clicked.connect(self._on_autofocus_clicked)
         af_layout.addWidget(self.btn_autofocus)
         manual_layout.addWidget(af_box)
-
-        # 6. Alignment Group Box
-        align_box = QGroupBox("Alignment")
-        align_layout = QVBoxLayout(align_box)
-        align_layout.setContentsMargins(6, 6, 6, 6)
-
-        self.btn_align = QPushButton("Align to Marks")
-        self.btn_align.clicked.connect(self._on_align_clicked)
-        align_layout.addWidget(self.btn_align)
-        manual_layout.addWidget(align_box)
 
         manual_layout.addStretch()
 
@@ -280,10 +339,6 @@ class ManualControlTabWidget(QScrollArea):
         if checked:
             self.current_jog_step = val
 
-    def _on_uv_offset_changed(self, val: float):
-        if hasattr(self.engine, "autofocus_config") and self.engine.autofocus_config is not None:
-            self.engine.autofocus_config.uv_z_offset = val
-
     def _jog(self, dx: float, dy: float, dz: float):
         op = JogOperation({"x": dx, "y": dy, "z": dz}, relative=True)
         self.bridge.start_operation(op)
@@ -292,21 +347,44 @@ class ManualControlTabWidget(QScrollArea):
         op = HomeOperation()
         self.bridge.start_operation(op)
 
+    def _on_chip_z_leveling_clicked(self):
+        op = ChipZLevelingOperation(
+            chip_size_mm=self.spin_chip_size.value(),
+        )
+        self.bridge.start_operation(op)
+
+    def _on_locate_chip_marker_clicked(self):
+        idx = 2 if self.radio_marker_2.isChecked() else 1
+        op = LocateChipMarkerOperation(idx=idx)
+        self.bridge.start_operation(op)
+
+    def _on_expose_marker_and_record_clicked(self):
+        idx = 2 if self.radio_marker_2.isChecked() else 1
+        cp = self.engine.project.chip_progress if self.engine.project else None
+        if cp is not None:
+            if (idx == 1 and cp.marker1_chip is not None) or (idx == 2 and cp.marker2_chip is not None):
+                QMessageBox.warning(
+                    self,
+                    "Marker Already Recorded",
+                    f"Marker {idx} is already recorded. Please reset chip progress before re-recording.",
+                )
+                return
+        op = ExposeMarkerAndRecordOperation(idx=idx)
+        self.bridge.start_operation(op)
+
+    def _on_proj_cam_cal_clicked(self):
+        op = ProjectorCameraCalibrationOperation()
+        self.bridge.start_operation(op)
+
     def _on_maximize_sharpness_clicked(self):
         op = MaximizeImageSharpnessOperation(
             z_range=self.spin_sharp_z_range.value(),
+            threshold=self.spin_sharp_threshold.value(),
         )
         self.bridge.start_operation(op)
 
     def _on_autofocus_clicked(self):
-        cfg = getattr(self.engine, "autofocus_config", None)
-        if cfg is not None:
-            cfg.uv_z_offset = self.spin_uv_offset.value()
-        op = AutofocusOperation(config=cfg)
-        self.bridge.start_operation(op)
-
-    def _on_align_clicked(self):
-        op = AlignmentOperation(config=getattr(self.engine, "alignment_config", None))
+        op = AutofocusOperation()
         self.bridge.start_operation(op)
 
     def _on_projector_power_clicked(self):
@@ -409,10 +487,17 @@ class ManualControlTabWidget(QScrollArea):
             self.btn_z_pos,
             self.btn_z_neg,
             self.btn_home,
+            self.spin_chip_size,
+            self.btn_chip_z_leveling,
+            self.radio_marker_1,
+            self.radio_marker_2,
+            self.btn_locate_chip_marker,
+            self.btn_expose_marker_and_record,
+            self.btn_proj_cam_cal,
             self.btn_maximize_sharpness,
             self.spin_sharp_z_range,
+            self.spin_sharp_threshold,
             self.btn_autofocus,
-            self.btn_align,
             self.btn_projector_power,
             self.radio_color_red,
             self.radio_color_uv,
@@ -420,6 +505,6 @@ class ManualControlTabWidget(QScrollArea):
             self.radio_src_custom,
             self.radio_src_solid,
             self.spin_projector_brightness,
-            self.spin_uv_offset,
         ]:
             btn.setEnabled(not is_busy)
+

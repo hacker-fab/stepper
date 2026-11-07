@@ -353,7 +353,7 @@ class GrblStage(StageController):
         
         self._send_msg(msg.encode("ascii"))
     
-    def move_relative(self, microns: dict[str, float]):
+    def _move_relative_raw(self, microns: dict[str, float]):
         """
         Moves relative to WPos
 
@@ -371,7 +371,7 @@ class GrblStage(StageController):
             self.event_bus.emit(Event.STAGE_POSITION_CHANGED, self.get_position())
         return True
 
-    def move_absolute(self, microns: dict[str, float]):
+    def _move_absolute_raw(self, microns: dict[str, float]):
         """
         Moves to absolute location in WPos
 
@@ -388,6 +388,7 @@ class GrblStage(StageController):
         if self.event_bus is not None:
             self.event_bus.emit(Event.STAGE_POSITION_CHANGED, self.get_position())
         return True
+
     
     def soft_reset(self):
         """ 
@@ -454,6 +455,7 @@ class GrblStage(StageController):
         For more info, please visit GRBL documentation wiki. 
 
         """
+        super().home()
         print("Sending Home Command...")
         if self.enable_homing:
             self._send_msg(b"$H\n")
@@ -474,7 +476,7 @@ class GrblStage(StageController):
     def has_homing(self) -> bool:
         return self.enable_homing
         
-    def get_position(self) -> tuple[float, float, float]:
+    def _get_position_raw(self) -> tuple[float, float, float]:
         """
         Returns GUI / Wpos of stage in microns
         IMPORTANT: WPos is different from MPos, so
@@ -485,6 +487,7 @@ class GrblStage(StageController):
         micron_y = positions[1] * 1000
         micron_z = positions[2] * 1000
         return (micron_x, micron_y, micron_z)
+
     
     def get_bounds(self):
         """

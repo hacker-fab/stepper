@@ -131,11 +131,8 @@ class OpticsCalibrationTabWidget(QScrollArea):
 
     def _on_apply_cal_offset_clicked(self):
         if self._latest_cal_offset is not None:
-            if hasattr(self.engine, "autofocus_config"):
-                if self.engine.autofocus_config is None:
-                    from operations.autofocus import AutofocusConfig
-                    self.engine.autofocus_config = AutofocusConfig()
-                self.engine.autofocus_config.uv_z_offset = self._latest_cal_offset
+            if hasattr(self.engine, "machine_config"):
+                self.engine.machine_config.optics.uv_z_offset = self._latest_cal_offset
             if self._on_apply_callback:
                 self._on_apply_callback(self._latest_cal_offset)
 

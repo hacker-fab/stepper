@@ -71,7 +71,7 @@ class AmscopeCamera(CameraModule):
         if self.liveData is not None and r[0] > 0 and r[1] > 0:
             try:
                 frame = np.frombuffer(self.liveData, dtype=np.uint8).reshape((r[1], r[0], 3))
-                return frame.copy()
+                return self._apply_flip(frame.copy())
             except Exception:
                 return None
         return None

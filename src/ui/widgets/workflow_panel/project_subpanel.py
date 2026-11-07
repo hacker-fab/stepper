@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -43,6 +44,7 @@ class ProjectSubpanelWidget(QTabWidget):
         self.bridge.exposure_config_changed.connect(lambda: self._refresh_ui())
         self.bridge.active_layer_changed.connect(lambda _: self._refresh_layer_selection())
         self.bridge.exposure_history_changed.connect(lambda _: self._refresh_ui())
+        self.bridge.chip_progress_changed.connect(lambda _: self._refresh_ui())
         self._refresh_ui()
 
     def _setup_layers_tab(self):
@@ -64,6 +66,22 @@ class ProjectSubpanelWidget(QTabWidget):
         self.btn_save.clicked.connect(self._on_save_project)
         file_row.addWidget(self.btn_save)
         layout.addLayout(file_row)
+
+        # Chip progress file buttons row
+        prog_row = QHBoxLayout()
+        self.btn_reset_progress = QPushButton("Reset Progress")
+        self.btn_reset_progress.setToolTip("Reset chip markers, origins, and exposure history")
+        self.btn_reset_progress.clicked.connect(self._on_reset_progress)
+        prog_row.addWidget(self.btn_reset_progress)
+
+        self.btn_load_progress = QPushButton("Load Progress...")
+        self.btn_load_progress.clicked.connect(self._on_load_progress)
+        prog_row.addWidget(self.btn_load_progress)
+
+        self.btn_save_progress = QPushButton("Save Progress...")
+        self.btn_save_progress.clicked.connect(self._on_save_progress)
+        prog_row.addWidget(self.btn_save_progress)
+        layout.addLayout(prog_row)
 
         # Layer management row
         layer_btn_row = QHBoxLayout()
@@ -105,42 +123,74 @@ class ProjectSubpanelWidget(QTabWidget):
         exp_form.addRow("Default Exposure:", self.spin_default_exp)
         layout.addWidget(exp_group)
 
-        # Tiling defaults
-        tile_group = QGroupBox("Tiling Defaults")
+        # Tiling Overlap defaults
+        tile_group = QGroupBox("Tiling Overlap (Chip Space)")
         tile_form = QFormLayout(tile_group)
 
-        self.chk_default_tiling = QCheckBox("Enable Tiling by Default")
-        self.chk_default_tiling.setChecked(self.engine.project.settings.tiling_enabled)
-        self.chk_default_tiling.toggled.connect(self._on_default_tiling_toggled)
-        tile_form.addRow(self.chk_default_tiling)
+        self.spin_overlap_x = QDoubleSpinBox()
+        self.spin_overlap_x.setRange(0.0, 10000.0)
+        self.spin_overlap_x.setDecimals(2)
+        self.spin_overlap_x.setSingleStep(1.0)
+        self.spin_overlap_x.setValue(self.engine.project.settings.overlap_x)
+        self.spin_overlap_x.setSuffix(" µm")
+        self.spin_overlap_x.valueChanged.connect(self._on_overlap_x_changed)
+        tile_form.addRow("Overlap X:", self.spin_overlap_x)
 
-        self.spin_tile_w = QSpinBox()
-        self.spin_tile_w.setRange(100, 10000)
-        self.spin_tile_w.setValue(self.engine.project.settings.tile_width)
-        self.spin_tile_w.valueChanged.connect(self._on_tile_w_changed)
-        tile_form.addRow("Tile Width (px):", self.spin_tile_w)
-
-        self.spin_tile_h = QSpinBox()
-        self.spin_tile_h.setRange(100, 10000)
-        self.spin_tile_h.setValue(self.engine.project.settings.tile_height)
-        self.spin_tile_h.valueChanged.connect(self._on_tile_h_changed)
-        tile_form.addRow("Tile Height (px):", self.spin_tile_h)
-
-        self.spin_pitch_x = QDoubleSpinBox()
-        self.spin_pitch_x.setRange(10.0, 50000.0)
-        self.spin_pitch_x.setValue(self.engine.project.settings.pitch_x)
-        self.spin_pitch_x.setSuffix(" µm")
-        self.spin_pitch_x.valueChanged.connect(self._on_pitch_x_changed)
-        tile_form.addRow("Pitch X Offset:", self.spin_pitch_x)
-
-        self.spin_pitch_y = QDoubleSpinBox()
-        self.spin_pitch_y.setRange(10.0, 50000.0)
-        self.spin_pitch_y.setValue(self.engine.project.settings.pitch_y)
-        self.spin_pitch_y.setSuffix(" µm")
-        self.spin_pitch_y.valueChanged.connect(self._on_pitch_y_changed)
-        tile_form.addRow("Pitch Y Offset:", self.spin_pitch_y)
+        self.spin_overlap_y = QDoubleSpinBox()
+        self.spin_overlap_y.setRange(0.0, 10000.0)
+        self.spin_overlap_y.setDecimals(2)
+        self.spin_overlap_y.setSingleStep(1.0)
+        self.spin_overlap_y.setValue(self.engine.project.settings.overlap_y)
+        self.spin_overlap_y.setSuffix(" µm")
+        self.spin_overlap_y.valueChanged.connect(self._on_overlap_y_changed)
+        tile_form.addRow("Overlap Y:", self.spin_overlap_y)
 
         layout.addWidget(tile_group)
+
+        # Pattern Physical Size (Project-wide setting for all layers)
+        size_group = QGroupBox("Pattern Physical Size (µm)")
+        size_layout = QVBoxLayout(size_group)
+        size_layout.setContentsMargins(6, 6, 6, 6)
+        size_layout.setSpacing(6)
+
+        size_row = QHBoxLayout()
+        size_row.addWidget(QLabel("Width:"))
+        self.spin_width_um = QDoubleSpinBox()
+        self.spin_width_um.setRange(-1.0, 100000.0)
+        self.spin_width_um.setDecimals(1)
+        self.spin_width_um.setSingleStep(10.0)
+        self.spin_width_um.setValue(self.engine.project.settings.width_um)
+        self.spin_width_um.setSuffix(" µm")
+        self.spin_width_um.setToolTip("Target pattern width in µm (-1 for Fullscreen / Projector FOV)")
+        self.spin_width_um.valueChanged.connect(self._on_pattern_size_changed)
+        size_row.addWidget(self.spin_width_um)
+
+        size_row.addWidget(QLabel("Height:"))
+        self.spin_height_um = QDoubleSpinBox()
+        self.spin_height_um.setRange(-1.0, 100000.0)
+        self.spin_height_um.setDecimals(1)
+        self.spin_height_um.setSingleStep(10.0)
+        self.spin_height_um.setValue(self.engine.project.settings.height_um)
+        self.spin_height_um.setSuffix(" µm")
+        self.spin_height_um.setToolTip("Target pattern height in µm (-1 for Fullscreen / Projector FOV)")
+        self.spin_height_um.valueChanged.connect(self._on_pattern_size_changed)
+        size_row.addWidget(self.spin_height_um)
+        size_layout.addLayout(size_row)
+
+        btn_row = QHBoxLayout()
+        self.btn_fullscreen = QPushButton("Fullscreen (-1)")
+        self.btn_fullscreen.setToolTip("Set both dimensions to -1 for quick single-tile fullscreen projection")
+        self.btn_fullscreen.clicked.connect(self._on_fullscreen_clicked)
+        btn_row.addWidget(self.btn_fullscreen)
+
+        self.btn_match_projector = QPushButton("Set to Projector FOV")
+        self.btn_match_projector.setToolTip("Set physical dimensions to 1 projector frame in µm")
+        self.btn_match_projector.clicked.connect(self._on_match_projector_clicked)
+        btn_row.addWidget(self.btn_match_projector)
+        btn_row.addStretch()
+        size_layout.addLayout(btn_row)
+
+        layout.addWidget(size_group)
         layout.addStretch()
 
     def _refresh_ui(self):
@@ -171,25 +221,21 @@ class ProjectSubpanelWidget(QTabWidget):
         self.spin_default_exp.setValue(int(s.exposure_time))
         self.spin_default_exp.blockSignals(False)
 
-        self.chk_default_tiling.blockSignals(True)
-        self.chk_default_tiling.setChecked(s.tiling_enabled)
-        self.chk_default_tiling.blockSignals(False)
+        self.spin_overlap_x.blockSignals(True)
+        self.spin_overlap_x.setValue(s.overlap_x)
+        self.spin_overlap_x.blockSignals(False)
 
-        self.spin_tile_w.blockSignals(True)
-        self.spin_tile_w.setValue(s.tile_width)
-        self.spin_tile_w.blockSignals(False)
+        self.spin_overlap_y.blockSignals(True)
+        self.spin_overlap_y.setValue(s.overlap_y)
+        self.spin_overlap_y.blockSignals(False)
 
-        self.spin_tile_h.blockSignals(True)
-        self.spin_tile_h.setValue(s.tile_height)
-        self.spin_tile_h.blockSignals(False)
+        self.spin_width_um.blockSignals(True)
+        self.spin_width_um.setValue(s.width_um)
+        self.spin_width_um.blockSignals(False)
 
-        self.spin_pitch_x.blockSignals(True)
-        self.spin_pitch_x.setValue(s.pitch_x)
-        self.spin_pitch_x.blockSignals(False)
-
-        self.spin_pitch_y.blockSignals(True)
-        self.spin_pitch_y.setValue(s.pitch_y)
-        self.spin_pitch_y.blockSignals(False)
+        self.spin_height_um.blockSignals(True)
+        self.spin_height_um.setValue(s.height_um)
+        self.spin_height_um.blockSignals(False)
 
     def _refresh_layer_selection(self):
         active_idx = self.engine.project.active_layer_index
@@ -230,20 +276,61 @@ class ProjectSubpanelWidget(QTabWidget):
             self.engine.save_project(path)
             self.bridge.status_message.emit(f"Saved project: {Path(path).name}")
 
+    def _on_reset_progress(self):
+        self.engine.reset_chip_progress()
+        self.bridge.status_message.emit("Reset chip progress (markers, origins, and exposure history)")
+
+    def _on_load_progress(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load Chip Progress", "", "JSON (*.json)")
+        if path:
+            self.engine.load_chip_progress(path)
+            self.bridge.status_message.emit(f"Loaded chip progress: {Path(path).name}")
+
+    def _on_save_progress(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save Chip Progress", "", "JSON (*.json)")
+        if path:
+            self.engine.save_chip_progress(path)
+            self.bridge.status_message.emit(f"Saved chip progress: {Path(path).name}")
+
     def _on_default_exp_changed(self, val: int):
         self.engine.project.update_settings(exposure_time=float(val))
 
-    def _on_default_tiling_toggled(self, checked: bool):
-        self.engine.project.update_settings(tiling_enabled=checked)
+    def _on_overlap_x_changed(self, val: float):
+        self.engine.project.update_settings(overlap_x=float(val))
 
-    def _on_tile_w_changed(self, val: int):
-        self.engine.project.update_settings(tile_width=val)
+    def _on_overlap_y_changed(self, val: float):
+        self.engine.project.update_settings(overlap_y=float(val))
 
-    def _on_tile_h_changed(self, val: int):
-        self.engine.project.update_settings(tile_height=val)
+    def _on_pattern_size_changed(self):
+        w = self.spin_width_um.value()
+        h = self.spin_height_um.value()
+        self.engine.project.set_pattern_size(w, h)
 
-    def _on_pitch_x_changed(self, val: float):
-        self.engine.project.update_settings(pitch_x=val)
+    def _on_fullscreen_clicked(self):
+        self.spin_width_um.blockSignals(True)
+        self.spin_height_um.blockSignals(True)
+        self.spin_width_um.setValue(-1.0)
+        self.spin_height_um.setValue(-1.0)
+        self.spin_width_um.blockSignals(False)
+        self.spin_height_um.blockSignals(False)
+        self.engine.project.set_pattern_size(-1.0, -1.0)
+        self.bridge.status_message.emit("Set project pattern size to Fullscreen mode (-1 × -1)")
 
-    def _on_pitch_y_changed(self, val: float):
-        self.engine.project.update_settings(pitch_y=val)
+    def _on_match_projector_clicked(self):
+        pw, ph = self.engine.project.projector_size
+        if hasattr(self.engine, "projector") and self.engine.projector is not None:
+            pw, ph = self.engine.projector.projector_size()
+        proj_px = 1.0
+        if self.engine.machine_config is not None:
+            proj_px = float(self.engine.machine_config.optics.projector_pixel_size)
+        w_um = pw * proj_px
+        h_um = ph * proj_px
+        self.spin_width_um.blockSignals(True)
+        self.spin_height_um.blockSignals(True)
+        self.spin_width_um.setValue(w_um)
+        self.spin_height_um.setValue(h_um)
+        self.spin_width_um.blockSignals(False)
+        self.spin_height_um.blockSignals(False)
+        self.engine.project.set_pattern_size(w_um, h_um)
+        self.bridge.status_message.emit(f"Set project pattern size to Projector FOV: {w_um:.1f} × {h_um:.1f} µm")
+

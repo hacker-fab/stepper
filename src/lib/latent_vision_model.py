@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-DEFAULT_LATENT_VISION_CHECKPOINT = Path("checkpoints/latent_vision/latest_model.pth")
+DEFAULT_LATENT_VISION_CHECKPOINT = Path("checkpoints/latent_vision/best_model.pth")
 
 
 def resolve_checkpoint_path(path: Union[str, Path] = DEFAULT_LATENT_VISION_CHECKPOINT) -> Path:
@@ -155,6 +155,8 @@ class LatentVisionWorker(threading.Thread):
     """Asynchronous worker for latent vision model inference and mask upscaling.
 
     Runs in a background thread to prevent blocking camera updates and the GUI.
+    Waits for at least min_frames (default 30) in the queue, averages them,
+    and runs inference on the averaged frame.
     """
 
     def __init__(
@@ -162,23 +164,34 @@ class LatentVisionWorker(threading.Thread):
         checkpoint_path: Union[str, Path],
         on_mask_ready: Callable[[np.ndarray], None],
         device: str = "cpu",
+        min_frames: int = 30,
     ):
         super().__init__(daemon=True)
         self.checkpoint_path = resolve_checkpoint_path(checkpoint_path)
         self.on_mask_ready = on_mask_ready
         self.device = device
+        self.min_frames = min_frames
 
-        self._pending_frame: Optional[np.ndarray] = None
+        self._frame_queue: list[np.ndarray] = []
         self._frame_lock = threading.Lock()
         self._wake_event = threading.Event()
         self._stop_event = threading.Event()
         self.model: Optional[LatentVisionCNN] = None
 
     def submit_frame(self, frame: np.ndarray):
-        """Submit the latest camera frame for processing without blocking."""
+        """Submit a camera frame to the queue without blocking."""
         with self._frame_lock:
-            self._pending_frame = frame
-        self._wake_event.set()
+            self._frame_queue.append(frame)
+            if len(self._frame_queue) > self.min_frames * 2:
+                self._frame_queue.pop(0)
+            queue_len = len(self._frame_queue)
+        if queue_len >= self.min_frames:
+            self._wake_event.set()
+
+    def clear_queue(self):
+        """Clear all pending frames from the queue."""
+        with self._frame_lock:
+            self._frame_queue.clear()
 
     def stop(self):
         """Signals the worker thread to stop."""
@@ -198,14 +211,28 @@ class LatentVisionWorker(threading.Thread):
                 break
 
             with self._frame_lock:
-                frame_to_process = self._pending_frame
-                self._pending_frame = None
+                if len(self._frame_queue) < self.min_frames:
+                    continue
+                frames_to_process = self._frame_queue
+                self._frame_queue = []
 
-            if frame_to_process is None:
+            if not frames_to_process:
                 continue
 
             try:
-                # 1. Ensure RGB format
+                # 1. Filter frames to ensure all match the latest frame shape
+                latest_shape = frames_to_process[-1].shape
+                matching_frames = [f for f in frames_to_process if f.shape == latest_shape]
+                if len(matching_frames) < self.min_frames:
+                    with self._frame_lock:
+                        self._frame_queue = matching_frames + self._frame_queue
+                    continue
+
+                # 2. Average the frames
+                averaged_frame = np.mean(matching_frames, axis=0, dtype=np.float32)
+                frame_to_process = np.round(averaged_frame).astype(matching_frames[0].dtype)
+
+                # 3. Ensure RGB format
                 if frame_to_process.ndim == 2:
                     rgb = cv2.cvtColor(frame_to_process, cv2.COLOR_GRAY2RGB)
                 else:
@@ -213,25 +240,25 @@ class LatentVisionWorker(threading.Thread):
 
                 h, w = rgb.shape[:2]
 
-                # 2. Downscaled by x2 before feeding into the model
+                # 4. Downscaled by x2 before feeding into the model
                 down_w = max(1, w // 2)
                 down_h = max(1, h // 2)
                 downscaled = cv2.resize(rgb, (down_w, down_h), interpolation=cv2.INTER_AREA)
 
-                # 3. Model accept RGB format, 0-1 float data
+                # 5. Model accept RGB format, 0-1 float data
                 img_float = downscaled.astype(np.float32) / 255.0
 
-                # 4. Torch Tensor (1, 3, down_h, down_w)
+                # 6. Torch Tensor (1, 3, down_h, down_w)
                 tensor = torch.from_numpy(img_float).permute(2, 0, 1).unsqueeze(0).to(self.device)
 
-                # 5. Predict: output is same as input size
+                # 7. Predict: output is same as input size
                 out = self.model.predict(tensor)
                 out_mask = out.squeeze().cpu().numpy()
 
-                # 6. Scaled back up to match the camera image size
+                # 8. Scaled back up to match the camera image size
                 scaled_mask = cv2.resize(out_mask, (w, h), interpolation=cv2.INTER_LINEAR)
 
-                # 7. Notify callback with scaled mask
+                # 9. Notify callback with scaled mask
                 self.on_mask_ready(scaled_mask)
             except Exception as e:
                 print(f"[Latent Vision] Inference error: {e}")

@@ -25,6 +25,15 @@ class ProjectorImageSource(StrAutoEnum):
     GENERATED = auto()
 
 
+class CameraFlipMode(StrAutoEnum):
+    """Camera image flip/rotation mode applied at acquisition."""
+
+    NONE = auto()
+    HORIZONTAL = auto()
+    VERTICAL = auto()
+    ROTATE_180 = auto()
+
+
 class Event(StrAutoEnum):
     """Events dispatched across the stepper software system."""
 
@@ -35,6 +44,10 @@ class Event(StrAutoEnum):
     EXPOSURE_CONFIG_CHANGED = auto()  # Emitted when patterning/exposure config changes (global settings or per-layer overrides)
     LAYER_CACHE_RECOMPUTED = auto()  # Emitted when a chip layer's tile cache has been recomputed
     EXPOSURE_HISTORY_CHANGED = auto()  # Emitted when exposure history is updated
+    CHIP_PROGRESS_CHANGED = auto()  # Emitted when chip markers, origins, or exposure records change
+
+    # Machine Configuration
+    MACHINE_CONFIG_CHANGED = auto()  # Emitted when global machine config is loaded or updated
 
     # Stage
     STAGE_POSITION_CHANGED = auto()  # Emitted when stage position coordinates change

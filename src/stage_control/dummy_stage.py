@@ -59,10 +59,11 @@ class DummyStage(StageController):
         return True
 
     def home(self) -> bool:
+        super().home()
         self._simulate_move(0.0, 0.0, 0.0)
         return True
 
-    def move_relative(self, microns: dict[str, float]) -> bool:
+    def _move_relative_raw(self, microns: dict[str, float]) -> bool:
         dx = microns.get("x", microns.get("X", 0.0))
         dy = microns.get("y", microns.get("Y", 0.0))
         dz = microns.get("z", microns.get("Z", 0.0))
@@ -73,16 +74,16 @@ class DummyStage(StageController):
         )
         return True
 
-    def move_absolute(self, microns: dict[str, float]) -> bool:
+    def _move_absolute_raw(self, microns: dict[str, float]) -> bool:
         target_x = microns.get("x", microns.get("X", self._position[0]))
         target_y = microns.get("y", microns.get("Y", self._position[1]))
         target_z = microns.get("z", microns.get("Z", self._position[2]))
         self._simulate_move(target_x, target_y, target_z)
         return True
 
-
-    def get_position(self) -> tuple[float, float, float]:
+    def _get_position_raw(self) -> tuple[float, float, float]:
         return (self._position[0], self._position[1], self._position[2])
 
     def get_bounds(self) -> Optional[dict[str, tuple[float, float]]]:
+
         return dict(self._bounds) if self._bounds is not None else None

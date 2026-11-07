@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -98,30 +99,46 @@ class LayerSubpanelWidget(QTabWidget):
         mid_row.addStretch()
         layout.addLayout(mid_row)
 
-        # Pattern Scaling section
-        scale_box = QGroupBox("Pattern Scaling")
+        # Pattern Physical Size section (Project Setting - applies to all layers)
+        scale_box = QGroupBox("Pattern Physical Size (µm) (Project Setting)")
         scale_layout = QVBoxLayout(scale_box)
         scale_layout.setContentsMargins(6, 6, 6, 6)
         scale_layout.setSpacing(6)
 
         scale_row = QHBoxLayout()
-        scale_row.addWidget(QLabel("W:"))
-        self.spin_scale_w = QSpinBox()
-        self.spin_scale_w.setRange(-1, 100000)
-        self.spin_scale_w.setValue(-1)
-        self.spin_scale_w.setToolTip("Target pattern width in pixels (-1 to disable scaling)")
-        self.spin_scale_w.valueChanged.connect(self._on_scale_changed)
-        scale_row.addWidget(self.spin_scale_w)
+        scale_row.addWidget(QLabel("Width:"))
+        self.spin_width_um = QDoubleSpinBox()
+        self.spin_width_um.setRange(-1.0, 100000.0)
+        self.spin_width_um.setDecimals(1)
+        self.spin_width_um.setSingleStep(10.0)
+        self.spin_width_um.setValue(-1.0)
+        self.spin_width_um.setSuffix(" µm")
+        self.spin_width_um.setToolTip(
+            "Target pattern width in µm (-1 for Fullscreen Projector or aspect-ratio auto)"
+        )
+        self.spin_width_um.valueChanged.connect(self._on_size_um_changed)
+        scale_row.addWidget(self.spin_width_um)
 
-        scale_row.addWidget(QLabel("H:"))
-        self.spin_scale_h = QSpinBox()
-        self.spin_scale_h.setRange(-1, 100000)
-        self.spin_scale_h.setValue(-1)
-        self.spin_scale_h.setToolTip("Target pattern height in pixels (-1 to disable scaling)")
-        self.spin_scale_h.valueChanged.connect(self._on_scale_changed)
-        scale_row.addWidget(self.spin_scale_h)
+        scale_row.addWidget(QLabel("Height:"))
+        self.spin_height_um = QDoubleSpinBox()
+        self.spin_height_um.setRange(-1.0, 100000.0)
+        self.spin_height_um.setDecimals(1)
+        self.spin_height_um.setSingleStep(10.0)
+        self.spin_height_um.setValue(-1.0)
+        self.spin_height_um.setSuffix(" µm")
+        self.spin_height_um.setToolTip(
+            "Target pattern height in µm (-1 for Fullscreen Projector or aspect-ratio auto)"
+        )
+        self.spin_height_um.valueChanged.connect(self._on_size_um_changed)
+        scale_row.addWidget(self.spin_height_um)
 
-        self.btn_match_projector = QPushButton("Set to Projector Resolution")
+        self.btn_fullscreen = QPushButton("Fullscreen (-1)")
+        self.btn_fullscreen.setToolTip("Set both dimensions to -1 for quick single-tile fullscreen projection")
+        self.btn_fullscreen.clicked.connect(self._on_fullscreen_clicked)
+        scale_row.addWidget(self.btn_fullscreen)
+
+        self.btn_match_projector = QPushButton("Set to Projector FOV")
+        self.btn_match_projector.setToolTip("Set physical dimensions to 1 projector frame in µm")
         self.btn_match_projector.clicked.connect(self._on_match_projector_clicked)
         scale_row.addWidget(self.btn_match_projector)
         scale_row.addStretch()
@@ -208,31 +225,12 @@ class LayerSubpanelWidget(QTabWidget):
         exp_form.addRow("Duration:", self.spin_override_exp)
         layout.addWidget(exp_box)
 
-        # Tiling override
-        tile_box = QGroupBox("Tiling Override")
-        tile_form = QFormLayout(tile_box)
-
-        self.chk_override_tiling = QCheckBox("Override Project Tiling Settings")
-        self.chk_override_tiling.toggled.connect(self._on_override_tiling_toggled)
-        tile_form.addRow(self.chk_override_tiling)
-
-        self.chk_override_tiling_enable = QCheckBox("Enable Tiling for this Layer")
-        self.chk_override_tiling_enable.setEnabled(False)
-        self.chk_override_tiling_enable.toggled.connect(self._on_override_tiling_enable_toggled)
-        tile_form.addRow(self.chk_override_tiling_enable)
-
-        layout.addWidget(tile_box)
-
         # Effective summary box
         summary_box = QGroupBox("Effective Resolved Settings")
         summary_form = QFormLayout(summary_box)
         self.lbl_eff_exp = QLabel("8000 ms")
         self.lbl_eff_exp.setStyleSheet("font-weight: bold;")
         summary_form.addRow("Effective Exposure:", self.lbl_eff_exp)
-
-        self.lbl_eff_tiling = QLabel("Disabled")
-        self.lbl_eff_tiling.setStyleSheet("font-weight: bold;")
-        summary_form.addRow("Effective Tiling:", self.lbl_eff_tiling)
         layout.addWidget(summary_box)
 
         layout.addStretch()
@@ -250,31 +248,33 @@ class LayerSubpanelWidget(QTabWidget):
             self.lbl_thumb.clear()
             self.lbl_thumb.setText("Thumbnail")
 
-        # Tiling preview
-        if effective.tiling_enabled:
-            self.lbl_tiling_status.setText("Tiling: Enabled (Step-and-Repeat Active)")
-            self.lbl_tiling_details.setText(
-                f"Tile: {effective.tile_width}x{effective.tile_height} px | "
-                f"Pitch: dx={effective.pitch_x}µm, dy={effective.pitch_y}µm"
-            )
-            self.btn_regenerate_tiles.setEnabled(bool(layer.pattern_path))
+        # Tiling preview status
+        self.btn_regenerate_tiles.setEnabled(bool(layer.pattern_path))
+        if layer.is_fullscreen_mode:
+            self.lbl_tiling_status.setText("Mode: Fullscreen Projector (-1 × -1)")
+            self.lbl_tiling_details.setText("Single-shot fullscreen fit (aspect-ratio preserved, centered).")
         else:
-            self.lbl_tiling_status.setText("Tiling: Disabled (Single Pattern Mode)")
-            self.lbl_tiling_details.setText("Standard single-shot exposure will be used.")
-            self.btn_regenerate_tiles.setEnabled(bool(layer.pattern_path))
+            tile_count = len(layer._tile_cache)
+            self.lbl_tiling_status.setText(
+                f"Mode: Physical Chip-Space ({layer.width_um:.1f} × {layer.height_um:.1f} µm)"
+            )
+            self.lbl_tiling_details.setText(
+                f"Overlap: {effective.overlap_x:.1f} × {effective.overlap_y:.1f} µm | "
+                f"Cached Tiles: {max(1, tile_count)}"
+            )
 
         # Pattern threshold UI
         self.spin_threshold.blockSignals(True)
         self.spin_threshold.setValue(layer.threshold)
         self.spin_threshold.blockSignals(False)
 
-        # Pattern scaling UI
-        self.spin_scale_w.blockSignals(True)
-        self.spin_scale_h.blockSignals(True)
-        self.spin_scale_w.setValue(layer.scale_w)
-        self.spin_scale_h.setValue(layer.scale_h)
-        self.spin_scale_w.blockSignals(False)
-        self.spin_scale_h.blockSignals(False)
+        # Pattern physical size UI
+        self.spin_width_um.blockSignals(True)
+        self.spin_height_um.blockSignals(True)
+        self.spin_width_um.setValue(layer.width_um)
+        self.spin_height_um.setValue(layer.height_um)
+        self.spin_width_um.blockSignals(False)
+        self.spin_height_um.blockSignals(False)
 
         # Overrides UI
         self.chk_override_exp.blockSignals(True)
@@ -285,22 +285,10 @@ class LayerSubpanelWidget(QTabWidget):
             self.spin_override_exp.setValue(int(layer.overrides.exposure_time))
         self.chk_override_exp.blockSignals(False)
 
-        self.chk_override_tiling.blockSignals(True)
-        has_tile_override = layer.overrides.tiling_enabled is not None
-        self.chk_override_tiling.setChecked(has_tile_override)
-        self.chk_override_tiling_enable.setEnabled(has_tile_override)
-        if has_tile_override:
-            self.chk_override_tiling_enable.setChecked(bool(layer.overrides.tiling_enabled))
-        self.chk_override_tiling.blockSignals(False)
-
         # Summaries
         self.lbl_eff_exp.setText(
             f"{int(effective.exposure_time)} ms "
             f"({'Overridden' if has_exp_override else 'Default'})"
-        )
-        self.lbl_eff_tiling.setText(
-            f"{'Enabled' if effective.tiling_enabled else 'Disabled'} "
-            f"({'Overridden' if has_tile_override else 'Default'})"
         )
 
     def _refresh_tile_preview(self):
@@ -364,25 +352,43 @@ class LayerSubpanelWidget(QTabWidget):
         if layer.pattern_path:
             self._load_thumbnail(layer.pattern_path)
 
-    def _on_scale_changed(self):
+    def _on_size_um_changed(self):
         layer = self.engine.project.active_layer
-        layer.scale_w = self.spin_scale_w.value()
-        layer.scale_h = self.spin_scale_h.value()
-        layer._pattern_cache = None
-        layer._tile_cache = []
-        layer._tile_coords = []
+        layer.set_physical_size(self.spin_width_um.value(), self.spin_height_um.value())
+
+    def _on_fullscreen_clicked(self):
+        self.spin_width_um.blockSignals(True)
+        self.spin_height_um.blockSignals(True)
+        self.spin_width_um.setValue(-1.0)
+        self.spin_height_um.setValue(-1.0)
+        self.spin_width_um.blockSignals(False)
+        self.spin_height_um.blockSignals(False)
+        self.engine.project.set_pattern_size(-1.0, -1.0)
+        self.bridge.status_message.emit("Set project pattern size to Fullscreen mode (-1 × -1)")
 
     def _on_match_projector_clicked(self):
+        pw, ph = self.engine.project.projector_size
         if hasattr(self.engine, "projector") and self.engine.projector is not None:
             pw, ph = self.engine.projector.projector_size()
-            self.spin_scale_w.setValue(pw)
-            self.spin_scale_h.setValue(ph)
-            self.bridge.status_message.emit(f"Set scale size to projector resolution: {pw}x{ph}")
+        proj_px = 1.0
+        if self.engine.machine_config is not None:
+            proj_px = float(self.engine.machine_config.optics.projector_pixel_size)
+        w_um = pw * proj_px
+        h_um = ph * proj_px
+        self.spin_width_um.blockSignals(True)
+        self.spin_height_um.blockSignals(True)
+        self.spin_width_um.setValue(w_um)
+        self.spin_height_um.setValue(h_um)
+        self.spin_width_um.blockSignals(False)
+        self.spin_height_um.blockSignals(False)
+        self.engine.project.set_pattern_size(w_um, h_um)
+        self.bridge.status_message.emit(f"Set project pattern size to Projector FOV: {w_um:.1f} × {h_um:.1f} µm")
 
     def _on_regenerate_tiles_clicked(self):
         layer = self.engine.project.active_layer
-        layer.generate_tiles(force=True)
-        self.bridge.status_message.emit("Generated tiles for active layer.")
+        tiles, _ = layer.generate_tiles(force=True)
+        self._refresh_layer_view()
+        self.bridge.status_message.emit(f"Generated {len(tiles)} tile(s) for active layer.")
 
     def _load_thumbnail(self, path: str):
         if os.path.exists(path):
@@ -435,13 +441,3 @@ class LayerSubpanelWidget(QTabWidget):
         if self.chk_override_exp.isChecked():
             layer.set_exposure_override(float(val))
 
-    def _on_override_tiling_toggled(self, checked: bool):
-        layer = self.engine.project.active_layer
-        self.chk_override_tiling_enable.setEnabled(checked)
-        val = self.chk_override_tiling_enable.isChecked() if checked else None
-        layer.set_tiling_override(val)
-
-    def _on_override_tiling_enable_toggled(self, checked: bool):
-        layer = self.engine.project.active_layer
-        if self.chk_override_tiling.isChecked():
-            layer.set_tiling_override(checked)

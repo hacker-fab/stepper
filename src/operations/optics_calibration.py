@@ -3,11 +3,16 @@ from typing import Callable, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from core.events import ColorMode, ProjectorImageSource
-from core.operation import ExecutionContext, Operation
+from core.coordinate_system import compute_projector_pixel_size_from_tags
+from core.events import ColorMode, Event, ProjectorImageSource
+from core.operation import ExecutionContext, Operation, sub_progress
 from lib.ar_tag import (
     detect_ar_tags,
     generate_ar_tag_grid,
+)
+from lib.projector_camera_transform import (
+    compute_projector_to_camera_homography,
+    generate_calibration_tag_grid_with_coords,
 )
 from operations.maximize_image_sharpness import MaximizeImageSharpnessOperation
 
@@ -29,14 +34,12 @@ class OpticsCalibrationOperation(Operation):
         self,
         search_range: float = 500.0,
         target_accuracy: float = 0.5,
-        min_detection_rate: float = 0.5,
         grid_sizes: Sequence[int] = (2, 4),
         step_configs: Optional[Sequence[Tuple[float, float]]] = None,
     ):
         super().__init__("Optics Calibration")
         self.search_range = float(search_range)
         self.target_accuracy = float(target_accuracy)
-        self.min_detection_rate = float(min_detection_rate)
         self.grid_sizes = list(grid_sizes)
         self.red_best_z: Optional[float] = None
         self.uv_best_z: Optional[float] = None
@@ -76,10 +79,7 @@ class OpticsCalibrationOperation(Operation):
     def _detect_tags(
         self, frame: Optional[np.ndarray]
     ) -> Tuple[int, Sequence, Optional[np.ndarray]]:
-        det_count, corners, ids = detect_ar_tags(frame, flip_horizontal=True)
-        if det_count == 0:
-            det_count, corners, ids = detect_ar_tags(frame, flip_horizontal=False)
-        return det_count, corners, ids
+        return detect_ar_tags(frame)
 
     def _run_focus_iterations(
         self,
@@ -96,15 +96,18 @@ class OpticsCalibrationOperation(Operation):
         num_grids = len(self.grid_sizes)
         progress_span = progress_end - progress_start
 
+        grid_span = progress_span / max(1, num_grids)
+
         for idx, grid_n in enumerate(self.grid_sizes):
             if self.is_aborted:
                 return "Optics calibration aborted"
 
             total_tags = grid_n * grid_n
-            step_base = progress_start + (idx / num_grids) * progress_span
+            step_start = progress_start + idx * grid_span
+            step_end = step_start + grid_span
             report_progress(
-                step_base,
-                f"Projecting {grid_n}x{grid_n} ArUco grid...",
+                step_start,
+                f"Projecting {grid_n}x{grid_n} ArUco grid ({mode_name})...",
             )
 
             # 1. Project generated ArUco grid
@@ -121,45 +124,20 @@ class OpticsCalibrationOperation(Operation):
             if self.is_aborted:
                 return "Optics calibration aborted"
 
-            # 2. Check tag detection
-            # Disabled because the failure rate is too high
-
-            # frame = context.camera.get_latest_frame()
-            # det_count, _, _ = self._detect_tags(frame)
-
-            # # On initial check in Red illumination, verify that tags are present on stage
-            # if initial_tag_check and idx == 0 and det_count == 0:
-            #     msg = (
-            #         "No ArUco tags detected in Red illumination! "
-            #         "Please verify that a bare silicon chip is on the stage, "
-            #         "rough focus is set, and the camera/projector are active."
-            #     )
-            #     if context.warning_callback:
-            #         context.warning_callback(msg)
-            #     return msg
-
-            # detection_rate = det_count / total_tags if total_tags > 0 else 0.0
-
-            # # If detection rate is below threshold, stop iteration (skip first iteration as alignment may be blurry)
-            # if detection_rate < self.min_detection_rate and idx > 0:
-            #     print(
-            #         f"{mode_name} Grid {grid_n}x{grid_n} detection rate ({detection_rate*100:.1f}%) "
-            #         f"< {self.min_detection_rate*100:.1f}%. Stopping iteration.",
-            #         flush=True,
-            #     )
-            #     break
-
-            # 3. Determine search range & threshold for this grid level
+            # 2. Determine search range & threshold for this grid level
             sweep_range, threshold = (
                 self.step_configs[idx]
                 if idx < len(self.step_configs)
                 else self.step_configs[-1]
             )
 
-            # 4. Maximize image sharpness via MaximizeImageSharpnessOperation
-            report_progress(
-                step_base + (0.5 / num_grids) * progress_span,
-                f"Maximizing sharpness for {mode_name} {grid_n}x{grid_n} grid...",
+            # 3. Maximize image sharpness via MaximizeImageSharpnessOperation
+            sharp_start = step_start + 0.05 * grid_span
+            sub_reporter = sub_progress(
+                report_progress,
+                sharp_start,
+                step_end,
+                prefix=f"{mode_name} {grid_n}x{grid_n}",
             )
             sharp_op = MaximizeImageSharpnessOperation(
                 z_range=sweep_range,
@@ -169,13 +147,7 @@ class OpticsCalibrationOperation(Operation):
             if self.is_aborted:
                 sharp_op.abort()
 
-            err = sharp_op.execute(
-                context,
-                report_progress=lambda p, m: report_progress(
-                    step_base + p * (progress_span / num_grids),
-                    f"{mode_name} {grid_n}x{grid_n} - {m}",
-                ),
-            )
+            err = sharp_op.execute(context, report_progress=sub_reporter)
             self._current_sub_op = None
 
             if self.is_aborted:
@@ -183,23 +155,6 @@ class OpticsCalibrationOperation(Operation):
 
             if err is not None:
                 return f"Optics calibration failed: {err}"
-
-            # 5. Verify detection rate at best focus
-            # Disabled because the failure rate is too high
-
-            # context.delay_func(1.0)
-            # frame_best = context.camera.get_latest_frame()
-            # det_count_best, _, _ = self._detect_tags(frame_best)
-            # rate_best = det_count_best / total_tags if total_tags > 0 else 0.0
-
-            # # If detection falls below threshold, do not progress to smaller tags
-            # if rate_best < self.min_detection_rate:
-            #     print(
-            #         f"Post-focus {mode_name} {grid_n}x{grid_n} detection rate ({rate_best*100:.1f}%) "
-            #         f"< {self.min_detection_rate*100:.1f}%. Halting further refinement.",
-            #         flush=True,
-            #     )
-            #     break
 
         return None
 
@@ -209,7 +164,7 @@ class OpticsCalibrationOperation(Operation):
         if self.is_aborted:
             return "Optics calibration aborted"
 
-        report_progress(0.05, "Starting Optics Calibration...")
+        report_progress(0.0, "Starting Optics Calibration...")
         projector = context.projector
         assert projector is not None, "Projector not found"
 
@@ -218,8 +173,8 @@ class OpticsCalibrationOperation(Operation):
             red_err = self._run_focus_iterations(
                 context=context,
                 color_mode=ColorMode.RED,
-                progress_start=0.1,
-                progress_end=0.5,
+                progress_start=0.05,
+                progress_end=0.50,
                 report_progress=report_progress,
                 initial_tag_check=True,
             )
@@ -227,13 +182,13 @@ class OpticsCalibrationOperation(Operation):
                 return red_err
 
             self.red_best_z = context.stage.get_position()[2]
-            report_progress(0.5, f"Red focus locked at Z = {self.red_best_z:.2f} µm")
+            report_progress(0.50, f"Red focus locked at Z = {self.red_best_z:.2f} µm")
 
             if self.is_aborted:
                 return "Optics calibration aborted"
 
             # 2. Switch to UV illumination
-            report_progress(0.55, "Switching to UV illumination...")
+            report_progress(0.52, "Switching to UV illumination...")
 
             # 3. Optimize focus in UV light
             uv_err = self._run_focus_iterations(
@@ -264,4 +219,130 @@ class OpticsCalibrationOperation(Operation):
                 projector.set_on(False)
                 projector.set_generated_image(None)
                 projector.set_image_source(ProjectorImageSource.ACTIVE_LAYER)
+
+
+class ProjectorCameraCalibrationOperation(Operation):
+    """Calculates projector pixel size (µm/px) and projector-to-camera homography transform.
+
+    Process:
+    1. Projects a 2x2 ArUco grid in Red illumination on the projector.
+    2. Captures a frame from the camera and detects the ArUco tags.
+    3. Uses known camera_pixel_size, ArUco tag positions in projector pixels, and measured
+       camera pixel positions to compute projector_pixel_size (µm/px) and 3x3 H_proj_to_cam.
+    4. Stores both in machine_config.optics and saves machine_config.toml.
+    """
+
+    def __init__(
+        self,
+        stabilization_delay: float = 0.8,
+        save_config: bool = True,
+        config_path: str = "machine_config.toml",
+    ):
+        super().__init__("Projector-Camera Calibration")
+        self.stabilization_delay = float(stabilization_delay)
+        self.save_config = bool(save_config)
+        self.config_path = config_path
+        self.projector_pixel_size: Optional[float] = None
+        self.homography: Optional[np.ndarray] = None
+
+    def execute(
+        self, context: ExecutionContext, report_progress: Callable[[float, str], None]
+    ) -> Optional[str]:
+        if context.projector is None or context.camera is None:
+            return "Projector or Camera not available in execution context"
+
+        if self.is_aborted:
+            return "Projector-Camera calibration aborted"
+
+        projector = context.projector
+        camera = context.camera
+        pw, ph = projector.projector_size()
+
+        cam_px_size = (
+            context.machine_config.stage_calibration.camera_pixel_size
+            if context.machine_config is not None
+            else 1.0
+        )
+
+        try:
+            report_progress(0.1, "Projecting 2x2 ArUco calibration grid...")
+            grid_img, tag_coords = generate_calibration_tag_grid_with_coords(
+                grid_n=2,
+                canvas_size=(pw, ph),
+            )
+            projector.set_generated_image(grid_img)
+            projector.set_color_mode(ColorMode.RED)
+            projector.set_image_source(ProjectorImageSource.GENERATED)
+            projector.set_on(True)
+            projector.wait_for_display(timeout=2.0)
+
+            if self.stabilization_delay > 0:
+                context.delay_func(self.stabilization_delay)
+
+            if self.is_aborted:
+                return "Projector-Camera calibration aborted"
+
+            report_progress(0.5, "Capturing camera frame and detecting ArUco tags...")
+            frame = camera.get_latest_frame()
+            if frame is None:
+                return "Failed to capture camera frame for Projector-Camera calibration"
+
+            det_count, corners, ids = detect_ar_tags(frame)
+            if det_count == 0 or ids is None:
+                return (
+                    "No ArUco tags detected in camera frame. "
+                    "Ensure the substrate is in focus, projector is visible, and camera flip mode is configured."
+                )
+
+            report_progress(0.75, f"Detected {det_count} ArUco tags. Computing pixel size and homography...")
+            proj_px_size = compute_projector_pixel_size_from_tags(
+                detected_corners=corners,
+                detected_ids=ids,
+                known_tag_coords=tag_coords,
+                camera_pixel_size=cam_px_size,
+            )
+            H_proj_to_cam, matched_pts = compute_projector_to_camera_homography(
+                detected_corners=list(corners),
+                detected_ids=ids,
+                known_tag_coords=tag_coords,
+            )
+
+            if proj_px_size is None or H_proj_to_cam is None or matched_pts < 4:
+                return (
+                    f"Projector-Camera calibration failed: insufficient tag corner matches ({matched_pts} points). "
+                    "At least 1 full tag (4 corners) is required."
+                )
+
+            self.projector_pixel_size = float(proj_px_size)
+            self.homography = H_proj_to_cam
+
+            if context.machine_config is not None:
+                context.machine_config.optics.projector_pixel_size = self.projector_pixel_size
+                context.machine_config.optics.proj_to_cam_matrix = H_proj_to_cam.tolist()
+                if self.save_config:
+                    try:
+                        context.machine_config.save(self.config_path)
+                    except Exception as e:
+                        print(f"[ProjectorCameraCalibration] Warning saving config: {e}")
+
+            if context.project is not None:
+                context.project.camera_size = (frame.shape[1], frame.shape[0])
+                context.project.invalidate_all_tile_caches()
+
+            if context.event_bus is not None and context.machine_config is not None:
+                context.event_bus.emit(Event.MACHINE_CONFIG_CHANGED, context.machine_config)
+                context.event_bus.emit(Event.EXPOSURE_CONFIG_CHANGED)
+
+            report_progress(
+                1.0,
+                f"Projector-Camera calibration complete: projector pixel size = {self.projector_pixel_size:.4f} µm/px "
+                f"({det_count} tags, {matched_pts} corners matched).",
+            )
+            return None
+
+        finally:
+            projector.set_on(False)
+            projector.set_generated_image(None)
+            projector.set_image_source(ProjectorImageSource.ACTIVE_LAYER)
+
 

@@ -17,12 +17,14 @@ try:
     from lib.latent_vision_model import (
         LatentVisionCNN,
         load_latent_vision_model,
+        resolve_checkpoint_path as _resolve_checkpoint_path,
     )
     LATENT_VISION_AVAILABLE = True
 except ImportError:
     torch = None  # type: ignore
     LatentVisionCNN = None  # type: ignore
     load_latent_vision_model = None  # type: ignore
+    _resolve_checkpoint_path = lambda p: Path(p)  # type: ignore
     LATENT_VISION_AVAILABLE = False
 
 from projector import ProjectorController
@@ -34,7 +36,6 @@ from ui.widgets.camera_view.camera_view_widget import (
     CameraViewWidget,
     LatentVisionWorker,
     MaskRenderWorker,
-    _resolve_checkpoint_path,
 )
 
 
@@ -104,9 +105,10 @@ class TestLatentVisionWorker(unittest.TestCase):
         worker.start()
 
         try:
-            # Submit a test frame 480x640
+            # Submit 30 test frames 480x640 to satisfy the queue threshold
             frame = np.full((480, 640, 3), 128, dtype=np.uint8)
-            worker.submit_frame(frame)
+            for _ in range(30):
+                worker.submit_frame(frame)
 
             # Wait for mask callback
             for _ in range(50):
@@ -120,6 +122,61 @@ class TestLatentVisionWorker(unittest.TestCase):
         finally:
             worker.stop()
             worker.join(timeout=2.0)
+
+    @unittest.skipUnless(LATENT_VISION_AVAILABLE, "PyTorch not installed")
+    def test_worker_queue_waits_for_min_frames(self):
+        ckpt_path = _resolve_checkpoint_path(DEFAULT_LATENT_VISION_CHECKPOINT)
+        received_masks = []
+
+        def on_mask(mask):
+            received_masks.append(mask)
+
+        worker = LatentVisionWorker(
+            checkpoint_path=ckpt_path,
+            on_mask_ready=on_mask,
+            device="cpu",
+            min_frames=30,
+        )
+        worker.start()
+
+        try:
+            frame = np.full((480, 640, 3), 128, dtype=np.uint8)
+            # Submit 29 frames (fewer than min_frames)
+            for _ in range(29):
+                worker.submit_frame(frame)
+
+            # Wait briefly and verify no inference has run
+            time.sleep(0.2)
+            self.assertEqual(len(received_masks), 0)
+
+            # Submit the 30th frame
+            worker.submit_frame(frame)
+
+            for _ in range(50):
+                if received_masks:
+                    break
+                time.sleep(0.05)
+
+            self.assertGreater(len(received_masks), 0)
+        finally:
+            worker.stop()
+            worker.join(timeout=2.0)
+
+    @unittest.skipUnless(LATENT_VISION_AVAILABLE, "PyTorch not installed")
+    def test_worker_clear_queue(self):
+        ckpt_path = _resolve_checkpoint_path(DEFAULT_LATENT_VISION_CHECKPOINT)
+        worker = LatentVisionWorker(
+            checkpoint_path=ckpt_path,
+            on_mask_ready=lambda mask: None,
+            device="cpu",
+            min_frames=30,
+        )
+        frame = np.full((480, 640, 3), 128, dtype=np.uint8)
+        for _ in range(10):
+            worker.submit_frame(frame)
+        self.assertEqual(len(worker._frame_queue), 10)
+        worker.clear_queue()
+        self.assertEqual(len(worker._frame_queue), 0)
 
 
 class TestCameraViewWidget(unittest.TestCase):

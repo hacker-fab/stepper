@@ -1,7 +1,7 @@
 from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QCursor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QFrame
 
 from operations.movement import JogOperation
@@ -151,20 +151,97 @@ class StageMapCanvas(QFrame):
         painter.setBrush(QBrush(QColor("#1e293b")))
         painter.drawRect(QRectF(ox, oy, box_w, box_h))
 
-        # Draw previous exposure footprints
+        # Draw previous exposure footprints (transformed from chip-space into corr-stage-space)
         chip_project = self.parent_widget.engine.project
         if chip_project:
+            cp = chip_project.chip_progress
             painter.setPen(QPen(QColor("#f59e0b"), 1))
             painter.setBrush(QBrush(QColor(245, 158, 11, 80)))
-            pitch_x = chip_project.settings.pitch_x
-            pitch_y = chip_project.settings.pitch_y
-            tile_w = max(4.0, (pitch_x / span_x) * box_w)
-            tile_h = max(3.0, (pitch_y / span_y) * box_h)
+
+            pw, ph = chip_project.projector_size
+            proj_px = 1.0
+            if self.parent_widget.engine.machine_config is not None:
+                proj_px = float(self.parent_widget.engine.machine_config.optics.projector_pixel_size)
+            fov_w = pw * proj_px
+            fov_h = ph * proj_px
+            tile_w = max(4.0, (fov_w / span_x) * box_w)
+            tile_h = max(3.0, (fov_h / span_y) * box_h)
 
             for exp in chip_project.exposure_history:
-                ex_x, ex_y = exp.coords[0], exp.coords[1]
-                sx, sy = self._to_screen(ex_x, ex_y, t)
-                painter.drawRect(QRectF(sx - tile_w / 2, sy - tile_h / 2, tile_w, tile_h))
+                if exp.footprint_chip_corners and len(exp.footprint_chip_corners) >= 3:
+                    poly_pts = []
+                    for cpt in exp.footprint_chip_corners:
+                        corr_x, corr_y = cp.chip_to_corr((float(cpt[0]), float(cpt[1])))
+                        sx, sy = self._to_screen(corr_x, corr_y, t)
+                        poly_pts.append(QPointF(sx, sy))
+                    painter.drawPolygon(QPolygonF(poly_pts))
+                else:
+                    corr_x, corr_y = cp.chip_to_corr((float(exp.coords[0]), float(exp.coords[1])))
+                    sx, sy = self._to_screen(corr_x, corr_y, t)
+                    painter.drawRect(QRectF(sx - tile_w / 2, sy - tile_h / 2, tile_w, tile_h))
+
+            # Draw exposed pattern origins and pattern boundaries (Cyan #06b6d4)
+            from core.coordinate_system import apply_homography_2d
+            for orig_idx, orig_chip in enumerate(cp.pattern_origins_chip):
+                orig_w = fov_w
+                orig_h = fov_h
+                if orig_idx < len(cp.pattern_sizes_chip):
+                    stored_sz = cp.pattern_sizes_chip[orig_idx]
+                    if stored_sz[0] > 0 and stored_sz[1] > 0:
+                        orig_w, orig_h = float(stored_sz[0]), float(stored_sz[1])
+
+                ox_c, oy_c = float(orig_chip[0]), float(orig_chip[1])
+                hw, hh = orig_w / 2.0, orig_h / 2.0
+                local_corners = [
+                    (-hw, -hh),
+                    (hw, -hh),
+                    (hw, hh),
+                    (-hw, hh),
+                ]
+                pat_transform = cp.get_pattern_transform_chip(orig_idx)
+                rel_corners = apply_homography_2d(local_corners, pat_transform)
+                chip_corners = [
+                    (ox_c + float(pt[0]), oy_c + float(pt[1]))
+                    for pt in rel_corners
+                ]
+
+                poly_pts = []
+                for cx_c, cy_c in chip_corners:
+                    corr_x, corr_y = cp.chip_to_corr((cx_c, cy_c))
+                    sx, sy = self._to_screen(corr_x, corr_y, t)
+                    poly_pts.append(QPointF(sx, sy))
+
+                painter.setPen(QPen(QColor("#06b6d4"), 1.5, Qt.DashLine))
+                painter.setBrush(QBrush(QColor(6, 182, 212, 45)))
+                painter.drawPolygon(QPolygonF(poly_pts))
+
+                # Draw origin center point and label
+                oc_corr_x, oc_corr_y = cp.chip_to_corr((ox_c, oy_c))
+                osx, osy = self._to_screen(oc_corr_x, oc_corr_y, t)
+                painter.setPen(QPen(QColor("#06b6d4"), 2))
+                painter.setBrush(QBrush(QColor("#06b6d4")))
+                painter.drawEllipse(QPointF(osx, osy), 3, 3)
+                painter.drawLine(QPointF(osx - 5, osy), QPointF(osx + 5, osy))
+                painter.drawLine(QPointF(osx, osy - 5), QPointF(osx, osy + 5))
+
+                font = painter.font()
+                font.setPointSize(8)
+                painter.setFont(font)
+                painter.setPen(QPen(QColor("#38bdf8")))
+                painter.drawText(QPointF(osx + 6, osy - 4), f"Idx {orig_idx + 1}")
+
+            # Draw chip markers if recorded
+            for idx, m_chip in ((1, cp.marker1_chip), (2, cp.marker2_chip)):
+                if m_chip is not None:
+                    mx_corr, my_corr = cp.chip_to_corr(m_chip)
+                    msx, msy = self._to_screen(mx_corr, my_corr, t)
+                    painter.setPen(QPen(QColor("#10b981"), 1.5))
+                    painter.setBrush(QBrush(QColor(16, 185, 129, 180)))
+                    painter.drawEllipse(QPointF(msx, msy), 4, 4)
+                    font = painter.font()
+                    font.setPointSize(8)
+                    painter.setFont(font)
+                    painter.drawText(QPointF(msx + 6, msy - 4), f"M{idx}")
 
         # Draw current stage position indicator
         cx, cy, _ = self.parent_widget.engine.stage.get_position()

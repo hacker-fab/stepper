@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from stage_control.stage_controller import StageController
 from stage_control.dummy_stage import DummyStage
+from stage_control.calibration import StageCalibration, StageCalibrationPoint
 
 
 def _check_grbl() -> tuple[bool, Optional[str]]:
@@ -130,8 +131,11 @@ def get_stage_controller(stage_config: dict, tiling: Optional[bool] = None) -> S
 __all__ = [
     "StageController",
     "DummyStage",
+    "StageCalibration",
+    "StageCalibrationPoint",
     "get_available_stage_types",
     "get_stage_controller",
 ]
+
 
 

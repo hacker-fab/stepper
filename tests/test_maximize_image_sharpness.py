@@ -295,17 +295,17 @@ class TestMaximizeImageSharpness(unittest.TestCase):
         self.assertIsInstance(panel.tabs.widget(2), QScrollArea)
 
         # Verify sharpness controls exist
-        self.assertTrue(hasattr(panel, "btn_maximize_sharpness"))
-        self.assertTrue(hasattr(panel, "spin_sharp_z_range"))
-        self.assertEqual(panel.spin_sharp_z_range.value(), 20.0)
+        self.assertTrue(hasattr(panel.manual_tab, "btn_maximize_sharpness"))
+        self.assertTrue(hasattr(panel.manual_tab, "spin_sharp_z_range"))
+        self.assertEqual(panel.manual_tab.spin_sharp_z_range.value(), 20.0)
 
         # Set custom Z range
-        panel.spin_sharp_z_range.setValue(35.0)
-        self.assertEqual(panel.spin_sharp_z_range.value(), 35.0)
+        panel.manual_tab.spin_sharp_z_range.setValue(35.0)
+        self.assertEqual(panel.manual_tab.spin_sharp_z_range.value(), 35.0)
 
         # Clicking the button starts MaximizeImageSharpnessOperation
         with unittest.mock.patch.object(bridge, "start_operation") as mock_start:
-            panel.btn_maximize_sharpness.click()
+            panel.manual_tab.btn_maximize_sharpness.click()
             mock_start.assert_called_once()
             op = mock_start.call_args[0][0]
             self.assertIsInstance(op, MaximizeImageSharpnessOperation)

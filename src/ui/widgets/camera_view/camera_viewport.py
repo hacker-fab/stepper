@@ -11,6 +11,7 @@ class CameraViewport(QWidget):
     """Display widget that paints the camera image with crosshair overlay, zooming, panning, and latent mask blending."""
 
     zoom_changed = Signal(float)
+    crosshair_changed = Signal(float, float, object)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -315,6 +316,11 @@ class CameraViewport(QWidget):
             event.accept()
             return
 
+        if self.is_moving_crosshair and (event.buttons() & Qt.RightButton):
+            self._update_secondary_crosshair_from_pos(event.position())
+            event.accept()
+            return
+
         if self._is_panning and self._last_mouse_pos is not None:
             delta = event.position() - self._last_mouse_pos
             self.pan_x += delta.x()
@@ -333,10 +339,15 @@ class CameraViewport(QWidget):
         if self.is_moving_crosshair:
             self.crosshair_u = 0.5
             self.crosshair_v = 0.5
+            self._emit_crosshair_changed()
             self.update()
         else:
             self.reset_zoom()
         event.accept()
+
+    def _emit_crosshair_changed(self):
+        sec = (self.secondary_crosshair_u, self.secondary_crosshair_v) if self.has_secondary_crosshair else None
+        self.crosshair_changed.emit(self.crosshair_u, self.crosshair_v, sec)
 
     def _update_crosshair_from_pos(self, pos: QPointF):
         target_rect = self._get_target_rect()
@@ -345,6 +356,7 @@ class CameraViewport(QWidget):
             v = (pos.y() - target_rect.y()) / target_rect.height()
             self.crosshair_u = max(0.0, min(1.0, u))
             self.crosshair_v = max(0.0, min(1.0, v))
+            self._emit_crosshair_changed()
             self.update()
 
     def _update_secondary_crosshair_from_pos(self, pos: QPointF):
@@ -355,5 +367,6 @@ class CameraViewport(QWidget):
             self.secondary_crosshair_u = max(0.0, min(1.0, u))
             self.secondary_crosshair_v = max(0.0, min(1.0, v))
             self.has_secondary_crosshair = True
+            self._emit_crosshair_changed()
             self.update()
 

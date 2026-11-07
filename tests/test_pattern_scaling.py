@@ -44,8 +44,9 @@ class TestPatternScaling(unittest.TestCase):
     def test_default_scale_disabled(self):
         project = ChipProject()
         layer = project.active_layer
-        self.assertEqual(layer.scale_w, -1)
-        self.assertEqual(layer.scale_h, -1)
+        self.assertEqual(layer.width_um, -1.0)
+        self.assertEqual(layer.height_um, -1.0)
+        self.assertTrue(layer.is_fullscreen_mode)
         self.assertIsNone(layer._pattern_cache)
 
         layer.set_pattern_path(self.test_img_path)
@@ -54,78 +55,66 @@ class TestPatternScaling(unittest.TestCase):
 
         tiles, coords = layer.generate_tiles()
         self.assertIsNotNone(layer._pattern_cache)
-        # Original size was 200x100
+        # Original size was 200x100, fullscreen tile fits projector size (1920x1080)
         self.assertEqual(layer._pattern_cache.shape[1], 200)
         self.assertEqual(layer._pattern_cache.shape[0], 100)
+        self.assertEqual(len(tiles), 1)
+        self.assertEqual(tiles[0].shape[1], 1920)
+        self.assertEqual(tiles[0].shape[0], 1080)
+        self.assertEqual(coords, [(0.0, 0.0)])
 
     def test_explicit_scaling_and_laziness(self):
-        project = ChipProject()
+        project = ChipProject(projector_size=(400, 300), camera_size=(400, 300))
         layer = project.active_layer
         layer.set_pattern_path(self.test_img_path)
 
-        # Set scaling
-        layer.scale_w = 400
-        layer.scale_h = 300
+        # Set physical size (with default 1.0 um/px, 400x300 um fits in 1 tile)
+        layer.set_physical_size(400.0, 300.0)
 
-        # Lazy: pattern should not be loaded or scaled yet
+        # Lazy: pattern should not be loaded yet
         self.assertIsNone(layer._pattern_cache)
         self.assertEqual(len(layer._tile_cache), 0)
 
-        # Generate tiles triggers lazy scaling
+        # Generate tiles triggers lazy loading and tiling
         tiles, coords = layer.generate_tiles()
         self.assertIsNotNone(layer._pattern_cache)
-        self.assertEqual(layer._pattern_cache.shape[1], 400)
-        self.assertEqual(layer._pattern_cache.shape[0], 300)
+        self.assertEqual(len(tiles), 1)
         self.assertEqual(tiles[0].shape[1], 400)
         self.assertEqual(tiles[0].shape[0], 300)
 
     def test_rescaling_with_force_generate_tiles(self):
-        project = ChipProject()
+        project = ChipProject(projector_size=(400, 300), camera_size=(400, 300))
         layer = project.active_layer
         layer.set_pattern_path(self.test_img_path)
-        layer.generate_tiles()
-        self.assertEqual(layer._pattern_cache.shape[1], 200)
-        self.assertEqual(layer._pattern_cache.shape[0], 100)
+        tiles1, _ = layer.generate_tiles()
+        self.assertEqual(len(tiles1), 1)
 
-        # Update scale
-        layer.scale_w = 500
-        layer.scale_h = 250
-        # Re-generating with force=True reloads and applies new scale
-        layer.generate_tiles(force=True)
-        self.assertEqual(layer._pattern_cache.shape[1], 500)
-        self.assertEqual(layer._pattern_cache.shape[0], 250)
+        # Update physical size larger than projector FOV (400x300 um) -> multiple tiles
+        layer.set_physical_size(700.0, 500.0)
+        tiles2, coords2 = layer.generate_tiles(force=True)
+        self.assertGreater(len(tiles2), 1)
+        self.assertEqual(len(tiles2), len(coords2))
 
     def test_aspect_ratio_scaling_when_one_dimension_set(self):
-        project = ChipProject()
-        layer = project.active_layer
-        layer.set_pattern_path(self.test_img_path)
+        from lib.tiling import resolve_layer_physical_size
+        w, h = resolve_layer_physical_size((100, 200), 400.0, -1.0)
+        self.assertAlmostEqual(w, 400.0)
+        self.assertAlmostEqual(h, 200.0)
 
-        # Only scale_w set
-        layer.scale_w = 400
-        layer.scale_h = -1
-        layer.generate_tiles(force=True)
-        # Original is 200w x 100h -> 400w x 200h
-        self.assertEqual(layer._pattern_cache.shape[1], 400)
-        self.assertEqual(layer._pattern_cache.shape[0], 200)
-
-        # Only scale_h set
-        layer.scale_w = -1
-        layer.scale_h = 50
-        layer.generate_tiles(force=True)
-        # Original is 200w x 100h -> 100w x 50h
-        self.assertEqual(layer._pattern_cache.shape[1], 100)
-        self.assertEqual(layer._pattern_cache.shape[0], 50)
+        w2, h2 = resolve_layer_physical_size((100, 200), -1.0, 50.0)
+        self.assertAlmostEqual(w2, 100.0)
+        self.assertAlmostEqual(h2, 50.0)
 
     def test_serialization(self):
-        layer = ChipLayer(name="Test Layer", pattern_path="/dummy/path.png", scale_w=1920, scale_h=1080)
+        layer = ChipLayer(name="Test Layer", pattern_path="/dummy/path.png", width_um=1920.0, height_um=1080.0)
         data = layer.to_disk()
-        self.assertEqual(data["scale_w"], 1920)
-        self.assertEqual(data["scale_h"], 1080)
+        self.assertEqual(data["width_um"], 1920.0)
+        self.assertEqual(data["height_um"], 1080.0)
 
         restored = ChipLayer.from_disk(data)
         self.assertEqual(restored.name, "Test Layer")
-        self.assertEqual(restored.scale_w, 1920)
-        self.assertEqual(restored.scale_h, 1080)
+        self.assertEqual(restored.width_um, 1920.0)
+        self.assertEqual(restored.height_um, 1080.0)
         self.assertEqual(restored.pattern_path, "/dummy/path.png")
 
     def test_gui_pattern_scaling_and_projector_match(self):
@@ -139,19 +128,20 @@ class TestPatternScaling(unittest.TestCase):
         layer_subpanel = widget.layer_subpanel
 
         # Check default UI values
-        self.assertEqual(layer_subpanel.spin_scale_w.value(), -1)
-        self.assertEqual(layer_subpanel.spin_scale_h.value(), -1)
+        self.assertEqual(layer_subpanel.spin_width_um.value(), -1.0)
+        self.assertEqual(layer_subpanel.spin_height_um.value(), -1.0)
 
         # Set pattern path
         engine.project.active_layer.set_pattern_path(self.test_img_path)
         engine.event_bus.emit(Event.PROJECT_CHANGED, engine.project)
 
-        # Click Match Projector Resolution button
+        # Click Match Projector FOV button (with default proj_px_size = 1.0)
         layer_subpanel.btn_match_projector.click()
-        self.assertEqual(layer_subpanel.spin_scale_w.value(), 1280)
-        self.assertEqual(layer_subpanel.spin_scale_h.value(), 720)
-        self.assertEqual(engine.project.active_layer.scale_w, 1280)
-        self.assertEqual(engine.project.active_layer.scale_h, 720)
+        proj_px = engine.machine_config.optics.projector_pixel_size
+        self.assertAlmostEqual(layer_subpanel.spin_width_um.value(), 1280.0 * proj_px, places=1)
+        self.assertAlmostEqual(layer_subpanel.spin_height_um.value(), 720.0 * proj_px, places=1)
+        self.assertAlmostEqual(engine.project.active_layer.width_um, 1280.0 * proj_px, places=1)
+        self.assertAlmostEqual(engine.project.active_layer.height_um, 720.0 * proj_px, places=1)
 
         # Pattern should still be lazily unscaled
         self.assertIsNone(engine.project.active_layer._pattern_cache)
@@ -159,8 +149,9 @@ class TestPatternScaling(unittest.TestCase):
         # Click Generate Tiles
         layer_subpanel.btn_regenerate_tiles.click()
         self.assertIsNotNone(engine.project.active_layer._pattern_cache)
-        self.assertEqual(engine.project.active_layer._pattern_cache.shape[1], 1280)
-        self.assertEqual(engine.project.active_layer._pattern_cache.shape[0], 720)
+        self.assertEqual(len(engine.project.active_layer._tile_cache), 1)
+        self.assertEqual(engine.project.active_layer._tile_cache[0].shape[1], 1280)
+        self.assertEqual(engine.project.active_layer._tile_cache[0].shape[0], 720)
 
     def test_projector_preview_updates_immediately_without_mouse_move(self):
         stage = DummyStage()

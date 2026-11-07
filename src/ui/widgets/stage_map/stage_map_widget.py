@@ -73,6 +73,7 @@ class StageMapWidget(QWidget):
         self.bridge.stage_position_changed.connect(self._on_stage_moved)
         self.bridge.project_changed.connect(lambda _: self.canvas.update())
         self.bridge.exposure_history_changed.connect(lambda _: self.canvas.update())
+        self.bridge.chip_progress_changed.connect(lambda _: self.canvas.update())
 
     def _on_stage_moved(self, coords: tuple):
         x, y, z = coords

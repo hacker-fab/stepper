@@ -55,24 +55,3 @@ dlpc_enabled = false
 [tiling]
 enabled = false
 
-[autofocus]
-enabled = true
-# UV-Red Z focal offset in micrometers (chromatic aberration offset)
-uv_z_offset = 0.0
-# Minimum ArUco tag detection rate required to continue refinement (0.0 to 1.0)
-min_detection_rate = 0.5
-
-# This section configures alignment marker detection
-[alignment]
-# Enable or disable real-time detection of alignment markers
-enabled = false
-# Path to the YOLO model weights file
-model_path = "ckpts/best.pt"
-# Alignment marker reference coordinates (in pixels)
-right_marker_x = 1820.0  # x-coordinate for markers on the right side
-top_marker_y = 269.0     # y-coordinate for markers on the top
-bottom_marker_y = 1075.0 # y-coordinate for markers on the bottom
-left_marker_x = 280.0    # x-coordinate for markers on the left side
-# Scaling factors for converting normalized differences to stage movements (in µm)
-x_scale_factor = -1100 # Scaling factor for x-axis movements
-y_scale_factor = 800   # Scaling factor for y-axis movements

@@ -70,18 +70,19 @@ class Webcam(CameraModule):
             if self.camera is None or not self.camera.isOpened():
                 break
 
-            ok, frame = self.camera.read()
-            if not ok or frame is None:
+            ok, raw_frame = self.camera.read()
+            if not ok or raw_frame is None:
                 time.sleep(0.01)
                 continue
 
             with self._lock:
-                self._latest_frame = frame
+                self._latest_frame = raw_frame
 
-            if self.event_bus is not None:
+            frame = self._apply_flip(raw_frame)
+            if self.event_bus is not None and frame is not None:
                 self.event_bus.emit(Event.CAMERA_FRAME_READY, frame)
 
-            if self._stream_callback is not None:
+            if self._stream_callback is not None and frame is not None:
                 try:
                     self._stream_callback(frame, frame.size, "BGR888")
                 except Exception as e:
@@ -95,7 +96,7 @@ class Webcam(CameraModule):
         with self._lock:
             if self._latest_frame is None:
                 return None
-            return self._latest_frame.copy()
+            return self._apply_flip(self._latest_frame.copy())
 
     def set_exposure_time(self, value: float) -> bool:
         self._exposure_time = float(value)

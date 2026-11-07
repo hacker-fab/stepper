@@ -28,10 +28,10 @@ class MaximizeImageSharpnessOperation(Operation):
 
     def __init__(
         self,
-        z_range: Union[float, Tuple[float, float]] = 20.0,
-        threshold: float = 0.5,
+        z_range: Optional[Union[float, Tuple[float, float]]] = None,
+        threshold: Optional[float] = None,
         max_iterations: int = 10,
-        settle_delay: float = 1,
+        settle_delay: Optional[float] = None,
         max_resamples: int = 3,
     ):
         super().__init__("Maximize Image Sharpness")
@@ -48,21 +48,33 @@ class MaximizeImageSharpnessOperation(Operation):
 
         report_progress(0.05, "Starting image sharpness maximization...")
 
+        effective_z_range = self.z_range if self.z_range is not None else 20.0
+        effective_threshold = self.threshold if self.threshold is not None else 0.5
+
+        effective_settle_delay = self.settle_delay
+        if effective_settle_delay is None:
+            if context.machine_config is not None and hasattr(context.machine_config, "optics"):
+                effective_settle_delay = context.machine_config.optics.settle_delay
+            else:
+                effective_settle_delay = 1.0
+
         current_z = context.stage.get_position()[2]
 
         # Determine initial search interval [z_low, z_high]
-        if isinstance(self.z_range, (int, float)):
-            half_range = abs(float(self.z_range))
+        if isinstance(effective_z_range, (int, float)):
+            half_range = abs(float(effective_z_range))
             z_low = current_z - half_range
             z_high = current_z + half_range
-        elif isinstance(self.z_range, (tuple, list)) and len(self.z_range) == 2:
-            z_low = min(float(self.z_range[0]), float(self.z_range[1]))
-            z_high = max(float(self.z_range[0]), float(self.z_range[1]))
+        elif isinstance(effective_z_range, (tuple, list)) and len(effective_z_range) == 2:
+            z_low = min(float(effective_z_range[0]), float(effective_z_range[1]))
+            z_high = max(float(effective_z_range[0]), float(effective_z_range[1]))
         else:
-            return f"Invalid z_range: {self.z_range}. Must be float or Tuple[float, float]."
+            return f"Invalid z_range: {effective_z_range}. Must be float or Tuple[float, float]."
 
         if z_high <= z_low:
-            z_high = z_low + self.threshold
+            z_high = z_low + effective_threshold
+
+        report_progress(0.0, f"Optimizing image sharpness across Z [{z_low:.2f}, {z_high:.2f}] µm...")
 
         # Cache for measured points: round(z, 4) -> score
         cache: Dict[float, float] = {}
@@ -84,7 +96,7 @@ class MaximizeImageSharpnessOperation(Operation):
                     context.warning_callback(msg)
                 return None
 
-            context.delay_func(self.settle_delay)
+            context.delay_func(effective_settle_delay)
             frame = context.camera.get_latest_frame()
             score = compute_focus_score(frame)
             cache[key] = score
@@ -118,7 +130,7 @@ class MaximizeImageSharpnessOperation(Operation):
         converged = False
 
         while iterations < self.max_iterations:
-            if (b - a) <= self.threshold:
+            if (b - a) <= effective_threshold:
                 converged = True
                 break
 
@@ -152,7 +164,7 @@ class MaximizeImageSharpnessOperation(Operation):
                 f"Iter {iterations}/{self.max_iterations}: Z range [{a:.2f}, {b:.2f}], best score {best_score:.2f}",
             )
 
-        if (b - a) <= self.threshold:
+        if (b - a) <= effective_threshold:
             converged = True
 
         # Finally, reposition stage to the global best Z position found
@@ -162,7 +174,7 @@ class MaximizeImageSharpnessOperation(Operation):
                 context.warning_callback(msg)
             return msg
 
-        context.delay_func(self.settle_delay)
+        context.delay_func(effective_settle_delay)
 
         self.result = SharpnessOptimizationResult(
             best_z=best_z,

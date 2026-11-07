@@ -126,14 +126,15 @@ class BaslerPylon(CameraModule):
 
                 if grabResult.GrabSucceeded():
                     image = self.converter.Convert(grabResult)
-                    frame = image.GetArray()
+                    raw_frame = image.GetArray()
                     with self._lock:
-                        self._latest_frame = frame
+                        self._latest_frame = raw_frame
 
-                    if self.event_bus is not None:
+                    frame = self._apply_flip(raw_frame)
+                    if self.event_bus is not None and frame is not None:
                         self.event_bus.emit(Event.CAMERA_FRAME_READY, frame)
 
-                    if self._stream_callback is not None:
+                    if self._stream_callback is not None and frame is not None:
                         try:
                             self._stream_callback(frame, frame.size, "BGR888")
                         except Exception as e:
@@ -157,7 +158,7 @@ class BaslerPylon(CameraModule):
         with self._lock:
             if self._latest_frame is None:
                 return None
-            return self._latest_frame.copy()
+            return self._apply_flip(self._latest_frame.copy())
 
     def set_exposure_time(self, value: float) -> bool:
         if self.camera is not None and self.camera.IsOpen():

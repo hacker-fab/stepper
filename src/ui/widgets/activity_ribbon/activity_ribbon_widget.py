@@ -1,4 +1,8 @@
-from PySide6.QtCore import Qt
+from collections import deque
+import time
+from typing import Optional, Tuple
+
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -21,6 +25,13 @@ class ActivityRibbonWidget(QFrame):
         self.engine = engine
         self.bridge = bridge
 
+        self._progress_history: deque[Tuple[float, float]] = deque()
+        self._current_progress: float = 0.0
+
+        self._eta_timer = QTimer(self)
+        self._eta_timer.setInterval(1000)
+        self._eta_timer.timeout.connect(self._update_eta)
+
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setFixedHeight(36)
 
@@ -37,6 +48,12 @@ class ActivityRibbonWidget(QFrame):
                 color: #e0e0e0;
                 font-weight: bold;
                 font-size: 13px;
+            }
+            QLabel#etaLabel {
+                color: #9ca3af;
+                font-weight: normal;
+                font-size: 12px;
+                min-width: 75px;
             }
             QProgressBar {
                 border: 1px solid #444;
@@ -87,6 +104,11 @@ class ActivityRibbonWidget(QFrame):
         self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar, stretch=1)
 
+        # Remaining time estimation label
+        self.eta_label = QLabel("")
+        self.eta_label.setObjectName("etaLabel")
+        layout.addWidget(self.eta_label)
+
         # Quick abort button
         self.abort_btn = QPushButton("Abort")
         self.abort_btn.setObjectName("abortBtn")
@@ -102,6 +124,49 @@ class ActivityRibbonWidget(QFrame):
         self.bridge.operation_aborted.connect(self._on_operation_aborted)
         self.bridge.operation_failed.connect(self._on_operation_failed)
 
+    @staticmethod
+    def format_eta(eta_seconds: Optional[float]) -> str:
+        """Formats remaining seconds into ETA string (e.g. 'ETA: 02:45' or 'ETA: 01:12:05')."""
+        if eta_seconds is None or eta_seconds < 0:
+            return "ETA: --:--"
+        if eta_seconds < 3600:
+            mins = int(eta_seconds // 60)
+            secs = int(eta_seconds % 60)
+            return f"ETA: {mins:02d}:{secs:02d}"
+        else:
+            hrs = int(eta_seconds // 3600)
+            mins = int((eta_seconds % 3600) // 60)
+            secs = int(eta_seconds % 60)
+            return f"ETA: {hrs:02d}:{mins:02d}:{secs:02d}"
+
+    def _update_eta(self):
+        """Calculates and updates remaining time estimation based on progress in the past minute."""
+        now = time.monotonic()
+        self._progress_history.append((now, self._current_progress))
+
+        # Prune samples older than 60 seconds
+        cutoff = now - 60.0
+        while len(self._progress_history) > 1 and self._progress_history[0][0] < cutoff:
+            self._progress_history.popleft()
+
+        t_old, p_old = self._progress_history[0]
+        t_new, p_new = self._progress_history[-1]
+        dt = t_new - t_old
+        dp = p_new - p_old
+
+        if p_new >= 1.0:
+            self.eta_label.setText("ETA: 00:00")
+            return
+
+        if dt < 2.0 or dp <= 1e-5:
+            self.eta_label.setText("ETA: --:--")
+            return
+
+        speed = dp / dt
+        rem = max(0.0, 1.0 - p_new)
+        eta_seconds = rem / speed
+        self.eta_label.setText(self.format_eta(eta_seconds))
+
     def set_status(self, text: str, is_busy: bool = False, is_error: bool = False):
         self.status_label.setText(text)
         if is_error:
@@ -114,24 +179,39 @@ class ActivityRibbonWidget(QFrame):
     def _on_operation_started(self, name: str):
         self.abort_btn.setEnabled(self.engine.operations.current_operation is not None)
         self.progress_bar.setValue(0)
+        self._current_progress = 0.0
+        self._progress_history.clear()
+        self._progress_history.append((time.monotonic(), 0.0))
+        self.eta_label.setText("ETA: --:--")
+        self._eta_timer.start(1000)
         self.set_status(f"Running: {name}...", is_busy=True)
 
     def _on_operation_progress(self, progress: float, message: str):
         pct = int(progress * 100)
         self.progress_bar.setValue(pct)
+        self._current_progress = max(0.0, min(1.0, float(progress)))
         self.set_status(message if message else f"Progress: {pct}%", is_busy=True)
 
     def _on_operation_finished(self, name: str):
+        self._eta_timer.stop()
+        self._progress_history.clear()
+        self.eta_label.setText("")
         self.abort_btn.setEnabled(self.engine.operations.current_operation is not None)
         self.progress_bar.setValue(0)
         self.set_status(f"Ready ({name} finished)", is_busy=False)
 
     def _on_operation_aborted(self, name: str):
+        self._eta_timer.stop()
+        self._progress_history.clear()
+        self.eta_label.setText("")
         self.abort_btn.setEnabled(self.engine.operations.current_operation is not None)
         self.progress_bar.setValue(0)
         self.set_status(f"Aborted: {name}", is_busy=False, is_error=True)
 
     def _on_operation_failed(self, name: str, error: str):
+        self._eta_timer.stop()
+        self._progress_history.clear()
+        self.eta_label.setText("")
         self.abort_btn.setEnabled(self.engine.operations.current_operation is not None)
         self.progress_bar.setValue(0)
         self.set_status(f"Failed ({name}): {error}", is_busy=False, is_error=True)

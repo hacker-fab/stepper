@@ -23,7 +23,6 @@ from lib.projector_camera_transform import (
     warp_projector_image_to_camera,
 )
 from operations.ml_data_collection import (
-    MLDataCollectionConfig,
     MLDataCollectionOperation,
     PatternSource,
 )
@@ -180,7 +179,7 @@ class TestMLDataCollectionOperation(unittest.TestCase):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_full_ml_data_collection_run(self):
-        config = MLDataCollectionConfig(
+        op = MLDataCollectionOperation(
             total_patterns=2,
             pattern_gap=500.0,
             target_scale_pct=8.0,
@@ -191,8 +190,6 @@ class TestMLDataCollectionOperation(unittest.TestCase):
             save_directory=self.test_dir,
             grid_n=2,
         )
-
-        op = MLDataCollectionOperation(config=config)
 
         # Mock sub-operations to avoid slow camera loops
         with patch.object(op, "_run_sub_op", wraps=op._run_sub_op) as mock_run:
@@ -257,7 +254,7 @@ class TestMLDataCollectionOperation(unittest.TestCase):
         self.assertIn("max_thickness", master["config"])
 
     def test_photo_capture_averages_30_frames(self):
-        config = MLDataCollectionConfig(
+        op = MLDataCollectionOperation(
             total_patterns=1,
             pattern_gap=500.0,
             target_scale_pct=8.0,
@@ -268,7 +265,6 @@ class TestMLDataCollectionOperation(unittest.TestCase):
             save_directory=self.test_dir,
             grid_n=2,
         )
-        op = MLDataCollectionOperation(config=config)
 
         # First call is ArUco calibration frame (must have valid ArUco tags)
         cal_frame = self.camera._latest_frame.copy()
@@ -310,7 +306,7 @@ class TestMLDataCollectionOperation(unittest.TestCase):
         cv2.imwrite(os.path.join(img_folder, "test_img1.png"), img1)
         cv2.imwrite(os.path.join(img_folder, "test_img2.jpg"), img2)
 
-        config = MLDataCollectionConfig(
+        op = MLDataCollectionOperation(
             pattern_source=PatternSource.IMAGE_FOLDER.value,
             image_folder=img_folder,
             total_patterns=4,
@@ -320,8 +316,6 @@ class TestMLDataCollectionOperation(unittest.TestCase):
             save_directory=self.test_dir,
             grid_n=2,
         )
-
-        op = MLDataCollectionOperation(config=config)
 
         # Mock sub-operations
         with patch.object(op, "_run_sub_op", return_value=None):
@@ -367,11 +361,10 @@ class TestMLDataCollectionOperation(unittest.TestCase):
 
     def test_image_folder_validation_errors(self):
         # 1. Non-existent directory
-        bad_config = MLDataCollectionConfig(
+        op = MLDataCollectionOperation(
             pattern_source=PatternSource.IMAGE_FOLDER.value,
             image_folder=os.path.join(self.test_dir, "does_not_exist"),
         )
-        op = MLDataCollectionOperation(config=bad_config)
         err = op.execute(self.context, lambda p, m: None)
         self.assertIsNotNone(err)
         self.assertIn("does not exist", err)
@@ -379,11 +372,10 @@ class TestMLDataCollectionOperation(unittest.TestCase):
         # 2. Empty directory
         empty_folder = os.path.join(self.test_dir, "empty_dir")
         os.makedirs(empty_folder, exist_ok=True)
-        bad_config2 = MLDataCollectionConfig(
+        op2 = MLDataCollectionOperation(
             pattern_source=PatternSource.IMAGE_FOLDER.value,
             image_folder=empty_folder,
         )
-        op2 = MLDataCollectionOperation(config=bad_config2)
         err2 = op2.execute(self.context, lambda p, m: None)
         self.assertIsNotNone(err2)
         self.assertIn("No valid image files found", err2)
@@ -442,12 +434,12 @@ class TestMLDataCollectionTabWidget(unittest.TestCase):
             mock_start.assert_called_once()
             op = mock_start.call_args[0][0]
             self.assertIsInstance(op, MLDataCollectionOperation)
-            self.assertEqual(op.config.pattern_source, PatternSource.GENERATED_MARKER.value)
-            self.assertEqual(op.config.total_patterns, 10)
-            self.assertAlmostEqual(op.config.min_exposure, 8.0)
-            self.assertAlmostEqual(op.config.max_exposure, 12.0)
-            self.assertAlmostEqual(op.config.min_thickness, 0.2)
-            self.assertAlmostEqual(op.config.max_thickness, 1.0)
+            self.assertEqual(op.pattern_source, PatternSource.GENERATED_MARKER.value)
+            self.assertEqual(op.total_patterns, 10)
+            self.assertAlmostEqual(op.min_exposure, 8.0)
+            self.assertAlmostEqual(op.max_exposure, 12.0)
+            self.assertAlmostEqual(op.min_thickness, 0.2)
+            self.assertAlmostEqual(op.max_thickness, 1.0)
 
         # Test finish updates status
         ml_tab.on_operation_finished(op, err=None)
@@ -495,8 +487,8 @@ class TestMLDataCollectionTabWidget(unittest.TestCase):
                 mock_start.assert_called_once()
                 op = mock_start.call_args[0][0]
                 self.assertIsInstance(op, MLDataCollectionOperation)
-                self.assertEqual(op.config.pattern_source, PatternSource.IMAGE_FOLDER.value)
-                self.assertEqual(op.config.image_folder, temp_dir)
+                self.assertEqual(op.pattern_source, PatternSource.IMAGE_FOLDER.value)
+                self.assertEqual(op.image_folder, temp_dir)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

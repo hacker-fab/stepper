@@ -130,9 +130,6 @@ class ProcessCalibrationTabWidget(QScrollArea):
         self.btn_start_cal.clicked.connect(self._on_start_cal_clicked)
         ctrl_layout.addWidget(self.btn_start_cal)
 
-        # Placeholder alias for backward compatibility
-        self.btn_fem_placeholder = self.btn_start_cal
-
         # Status Label
         self.lbl_status = QLabel("Status: Ready")
         self.lbl_status.setStyleSheet("color: #666; font-size: 11px;")
@@ -152,7 +149,6 @@ class ProcessCalibrationTabWidget(QScrollArea):
             min_z_offset=self.spin_min_z_offset.value(),
             max_z_offset=self.spin_max_z_offset.value(),
             z_steps=self.spin_z_steps.value(),
-            autofocus_config=getattr(self.engine, "autofocus_config", None),
         )
         self._active_op = op
         self.lbl_status.setText("Status: Running calibration...")

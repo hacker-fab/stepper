@@ -49,9 +49,21 @@ class EdgeDetectorParameters:
     5. Neighbor edge decision threshold (neighbor_edge_thresh):
        - Mean edge response along cell shared boundaries to infer color change.
        - RULE OF THUMB: 25.0 to 45.0 (for 0-255 binary edge maps).
+
+    6. Marker border scale (marker_border_scale):
+       - Scale factor applied to candidate quad corners relative to center.
+       - RULE OF THUMB:
+         * If border strokes are thin/standard: keep default 1.0.
+         * If optical microscopy shows thick outer border trenches where the inner grid
+           pitch is smaller than the outer snapped box: set
+           marker_border_scale = (inner_grid_pitch * total_cells) / snapped_outer_width
+           (typically 0.95 to 0.97).
     """
 
     # --- Stage 0: Contour & Preprocessing ---
+    marker_border_scale: float = 1.0  # Scale factor applied to candidate quad corners relative to center.
+                                      # 1.0 = standard 1-cell border (e.g. 4x4 sample).
+                                      # 0.96 = for thick etched borders / lithography etch bias (e.g. 6x6 scan).
     adaptive_thresh_fine_block_size: int = 15
     adaptive_thresh_fine_C: float = 7.0
     adaptive_thresh_wide_block_size: int = 61
@@ -80,6 +92,33 @@ class EdgeDetectorParameters:
     subpixel_n_probe_points: int = 19
 
 
+def _scale_quad(pts: np.ndarray, scale: float) -> np.ndarray:
+    if scale == 1.0:
+        return pts
+    center = pts.mean(axis=0, keepdims=True)
+    return center + scale * (pts - center)
+
+
+def _draw_dotted_line(
+    img: np.ndarray,
+    pt1: np.ndarray,
+    pt2: np.ndarray,
+    color: Tuple[int, int, int],
+    thickness: int = 1,
+    dot_spacing: int = 4,
+):
+    dist = float(np.linalg.norm(pt2 - pt1))
+    if dist < 1.0:
+        return
+    n_pts = max(2, int(round(dist / float(dot_spacing))))
+    for i in range(0, n_pts, 2):
+        t0 = i / float(n_pts)
+        t1 = min(1.0, (i + 1) / float(n_pts))
+        p0 = (int(round(pt1[0] + t0 * (pt2[0] - pt1[0]))), int(round(pt1[1] + t0 * (pt2[1] - pt1[1]))))
+        p1 = (int(round(pt1[0] + t1 * (pt2[0] - pt1[0]))), int(round(pt1[1] + t1 * (pt2[1] - pt1[1]))))
+        cv2.line(img, p0, p1, color, thickness, cv2.LINE_AA)
+
+
 class EdgeArucoDetector:
     """
     Edge-Only ArUco Detector for lithography / etched markers.
@@ -96,17 +135,22 @@ class EdgeArucoDetector:
     ):
         if dictionary is None:
             dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000)
+        elif isinstance(dictionary, int):
+            dictionary = cv2.aruco.getPredefinedDictionary(dictionary)
         self.dictionary = dictionary
         self.params = parameters if parameters is not None else EdgeDetectorParameters()
 
     def detectMarkers(
-        self, image: np.ndarray
+        self,
+        image: np.ndarray,
+        debug_output: Optional[Any] = None,
     ) -> Tuple[List[np.ndarray], Optional[np.ndarray], List[np.ndarray]]:
         """
         Detect ArUco markers in an edge-only image.
 
         Args:
             image: BGR or Grayscale input image (np.ndarray).
+            debug_output: Optional dict or list to receive intermediate debug image outputs.
 
         Returns:
             corners: List of detected marker corners, each of shape (1, 4, 2) in float32.
@@ -114,7 +158,28 @@ class EdgeArucoDetector:
             ids: (N, 1) numpy array of int32 tag IDs, or None if no tags found.
             rejectedImgPoints: List of rejected candidate quads, each shape (1, 4, 2).
         """
-        corners, ids, rejected, _ = self.detectMarkersWithDetails(image)
+        if image is None or getattr(image, "size", 0) == 0:
+            return [], None, []
+        corners, ids, rejected, res = self.detectMarkersWithDetails(image)
+        if debug_output is not None:
+            debug_dict = {
+                "input": res["img"],
+                "gray": res["gray"],
+                "candidate_quads": res["candidate_quads"],
+                "quad_grid": res["candidate_quads"],
+                "square_contours": res["candidate_quads"],
+                "e_fine": res["e_fine"],
+                "e_wide": res["e_wide"],
+                "edges_decode": res["edges_decode"],
+                "edges_clean": res["edges_clean"],
+                "edges_cnt": res["edges_cnt"],
+            }
+            if isinstance(debug_output, dict):
+                debug_output.clear()
+                debug_output.update(debug_dict)
+            elif isinstance(debug_output, list):
+                debug_output.clear()
+                debug_output.append(debug_dict)
         return corners, ids, rejected
 
     def detectMarkersWithDetails(
@@ -158,7 +223,14 @@ class EdgeArucoDetector:
 
     def _run_pipeline(self, img: np.ndarray) -> Dict[str, Any]:
         p = self.params
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img.copy()
+        if img.ndim == 2:
+            gray = img.copy()
+        elif img.ndim == 3 and img.shape[2] == 4:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+        elif img.ndim == 3 and img.shape[2] == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            raise ValueError(f"unknown image dimension: {img.shape}")
         gray_f = gray.astype(np.float32)
 
         # Stage 0: Dual-scale edge filtering
@@ -219,9 +291,44 @@ class EdgeArucoDetector:
         grid_dim = self.dictionary.markerSize
         total_cells = grid_dim + 2  # Payload + 2 border cells
 
+        # Debug visualization: grayscale image with detected square contours in green
+        # before filtering with inner grid check, and estimated inner grid in red dotted lines
+        dbg_quads = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        src_canon = np.array(
+            [[0.0, 0.0], [float(total_cells), 0.0], [float(total_cells), float(total_cells)], [0.0, float(total_cells)]],
+            dtype=np.float32,
+        )
+
         for sq in unique_squares:
+            snapped = sq["snapped_corners"]
+            grid_corners = _scale_quad(snapped, p.marker_border_scale)
+            sq["grid_corners"] = grid_corners
+
+            # Draw candidate square contour in green
+            cv2.polylines(dbg_quads, [np.round(snapped).astype(np.int32)], isClosed=True, color=(0, 255, 0), thickness=2)
+
+            # Draw estimated inner grid in red dotted lines
+            M = cv2.getPerspectiveTransform(src_canon, grid_corners.astype(np.float32))
+            grid_segs_canon = []
+            for r in range(1, total_cells):
+                grid_segs_canon.append([[0.0, float(r)], [float(total_cells), float(r)]])
+            for c in range(1, total_cells):
+                grid_segs_canon.append([[float(c), 0.0], [float(c), float(total_cells)]])
+            if abs(p.marker_border_scale - 1.0) > 1e-4:
+                # Scaled grid perimeter
+                grid_segs_canon.append([[0.0, 0.0], [float(total_cells), 0.0]])
+                grid_segs_canon.append([[float(total_cells), 0.0], [float(total_cells), float(total_cells)]])
+                grid_segs_canon.append([[float(total_cells), float(total_cells)], [0.0, float(total_cells)]])
+                grid_segs_canon.append([[0.0, float(total_cells)], [0.0, 0.0]])
+
+            if grid_segs_canon:
+                segs_arr = np.array(grid_segs_canon, dtype=np.float32)
+                segs_img = cv2.perspectiveTransform(segs_arr.reshape(-1, 1, 2), M).reshape(-1, 2, 2)
+                for pt0, pt1 in segs_img:
+                    _draw_dotted_line(dbg_quads, pt0, pt1, color=(0, 0, 255), thickness=1, dot_spacing=4)
+
             is_valid, max_density, center_densities, center_boxes, w_clean = (
-                self._check_inner_grid_centers(sq["snapped_corners"], edges_clean, total_cells)
+                self._check_inner_grid_centers(grid_corners, edges_clean, total_cells)
             )
             sq["step1_valid"] = is_valid
             sq["max_center_density"] = max_density
@@ -234,10 +341,11 @@ class EdgeArucoDetector:
         # Stage 2 & 3: Neighbor edge inference & Dictionary matching
         decoded_tags = []
         for item in step1_valid:
+            grid_corners = item.get("grid_corners", _scale_quad(item["snapped_corners"], p.marker_border_scale))
             (
                 inner_bits, full_grid, h_edges, v_edges,
                 h_vals, v_vals, h_boxes, v_boxes, w_dec
-            ) = self._infer_grid_colors_from_edges(item["snapped_corners"], edges_decode, total_cells)
+            ) = self._infer_grid_colors_from_edges(grid_corners, edges_decode, total_cells)
 
             ret, tag_id, rot = self.dictionary.identify(inner_bits, p.max_correction_rate)
             item.update({
@@ -280,6 +388,11 @@ class EdgeArucoDetector:
         return {
             "img": img,
             "gray": gray,
+            "candidate_quads": dbg_quads,
+            "quad_grid": dbg_quads,
+            "square_contours": dbg_quads,
+            "e_fine": e_fine,
+            "e_wide": e_wide,
             "edges_cnt": edges_cnt,
             "edges_decode": edges_decode,
             "edges_clean": edges_clean,
@@ -335,12 +448,12 @@ class EdgeArucoDetector:
         return np.array(new_pts, dtype=np.float32)
 
     def _check_inner_grid_centers(
-        self, snapped_corners: np.ndarray, edges_clean: np.ndarray, total_cells: int
+        self, grid_corners: np.ndarray, edges_clean: np.ndarray, total_cells: int
     ):
         p = self.params
         ws = p.warp_canonical_size
         dst = np.array([[0, 0], [ws, 0], [ws, ws], [0, ws]], dtype=np.float32)
-        M = cv2.getPerspectiveTransform(snapped_corners, dst)
+        M = cv2.getPerspectiveTransform(grid_corners, dst)
         w_clean = cv2.warpPerspective(edges_clean, M, (ws, ws))
         step = ws / float(total_cells)
 
@@ -365,15 +478,16 @@ class EdgeArucoDetector:
         return is_valid, max_density, center_densities, center_boxes, w_clean
 
     def _infer_grid_colors_from_edges(
-        self, snapped_corners: np.ndarray, edges_decode: np.ndarray, total_cells: int
+        self, grid_corners: np.ndarray, edges_decode: np.ndarray, total_cells: int
     ):
         p = self.params
         ws = p.warp_canonical_size
         dst = np.array([[0, 0], [ws, 0], [ws, ws], [0, ws]], dtype=np.float32)
-        M = cv2.getPerspectiveTransform(snapped_corners, dst)
+        M = cv2.getPerspectiveTransform(grid_corners, dst)
         w_dec = cv2.warpPerspective(edges_decode, M, (ws, ws))
         step = ws / float(total_cells)
         k_inner = total_cells - 2  # Payload bit dimension (e.g. 4 for 4x4)
+        margin = max(2, int(round(0.28 * step)))
 
         # Vertical edges between (r, c) and (r, c+1)
         v_vals = np.zeros((total_cells, total_cells - 1), dtype=np.float32)
@@ -381,8 +495,8 @@ class EdgeArucoDetector:
         for r in range(total_cells):
             for c in range(total_cells - 1):
                 x = int(round((c + 1) * step))
-                y0 = int(round(r * step + 8))
-                y1 = int(round((r + 1) * step - 8))
+                y0 = int(round(r * step + margin))
+                y1 = int(round((r + 1) * step - margin))
                 x0, x1 = max(0, x - 4), min(ws, x + 5)
                 v_vals[r, c] = float(w_dec[y0:y1, x0:x1].mean())
                 v_boxes.append((r, c, x0, y0, x1, y1, v_vals[r, c]))
@@ -393,8 +507,8 @@ class EdgeArucoDetector:
         for r in range(total_cells - 1):
             for c in range(total_cells):
                 y = int(round((r + 1) * step))
-                x0 = int(round(c * step + 8))
-                x1 = int(round((c + 1) * step - 8))
+                x0 = int(round(c * step + margin))
+                x1 = int(round((c + 1) * step - margin))
                 y0, y1 = max(0, y - 4), min(ws, y + 5)
                 h_vals[r, c] = float(w_dec[y0:y1, x0:x1].mean())
                 h_boxes.append((r, c, x0, y0, x1, y1, h_vals[r, c]))
@@ -533,7 +647,8 @@ class EdgeArucoDetector:
             y0 = profs[idx_r, k_idxs]
             yp1 = profs[idx_r, k_idxs + 1]
             denom = 2.0 * (ym1 - 2.0 * y0 + yp1)
-            delta = np.where(np.abs(denom) > 1e-4, (ym1 - yp1) / denom, 0.0)
+            valid = np.abs(denom) > 1e-4
+            delta = np.divide(ym1 - yp1, denom, out=np.zeros_like(denom), where=valid)
             delta = np.clip(delta, -0.5, 0.5)
             d_norm = ks[k_idxs] + delta * step_k
 
@@ -568,16 +683,18 @@ def detect_edge_markers(
     image: np.ndarray,
     dictionary=None,
     parameters: Optional[EdgeDetectorParameters] = None,
+    debug_output: Optional[Any] = None,
 ) -> Tuple[List[np.ndarray], Optional[np.ndarray], List[np.ndarray]]:
     """
     Functional wrapper identical to OpenCV's cv2.aruco.detectMarkers:
 
-        corners, ids, rejected = detect_edge_markers(image, dictionary, parameters)
+        corners, ids, rejected = detect_edge_markers(image, dictionary, parameters, debug_output)
 
     Args:
         image: BGR or grayscale numpy image.
         dictionary: cv2.aruco Dictionary (defaults to DICT_4X4_1000).
         parameters: Optional EdgeDetectorParameters instance.
+        debug_output: Optional dict or list to receive intermediate debug image outputs.
 
     Returns:
         corners: List of (1, 4, 2) float32 arrays in original image coordinates.
@@ -585,5 +702,5 @@ def detect_edge_markers(
         rejected: List of (1, 4, 2) float32 arrays of rejected candidates.
     """
     detector = EdgeArucoDetector(dictionary=dictionary, parameters=parameters)
-    return detector.detectMarkers(image)
+    return detector.detectMarkers(image, debug_output=debug_output)
 

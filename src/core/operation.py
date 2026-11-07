@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 from core.chip_project import ChipProject
 from core.events import Event, EventBus
+from core.machine_config import MachineConfig
 
 
 @dataclass
@@ -23,9 +24,33 @@ class ExecutionContext:
 
     project: Optional[ChipProject] = None
     event_bus: Optional[EventBus] = None
+    machine_config: Optional[MachineConfig] = None
 
     warning_callback: Optional[Callable[[str], None]] = None
     delay_func: Callable[[float], None] = time.sleep
+
+
+def sub_progress(
+    report_progress: Callable[[float, str], None],
+    start_pct: float,
+    end_pct: float,
+    prefix: Optional[str] = None,
+) -> Callable[[float, str], None]:
+    """Helper function to split and scale progress reporting for sub-operations.
+
+    Maps a sub-operation's progress [0.0, 1.0] to an outer interval [start_pct, end_pct].
+    Optionally prepends a prefix to the reported status message.
+    """
+    def _sub_reporter(progress: float, message: str = "") -> None:
+        clamped = max(0.0, min(1.0, float(progress)))
+        mapped = start_pct + (end_pct - start_pct) * clamped
+        if prefix:
+            formatted_msg = f"{prefix} - {message}" if message else prefix
+        else:
+            formatted_msg = message
+        report_progress(mapped, formatted_msg)
+
+    return _sub_reporter
 
 
 class Operation(ABC):
