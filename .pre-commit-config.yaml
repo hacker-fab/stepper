@@ -21,7 +21,7 @@ repos:
     hooks:
       - id: ty-check
         name: ty type checker
-        entry: uv run ty check src/gui.py src/hardware.py src/projector.py src/dlpc.py src/stage_control
+        entry: uv run ty check src/gui.py src/projector.py src/dlpc.py src/stage_control src/core src/operations
         language: system
         pass_filenames: false
         always_run: true
