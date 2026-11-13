@@ -222,6 +222,7 @@ class VirtualRig:
         pattern: np.ndarray,
         proj_um_per_px: Tuple[float, float],
         crop: Optional[Tuple[int, int, int, int]] = None,
+        name: str = "",
     ) -> Tuple[float, float]:
         """Pretend to expose one pattern tile (its ``crop`` footprint) with the stage where it really is now.
         Returns the true chip position (um) the frame centre landed on."""

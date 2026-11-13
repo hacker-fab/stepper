@@ -635,7 +635,7 @@ def test_machine_flow_with_fake_stepper() -> None:
     root.withdraw()
     area = area_for_tiles(2, 2).area_size_um
     rig = VirtualRig(VirtualChip(area, seed=11), center_um=CENTER, seed=5)
-    log = {"sources_at_grab": [], "patterns": [], "exposed_at": []}
+    log = {"sources_at_grab": [], "patterns": [], "exposed_at": [], "pattern_paths": []}
 
     class Projector:
         def size(self):
@@ -696,6 +696,11 @@ def test_machine_flow_with_fake_stepper() -> None:
             pass
 
         def set_pattern_image(self, img, path):
+            # the real UI opens this path for the exposure thumbnail (Chip panel), so it must be a file
+            from PIL import Image as PILImage
+
+            PILImage.open(path).close()
+            log["pattern_paths"].append(path)
             self.pattern = img
 
         def expose_pattern(self, red_to_uv_offset):
@@ -766,8 +771,9 @@ def test_machine_flow_with_fake_stepper() -> None:
         for k in range(1, 4)
     ]
     assert max(err) < 3.0, err
-    # and the finished piece was re-mapped into the same run folder
+    # and the finished piece was re-mapped into the same run folder, next to each tile's exposed pattern
     run_dir = next(os.path.join(tmp, d) for d in os.listdir(tmp))
+    assert [os.path.dirname(p) for p in log["pattern_paths"]] == [os.path.join(run_dir, "3_align")] * 4, log["pattern_paths"]
     assert os.path.exists(os.path.join(run_dir, "4_finished_piece", "stitched_expected_outline.png")), os.listdir(run_dir)
 
 

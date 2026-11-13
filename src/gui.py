@@ -5,6 +5,7 @@ import os
 import queue
 import shutil
 import sys
+import tempfile
 import time
 import tkinter
 import tkinter as tk
@@ -3546,6 +3547,7 @@ class ModelRig:
         self.model = model
         self.z = model.stage_setpoint[2] if z is None else z
         self.red_to_uv_offset = red_to_uv_offset  # z move from red focus to UV focus (TilingFrame's value)
+        self.pattern_dir: Optional[str] = None  # where expose() saves each tile's exposed pattern (run folder)
         self._focused_once = False  # the first autofocus does the coarse stage, later ones only the fine one
 
     @contextmanager
@@ -3567,11 +3569,21 @@ class ModelRig:
             m.set_red_focus_source(prev_source)
             m.set_shown_image(prev_shown)
 
-    def expose(self, pattern: np.ndarray, proj_um_per_px: Tuple[float, float], crop: Tuple[int, int, int, int]) -> None:
+    def expose(
+        self, pattern: np.ndarray, proj_um_per_px: Tuple[float, float], crop: Tuple[int, int, int, int], name: str = "tile"
+    ) -> None:
         """Expose one tile here: its pattern with everything outside the footprint black, then the same UV
-        offset / UV autofocus / exposure / back-to-red steps as Begin Tiling."""
+        offset / UV autofocus / exposure / back-to-red steps as Begin Tiling.
+
+        The exposed pattern is saved as a PNG first: the exposure log keeps its path, and the Chip panel
+        opens that file for the exposure's thumbnail (a path that is not a file failed with errno 2)."""
         m = self.model
-        m.set_pattern_image(cv2_to_pil(tile_pattern(pattern, crop)), f"map tile, footprint {crop}")
+        img = cv2_to_pil(tile_pattern(pattern, crop))
+        folder = self.pattern_dir or tempfile.mkdtemp(prefix="exposed_patterns_")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"{name}_exposed_pattern.png")
+        img.save(path)
+        m.set_pattern_image(img, path)
         m.expose_pattern(self.red_to_uv_offset)
         self.z = m.stage_setpoint[2]
 
@@ -3874,6 +3886,7 @@ def run_tiles(parent: tk.Misc, model, placement: ApprovedPlacement, recorder: Ru
         messagebox.showerror("Pattern tiles", "This placement has no camera map to align against.")
         return None
     yolo = getattr(model, "model", None)
+    rig.pattern_dir = os.path.join(recorder.dir, "3_align")  # each tile's exposed pattern, next to its alignment report
     prog = ProgressWindow(parent, "Pattern tiles")
     t0 = time.perf_counter()
     try:

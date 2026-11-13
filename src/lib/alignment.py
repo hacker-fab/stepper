@@ -552,7 +552,7 @@ def pattern_tiles(
     should_abort: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """For every tile in reading order: move to its stage target (closed loop: correct with the measured
-    error until aligned), then ``rig.expose(pattern, proj_um_per_px, footprint)``.
+    error until aligned), then ``rig.expose(pattern, proj_um_per_px, footprint, name=...)``.
 
     Alignment always uses the chip's own features against the map (``FeatureMeasurer``).  With
     ``use_crosses``, a tile that has crosses already printed by an earlier tile measures those too and
@@ -595,7 +595,7 @@ def pattern_tiles(
             if hasattr(rig, "autofocus") and cfg.autofocus:
                 rig.autofocus()
         note(f"tile {t.slot + 1}: exposing")
-        exposed.append(rig.expose(images[t.slot], pm.um_per_px, t.crop))
+        exposed.append(rig.expose(images[t.slot], pm.um_per_px, t.crop, name=f"tile{t.slot + 1}"))
         status(f"patterning: tile {len(exposed)}/{len(pm.tiles)} done (slot {t.slot + 1}), {time.perf_counter() - t_pat:.0f} s elapsed")
         if recorder is not None:
             recorder.add_timing(f"patterning tile {len(exposed)}", time.perf_counter() - t_tile, f"slot {t.slot + 1}", "detail")
