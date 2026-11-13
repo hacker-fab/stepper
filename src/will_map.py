@@ -40,6 +40,26 @@ def status(msg: str) -> None:
 FOCUS_STAGES = ((2, 250.0, 5.0), (4, 10.0, 0.5))
 FOCUS_SETTLE_S = 0.5  # wait after every z move before grabbing (his default is 1.0 s; the old UI sweep waits 0.5 s)
 
+# Projector changes are confirmed by the camera, not by a delay: after a change, frames are read until one
+# differs from the old picture by more than the camera noise AND matches the frame before it (the projector
+# has finished changing, so no half-changed frame is used).  Noise is measured from two frames just before.
+PROJ_CHANGE_NOISE_FACTOR = 4.0  # "different" = more than this many times the frame-to-frame noise
+PROJ_CHANGE_MIN_DN = 1.0  # ...and at least this mean grey difference (0-255), for a nearly noiseless camera
+PROJ_CHANGE_MAX_FRAMES = 60  # give up (with a warning) if the picture has not settled after this many frames
+CAMERA_DEAD_S = 5.0  # no new frame for this long = the camera stopped (error, not a settling delay)
+
+
+def frame_change(a: np.ndarray, b: np.ndarray) -> float:
+    """Mean absolute grey difference (0-255) between two camera frames, on a quarter-size image."""
+    def small(img: np.ndarray) -> np.ndarray:
+        g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if img.ndim == 3 else img
+        return cv2.resize(g, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA).astype(np.float32)
+
+    sa, sb = small(a), small(b)
+    if sa.shape != sb.shape:
+        return float("inf")
+    return float(np.abs(sa - sb).mean())
+
 
 def focus_score(img: Optional[np.ndarray], kernel_size: int = 9) -> float:
     """Sharpness = variance of the Sobel gradient magnitude on a half-size grey image (Toby's compute_focus_score)."""

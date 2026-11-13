@@ -292,6 +292,7 @@ class EventDispatcher:
         # Hardware components
         self.hardware = Lithographer(stage, proj)
         self.camera = camera
+        self.camera_image_seq = 0  # frame number of camera_image (see set_latest_image)
         self.root = root
         self.dlpc = dlpc
 
@@ -630,8 +631,12 @@ class EventDispatcher:
         self.exposure_progress = exposure_progress
         self.on_event(Event.EXPOSURE_PATTERN_PROGRESS_CHANGED)
 
-    def set_latest_image(self, camera_image):
+    def set_latest_image(self, camera_image, seq: Optional[int] = None):
         self.camera_image = camera_image
+        if seq is not None:
+            # number of the camera frame this is (counts up once per frame the camera delivers), so code that
+            # needs a frame taken AFTER some change can tell a new frame from the one that was already here
+            self.camera_image_seq = seq
 
     def set_autofocus_busy(self, busy):
         self.autofocus_busy = busy
@@ -1041,7 +1046,7 @@ class CameraFrame:
         try:
             if self.pending_frame is None:
                 return
-            image, dimensions, format = self.pending_frame
+            image, dimensions, format, seq = self.pending_frame
             red_score = fetch_focus_score(image, blue_only=False)
             blue_score = fetch_focus_score(image, blue_only=True)
             self.focus_score_label.configure(text=f"Focus Score: {red_score:.3e} {blue_score:.3e}")
@@ -1056,7 +1061,7 @@ class CameraFrame:
             except queue.Empty:
                 pass
 
-            self.gui_camera_preview(image, dimensions)
+            self.gui_camera_preview(image, dimensions, seq)
         finally:
             self.event_dispatcher.root.after(66, lambda: self._on_new_frame())
 
@@ -1070,8 +1075,13 @@ class CameraFrame:
 
         # self.event_dispatcher.root.bind('<<NewFrame>>', lambda x: self._on_new_frame(x))
 
+        frame_seq = 0
+
         def cameraCallback(image, dimensions, format):
-            self.pending_frame = (image, dimensions, format)
+            # runs on the camera's thread, once per delivered frame; the number goes with the frame
+            nonlocal frame_seq
+            frame_seq += 1
+            self.pending_frame = (image, dimensions, format, frame_seq)
             # self.event_dispatcher.root.event_generate('<<NewFrame>>', when='tail')
 
         if not self.camera.open():
@@ -1088,11 +1098,11 @@ class CameraFrame:
         if self.camera is not None:
             self.camera.close()
 
-    def gui_camera_preview(self, camera_image, dimensions):
+    def gui_camera_preview(self, camera_image, dimensions, seq: Optional[int] = None):
         model = self.event_dispatcher.model
         if model and self.event_dispatcher.realtime_detection:
             _, camera_image = detect_alignment_markers(model, camera_image, draw_rectangle=True)
-        self.event_dispatcher.set_latest_image(camera_image)
+        self.event_dispatcher.set_latest_image(camera_image, seq)
         resized_img = cv2.resize(
             camera_image, (0, 0), fx=self.gui_camera_scale, fy=self.gui_camera_scale
         )

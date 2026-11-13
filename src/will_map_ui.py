@@ -35,11 +35,16 @@ from will_map import (
     budget_report,
     build_placement_map,
     check_seams,
+    CAMERA_DEAD_S,
     FOCUS_SETTLE_S,
     FOCUS_STAGES,
+    PROJ_CHANGE_MAX_FRAMES,
+    PROJ_CHANGE_MIN_DN,
+    PROJ_CHANGE_NOISE_FACTOR,
     aruco_grid,
     exposure_mask,
     focus_score,
+    frame_change,
     golden_section_focus,
     load_image,
     measure_cross_geometry,
@@ -621,10 +626,14 @@ class ModelRig:
 
             def run_stage(grid_n: int, half: float, thr: float, centre: float):
                 nonlocal n_moves
-                m.set_red_focus_image(Image.fromarray(aruco_grid(grid_n, proj_size)).convert("RGBA"))
-                m.set_red_focus_source(focus_source)
-                m.enter_red_mode(mode_switch_autofocus=False)
-                self.settle(1.0)  # let the grid appear
+
+                def show_grid() -> None:
+                    m.set_red_focus_image(Image.fromarray(aruco_grid(grid_n, proj_size)).convert("RGBA"))
+                    m.set_red_focus_source(focus_source)
+                    m.enter_red_mode(mode_switch_autofocus=False)
+
+                # the camera confirms the grid is on (no fixed wait for it to appear)
+                self.project_and_confirm(show_grid, f"autofocus {grid_n}x{grid_n} grid on")
 
                 def measure(z: float) -> Optional[float]:
                     nonlocal n_moves
@@ -657,15 +666,76 @@ class ModelRig:
                 m.move_absolute({"x": sp[0], "y": sp[1], "z": res[0]})
                 self._focused_once = True
                 status(f"autofocus: z {z_start:.1f} -> {res[0]:.1f} um, {n_moves} z moves")
-            self.settle(FOCUS_SETTLE_S)
+            self.settle(FOCUS_SETTLE_S)  # the stage settling after the last z move (not the projector)
         finally:
-            m.set_red_focus_image(prev_image)
-            m.set_red_focus_source(prev_source)
-            m.set_shown_image(prev_shown)
-            m.set_autofocus_busy(False)
+
+            def restore() -> None:
+                m.set_red_focus_image(prev_image)
+                m.set_red_focus_source(prev_source)
+                m.set_shown_image(prev_shown)
+
+            try:
+                # Don't return until the camera shows the grid gone: the map photo is grab()bed straight after
+                # this, and before this fix nothing ran the Tk loop in between, so the projector window had not
+                # even been repainted and camera_image was still the last frame of the focus search (grid on).
+                self.project_and_confirm(restore, "autofocus grid off")
+            finally:
+                m.set_autofocus_busy(False)
         self.z = m.stage_setpoint[2]  # autofocus moved z; keep later moves at the focused height
 
+    def _next_frame(self) -> np.ndarray:
+        """Run the Tk loop until the camera delivers a frame that was not here yet, and return a copy of it.
+
+        camera_image is only refreshed by CameraFrame._on_new_frame, which runs from the Tk loop every 66 ms, so
+        reading it without running the loop returns whatever frame happened to be there last."""
+        m = self.model
+        seq0 = m.camera_image_seq
+        t0 = time.monotonic()
+        while m.camera_image_seq == seq0:
+            m.root.update()
+            if time.monotonic() - t0 > CAMERA_DEAD_S:
+                raise RuntimeError(f"camera delivered no new frame in {CAMERA_DEAD_S:.0f} s (stopped?)")
+        return np.array(m.camera_image)
+
+    def project_and_confirm(self, change: Callable[[], None], what: str) -> Optional[np.ndarray]:
+        """Make a projector change and return once the camera shows it has finished, with that frame.
+
+        Done: a new frame differs from the old picture by more than the camera noise, and matches the frame
+        before it, so the projector is no longer changing (no half-faded frame).  The time this takes is whatever
+        the projector window, the display and the camera need, measured each time rather than assumed."""
+        m = self.model
+        if not getattr(m, "camera", None):
+            change()
+            return None
+        try:
+            old_a, old = self._next_frame(), self._next_frame()  # two frames of the old picture: camera noise
+        except Exception:
+            change()  # still make the change (it may be the grid going off) before reporting the camera problem
+            raise
+        change()
+        m.root.update_idletasks()  # paint the projector window now: Tk only repaints a Label when the loop runs
+        noise = frame_change(old_a, old)
+        limit = max(PROJ_CHANGE_NOISE_FACTOR * noise, PROJ_CHANGE_MIN_DN)
+        prev: Optional[np.ndarray] = None
+        for n in range(1, PROJ_CHANGE_MAX_FRAMES + 1):
+            frame = self._next_frame()
+            if prev is not None and frame_change(frame, old) > limit and frame_change(frame, prev) <= limit:
+                if self.verbose_projector:
+                    status(f"{what}: confirmed by the camera after {n} new frames")
+                return frame
+            prev = frame
+        status(
+            f"{what}: the camera picture did not settle within {PROJ_CHANGE_MAX_FRAMES} frames "
+            f"(noise {noise:.2f}, limit {limit:.2f}); carrying on"
+        )
+        return prev
+
+    verbose_projector = True  # print how many frames each projector change took (to see the real latency)
+
     def grab(self) -> np.ndarray:
+        """The next frame the camera delivers after this call, never the one that was already there."""
+        if getattr(self.model, "camera", None):
+            return self._next_frame()
         img = self.model.camera_image
         if img is None:
             raise RuntimeError("no camera image available")
