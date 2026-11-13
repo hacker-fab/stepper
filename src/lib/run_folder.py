@@ -1,6 +1,6 @@
-"""One folder per Will Map test run: the photos, the combined map, the placement and the finished piece.
+"""One folder per camera-map test run: the photos, the combined map, the placement and the finished piece.
 
-    will_map_runs/run_20261104_142300_label/
+    map_runs/run_20261104_142300_label/
         run_log.txt                 what happened, in order, with times
         1_map/photos/               every camera photo used for the map, one file per tile
         1_map/combined_map.png      the stitched map
@@ -11,7 +11,7 @@
         4_finished_piece/stitched.png and stitched_expected_outline.png
         timing.txt, timing.json     how long every section took (next to the 1_map folder)
 
-The folders live next to the code that runs them (``src/will_map_runs``).  PNGs are git-ignored; the
+The folders live in ``src/map_runs``.  PNGs are git-ignored; the
 folder is in .gitignore as well so test runs never end up in a commit.
 """
 
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import math
 import os
 import re
 import time
@@ -30,39 +29,12 @@ from typing import Callable, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from will_map import (
-    MapConfig,
-    MapResult,
-    PlacementMap,
-    Rig,
-    background_from_map,
-    check_seams,
-    render_placement,
-    status,
-    will_map,
-)
+from .img import save_png, save_png_bgr
+from .mapping import MapConfig, MapResult, Rig, background_from_map, map_area, status
+from .tiling import TILE_COLORS, PlacementMap, check_seams, render_placement
 
-RUNS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "will_map_runs")
-
-_PALETTE = [(40, 140, 255), (60, 170, 60), (200, 90, 200), (190, 150, 30), (80, 80, 220), (30, 190, 190)]
-
-
-def _write_png(path: str, img: np.ndarray) -> None:
-    """cv2.imwrite that also works with non-ASCII Windows paths.  3-channel input is RGB (camera order)."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    out = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if img.ndim == 3 and img.shape[2] == 3 else img
-    ok, buf = cv2.imencode(".png", out)
-    if not ok:
-        raise ValueError(f"could not encode {path}")
-    buf.tofile(path)
-
-
-def _write_png_bgr(path: str, img_bgr: np.ndarray) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    ok, buf = cv2.imencode(".png", img_bgr)
-    if not ok:
-        raise ValueError(f"could not encode {path}")
-    buf.tofile(path)
+# test runs are written next to the code (src/map_runs); the folder is git-ignored
+RUNS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "map_runs")
 
 
 def _write_text(path: str, lines: Sequence[str]) -> None:
@@ -159,15 +131,15 @@ class RunRecorder:
     # ---- 1. map ----
     def save_map(self, mr: MapResult, subdir: str = "1_map") -> str:
         """Photos used for the map (in scan order), the combined map, a report and the numbers."""
-        from will_map import snake_order
+        from .mapping import snake_order
 
         root = os.path.join(self.dir, subdir)
         order = snake_order(mr.cfg.rows, mr.cfg.cols)
         for k, tile in enumerate(order):
             if tile in mr.frames:
-                _write_png(os.path.join(root, "photos", tile_name(tile, k) + ".png"), mr.frames[tile])
+                save_png(os.path.join(root, "photos", tile_name(tile, k) + ".png"), mr.frames[tile])
         if mr.mosaic is not None:
-            _write_png(os.path.join(root, "combined_map.png"), mr.mosaic)
+            save_png(os.path.join(root, "combined_map.png"), mr.mosaic)
         _write_text(os.path.join(root, "map_report.txt"), mr.report())
         data = {
             "ok": mr.ok,
@@ -206,10 +178,10 @@ class RunRecorder:
         scale = 0.12
         bg = background_from_map(mr, pm, scale) if mr is not None and mr.ok else None
         white, _ = render_placement(pm, images, scale=scale)
-        _write_png_bgr(os.path.join(root, "placement_on_white_3x3.png"), white)
+        save_png_bgr(os.path.join(root, "placement_on_white_3x3.png"), white)
         if bg is not None:
             over, _ = render_placement(pm, images, scale=scale, background=bg)
-            _write_png_bgr(os.path.join(root, "placement_on_camera_map.png"), over)
+            save_png_bgr(os.path.join(root, "placement_on_camera_map.png"), over)
         tg = pm.stage_targets(center_um)
         lines = list(pm.report()) + [""]
         for t, (x, y) in zip(pm.tiles, tg):
@@ -229,7 +201,7 @@ class RunRecorder:
         root = os.path.join(self.dir, subdir)
         _write_text(os.path.join(root, f"{name}.txt"), result.report())
         for i, f in enumerate(result.frames):
-            _write_png(os.path.join(root, f"{name}_photo{i}.png"), f)
+            save_png(os.path.join(root, f"{name}_photo{i}.png"), f)
         self.log(f"alignment '{name}': {'ok' if result.ok else 'FAILED'}, error {result.final_error_um:.2f} um")
         return root
 
@@ -246,7 +218,7 @@ class RunRecorder:
         if mr.mosaic is not None:
             os.replace(os.path.join(root, "combined_map.png"), os.path.join(root, "stitched.png"))
             if pm is not None and center_um is not None:
-                _write_png_bgr(os.path.join(root, "stitched_expected_outline.png"), draw_expected_outline(mr, pm, center_um))
+                save_png_bgr(os.path.join(root, "stitched_expected_outline.png"), draw_expected_outline(mr, pm, center_um))
         self.log(f"finished piece saved -> {root}")
         return root
 
@@ -272,7 +244,7 @@ def draw_expected_outline(mr: MapResult, pm: PlacementMap, center_um: Tuple[floa
     base = mr.mosaic if mr.mosaic is not None else np.zeros((10, 10), np.uint8)
     img = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR) if base.ndim == 2 else base.copy()
     for slot, (x0, y0, x1, y1) in expected_outline_px(mr, pm, center_um):
-        col = _PALETTE[slot % len(_PALETTE)]
+        col = TILE_COLORS[slot % len(TILE_COLORS)]
         cv2.rectangle(img, (int(round(x0)), int(round(y0))), (int(round(x1)), int(round(y1))), col, 3)
         cv2.putText(img, f"tile {slot + 1}", (int(x0) + 14, int(y0) + 44), cv2.FONT_HERSHEY_SIMPLEX, 1.3, col, 3, cv2.LINE_AA)
     return img
@@ -292,7 +264,7 @@ def map_finished_piece(
     # a patterned chip is full of repeating features (rings, lines); the stage position breaks the tie
     cfg = dataclasses.replace(cfg, ambiguity="stage_prior", label="finished piece")
     t0 = time.perf_counter()
-    mr = will_map(rig, cfg, area_um, center_um, progress, should_abort)
+    mr = map_area(rig, cfg, area_um, center_um, progress, should_abort)
     recorder.add_timing("finished piece scan", time.perf_counter() - t0, f"{mr.captured} photos, {'ok' if mr.ok else 'FAILED'}", "machine")
     recorder.save_finished(mr, pm, center_um)
     return mr

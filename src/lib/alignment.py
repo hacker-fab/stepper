@@ -1,6 +1,6 @@
-"""Closed-loop alignment for Will Map: move, look, measure the error, correct, repeat.
+"""Closed-loop alignment for tiling: move, look, measure the error, correct, repeat.
 
-No GUI code, so it runs headless against the virtual chip (see will_map_selftest.py).
+No GUI code, so it runs headless against the virtual chip (see tiling_selftest.py).
 
 How it works
 ------------
@@ -12,7 +12,7 @@ photo, stage backlash and placement noise are corrected too (backlash only costs
 
 Two measurers, which can be used together and compared:
 
-* ``FeatureMeasurer``  registers the live photo against the Will Map mosaic (ZNCC on the chip's own
+* ``FeatureMeasurer``  registers the live photo against the camera-map mosaic (ZNCC on the chip's own
   scratches / dust / texture).  Needs no marks, but it only knows "same place as when I mapped", and
   the chip surface changes once something has been patterned or developed, so it must be re-mapped
   after each layer.
@@ -25,7 +25,7 @@ When both are available every iteration records both answers and the difference 
 difference is the useful number: it is how far the previous layer's crosses sit from where the map says
 that position is, i.e. the placement error of the earlier exposure.
 
-Sign conventions are those of will_map: mosaic x right / y down, stage +x right / +y up (sign = (1, -1)).
+Sign conventions are those of lib/mapping.py: mosaic x right / y down, stage +x right / +y up (sign = (1, -1)).
 """
 
 from __future__ import annotations
@@ -37,16 +37,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from will_map import (
-    PROJ_UM_PER_PX,
-    CrossGeometry,
-    MapConfig,
-    MapResult,
-    Rig,
-    cross_patch,
-    prepare_frame,
-    register_pair,
-)
+from .mapping import MapConfig, MapResult, Rig, prepare_frame, register_pair
+from .tiling import PROJ_UM_PER_PX, CrossGeometry
 
 Point = Tuple[float, float]
 
@@ -76,7 +68,7 @@ class Measurer:
 
 
 # --------------------------------------------------------------------------------------
-# Feature measurer: live photo vs the Will Map mosaic
+# Feature measurer: live photo vs the camera-map mosaic
 # --------------------------------------------------------------------------------------
 class FeatureMeasurer(Measurer):
     """Registers the live photo against the sharpest reference available.

@@ -1,4 +1,4 @@
-"""Virtual environment for testing Will Map without the machine.
+"""Virtual stage + camera for testing the camera map, placement and alignment without the machine.
 
 A white chip (the "3x3 area" plus a margin) with faint scratches, dust and surface texture so the
 camera has something to register on, a stage with backlash / noise / drift, and a camera that
@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from will_map import CAMERA_SIZE_PX, DEFAULT_CAM_UM_PER_PX
+from lib.mapping import CAMERA_SIZE_PX, DEFAULT_CAM_UM_PER_PX
 
 
 class VirtualChip:
@@ -127,7 +127,7 @@ class VirtualChip:
 
 
 class VirtualRig:
-    """Stage + camera over a VirtualChip.  Implements the ``Rig`` protocol from will_map.
+    """Stage + camera over a VirtualChip.  Implements the ``Rig`` protocol from lib/mapping.py.
 
     The stage obeys the old-UI convention (stage +x = right, stage +y = up) and has:
     * ``backlash_um``   lost motion that flips each time an axis reverses direction,
@@ -259,9 +259,6 @@ class VirtualRig:
 # --------------------------------------------------------------------------------------
 # A whole virtual session: map -> placement -> (closed-loop) patterning -> finished piece
 # --------------------------------------------------------------------------------------
-SAMPLE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "will_map_samples")
-# reading order TL, TR, BL, BR (the top-left tile was not supplied: crosses-only stand-in)
-SAMPLE_SET = ["pattern_4_crosses_only.png", "pattern_3.png", "pattern_2.png", "pattern_1.png"]
 
 
 def simulate_patterning(
@@ -283,8 +280,16 @@ def simulate_patterning(
     ``use_crosses``: tiles that have a left/top neighbour find some of their crosses already printed by
     an earlier tile; with this on, the alignment uses those crosses (cross detection on).  Off, the
     alignment only uses the chip's own features (convolution against the map photos)."""
-    from will_align import CrossMeasurer, FeatureMeasurer, align_to_target, cross_positions_um, earlier_crosses
-    from will_map import cross_patch, exposure_mask, status
+    from lib.alignment import (
+        CrossMeasurer,
+        FeatureMeasurer,
+        align_to_target,
+        cross_positions_um,
+        earlier_crosses,
+    )
+    from lib.img import exposure_mask
+    from lib.mapping import status
+    from lib.tiling import cross_patch
 
     note = progress or (lambda m: None)
     targets = pm.stage_targets(center_um, cfg.sign)
@@ -345,7 +350,8 @@ def simulate_patterning(
 
 
 def load_samples():
-    from will_map import load_image
+    from lib.img import load_image
+    from lib.tiling import SAMPLE_DIR, SAMPLE_SET
 
     paths = [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]
     return paths, [load_image(p) for p in paths]
@@ -367,14 +373,15 @@ def run_process(
     """One complete pass on one area: size the area from the tile counts (+1 frame each way) -> map it ->
     only if the map is good, place the tiles -> align + (virtually) expose each tile -> map the finished piece.
     Everything is saved into ``rec``'s folder."""
-    from will_map import MapConfig, area_for_tiles, build_placement_map, measure_cross_geometry, will_map
-    from will_map_runs import map_finished_piece
+    from lib.mapping import MapConfig, map_area
+    from lib.run_folder import map_finished_piece
+    from lib.tiling import area_for_tiles, build_placement_map, measure_cross_geometry
 
     note = progress or (lambda m: None)
     cfg = MapConfig()
     area_pm = area_for_tiles(tile_rows, tile_cols)  # sized from the CROSS_* inputs, before any pattern is chosen
     note("mapping the white area")
-    mr = will_map(rig, cfg, area_pm.area_size_um, center_um)
+    mr = map_area(rig, cfg, area_pm.area_size_um, center_um)
     rec.save_map(mr)
     out = {"recorder": rec, "map": mr, "area_um": area_pm.area_size_um, "center_um": center_um, "rig": rig}
     if not mr.ok:
@@ -411,8 +418,8 @@ def run_sample_comparison(
     overlap.  Area A uses convolution against the map photos only (cross detection off); area B also uses
     the crosses that earlier tiles have already printed (cross detection on, with the YOLO model as a seed
     when one is given).  Both finished pieces are mapped and saved."""
-    from will_map import area_for_tiles
-    from will_map_runs import RunRecorder
+    from lib.run_folder import RunRecorder
+    from lib.tiling import area_for_tiles
 
     paths, images = load_samples()
     if len(images) != tile_rows * tile_cols:
@@ -425,7 +432,7 @@ def run_sample_comparison(
     top = RunRecorder(base_dir, label)
     ml = None
     if ml_model is not None:
-        from will_align import yolo_detector
+        from lib.alignment import yolo_detector
 
         ml = yolo_detector(ml_model)
     runs = {}
@@ -471,8 +478,8 @@ def run_sample_comparison(
 
 def _save_overview(top, runs) -> None:
     """Both finished pieces side by side (stitched, with the expected tile outlines)."""
-    from will_map import PlacementMap  # noqa: F401
-    from will_map_runs import _write_png_bgr, draw_expected_outline
+    from lib.img import save_png_bgr
+    from lib.run_folder import draw_expected_outline
 
     panels = []
     for key, title in (("A", "A: convolution only"), ("B", "B: cross detection on")):
@@ -486,7 +493,7 @@ def _save_overview(top, runs) -> None:
     if panels:
         h = max(p.shape[0] for p in panels)
         panels = [cv2.copyMakeBorder(p, 0, h - p.shape[0], 0, 12, cv2.BORDER_CONSTANT, value=(255, 255, 255)) for p in panels]
-        _write_png_bgr(os.path.join(top.dir, "both_finished_pieces.png"), np.hstack(panels))
+        save_png_bgr(os.path.join(top.dir, "both_finished_pieces.png"), np.hstack(panels))
 
 
 def run_virtual_session(
@@ -500,8 +507,8 @@ def run_virtual_session(
     **rig_kw,
 ) -> dict:
     """One pass on one area (kept for the single-run demo)."""
-    from will_map import area_for_tiles
-    from will_map_runs import RunRecorder
+    from lib.run_folder import RunRecorder
+    from lib.tiling import area_for_tiles
 
     paths, images = load_samples()
     w, h = area_for_tiles(2, 2).area_size_um

@@ -2,12 +2,19 @@
 # Luca Garlati, 2024
 # backend image processing and convenience functions
 
+import os
 from math import ceil, cos, pi, sin
+from typing import TYPE_CHECKING, Optional, Tuple
 
-from PIL import Image, ImageTk
+import cv2
+import numpy as np
+from PIL import Image
 from PIL.ImageOps import invert
 
 from .tuple import BTW_tuple, add, mult
+
+if TYPE_CHECKING:
+    from PIL import ImageTk
 
 
 def select_channels(
@@ -259,7 +266,10 @@ def LA_to_L(image: Image.Image) -> Image.Image:
 # This function is just a wrapper for ImageTk.PhotoImage() because of a bug
 # for whatever reason, photoimage removes the alpha channel from LA images
 # so this converts inputted LA images to RGBA before passing to PhotoImage
-def image_to_tk_image(image: Image.Image) -> ImageTk.PhotoImage:
+def image_to_tk_image(image: Image.Image) -> "ImageTk.PhotoImage":
+    # imported here so the rest of this file (used by the headless map/tiling code) needs no tkinter
+    from PIL import ImageTk
+
     if image.mode == "LA":
         return ImageTk.PhotoImage(image.convert("RGBA"))
     else:
@@ -432,6 +442,98 @@ def slice_image(
                 cropped = cropped.resize(output_resolution, resample=Image.Resampling.LANCZOS)
             output.append(cropped)
     return (grid, tuple(output))
+
+
+# region: numpy / OpenCV images (camera frames, pattern masks, autofocus)
+
+
+def load_image(path: str) -> np.ndarray:
+    """cv2.imread that also works with non-ASCII Windows paths."""
+    data = np.fromfile(path, dtype=np.uint8)
+    img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise ValueError(f"Could not read image: {path}")
+    return img
+
+
+def save_png(path: str, img: np.ndarray) -> None:
+    """Write a PNG (also to non-ASCII Windows paths).  3-channel input is RGB, the camera's order."""
+    save_png_bgr(path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if img.ndim == 3 and img.shape[2] == 3 else img)
+
+
+def save_png_bgr(path: str, img_bgr: np.ndarray) -> None:
+    """Write a PNG that is already in OpenCV's BGR order (drawings made with cv2)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    ok, buf = cv2.imencode(".png", img_bgr)
+    if not ok:
+        raise ValueError(f"could not encode {path}")
+    buf.tofile(path)
+
+
+def exposure_mask(img: np.ndarray) -> np.ndarray:
+    """True where the pattern exposes (any colour channel bright). Patterns are blue on black."""
+    a = np.asarray(img)
+    if a.dtype == bool:
+        return a
+    if a.ndim == 3:
+        a = a[..., :3].max(axis=2)
+    return a > 127
+
+
+def frame_difference(a: np.ndarray, b: np.ndarray) -> float:
+    """Mean absolute grey difference (0-255) between two camera frames, on a quarter-size image."""
+    def small(img: np.ndarray) -> np.ndarray:
+        g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if img.ndim == 3 else img
+        return cv2.resize(g, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA).astype(np.float32)
+
+    sa, sb = small(a), small(b)
+    if sa.shape != sb.shape:
+        return float("inf")
+    return float(np.abs(sa - sb).mean())
+
+
+def sobel_focus_score(img: Optional[np.ndarray], kernel_size: int = 9) -> float:
+    """Sharpness = variance of the Sobel gradient magnitude on a half-size grey image (Toby's compute_focus_score)."""
+    if img is None or getattr(img, "size", 0) == 0:
+        return 0.0
+    g = img
+    if g.shape[0] * 0.5 >= kernel_size and g.shape[1] * 0.5 >= kernel_size:
+        g = cv2.resize(g, None, fx=0.5, fy=0.5)
+    if g.ndim == 3:
+        g = cv2.cvtColor(g, cv2.COLOR_RGB2GRAY)  # camera_image is RGB in the old UI
+    if g.shape[0] < kernel_size or g.shape[1] < kernel_size:
+        return 0.0
+    sx = cv2.Sobel(g, cv2.CV_64F, 1, 0, ksize=kernel_size)
+    sy = cv2.Sobel(g, cv2.CV_64F, 0, 1, ksize=kernel_size)
+    return float(np.hypot(sx, sy).var())
+
+
+def aruco_grid_image(grid_n: int, canvas_size: Tuple[int, int]) -> np.ndarray:
+    """grid_n x grid_n ArUco tags (DICT_4X4_250, white quiet zones on black), as in Toby's generate_ar_tag_grid.
+    ``canvas_size`` is (width, height) of the projector; returns a grey uint8 image of that size."""
+    width, height = canvas_size
+    grid_n = max(1, int(grid_n))
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
+    mx, my = int(width * 0.05), int(height * 0.05)
+    cell_w, cell_h = (width - 2 * mx) / grid_n, (height - 2 * my) / grid_n
+    marker = max(12, int(min(cell_w, cell_h) * 0.65))
+    quiet = max(4, int(marker * 0.2))
+    box = marker + 2 * quiet
+    canvas = np.zeros((height, width), np.uint8)
+    for r in range(grid_n):
+        for c in range(grid_n):
+            cx, cy = int(mx + (c + 0.5) * cell_w), int(my + (r + 0.5) * cell_h)
+            x1, y1 = cx - box // 2, cy - box // 2
+            if x1 < 0 or y1 < 0 or x1 + box > width or y1 + box > height:
+                continue
+            canvas[y1 : y1 + box, x1 : x1 + box] = 255
+            canvas[y1 + quiet : y1 + quiet + marker, x1 + quiet : x1 + quiet + marker] = cv2.aruco.generateImageMarker(
+                dictionary, (r * grid_n + c) % 250, marker
+            )
+    return canvas
+
+
+# endregion
 
 
 # automated test suite
