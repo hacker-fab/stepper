@@ -130,10 +130,26 @@ def prepare_frame(img: np.ndarray) -> np.ndarray:
 @dataclass
 class Registration:
     shift: Tuple[float, float]  # where the new frame's origin sits in the reference frame (px)
-    peak: float  # ZNCC peak, 1.0 = perfect
-    second: float  # best ZNCC away from the peak; a small gap means an ambiguous match
+    peak: float  # confidence: ZNCC peak on the 1/down-scale images (camera noise averaged out), 1.0 = perfect
+    second: float  # best ZNCC outside the main peak's own lobe; a small gap means an ambiguous match
     ok: bool
     reason: str = ""
+    fine_peak: float = 0.0  # full-resolution ZNCC at the sub-pixel position (camera noise lowers it; info only)
+
+
+def _second_peak(res: np.ndarray, v: int, u: int) -> float:
+    """Best score outside the lobe of the peak at (v, u).
+
+    The lobe is the connected region around the peak above half its height (above the median of the
+    surface).  A smooth chip gives a broad peak; a fixed +-3 px exclusion box then found the peak's own
+    shoulder as the "second peak" and called a correct match ambiguous."""
+    pk = float(res[v, u])
+    half = (pk + float(np.median(res))) / 2.0
+    _, lab = cv2.connectedComponents((res >= half).astype(np.uint8), connectivity=8)
+    lobe = cv2.dilate((lab == lab[v, u]).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    lobe[max(0, v - 3) : v + 4, max(0, u - 3) : u + 4] = True
+    rest = res[~lobe]
+    return float(rest.max()) if rest.size else -1.0
 
 
 def register_pair(
@@ -175,9 +191,7 @@ def register_pair(
     res = np.nan_to_num(cv2.matchTemplate(rc, tc, cv2.TM_CCOEFF_NORMED), nan=-1.0, posinf=-1.0, neginf=-1.0)
     v, u = np.unravel_index(int(np.argmax(res)), res.shape)
     peak_c = float(res[v, u])
-    sup = res.copy()
-    sup[max(0, v - 3) : v + 4, max(0, u - 3) : u + 4] = -1.0
-    second = float(sup.max())
+    second = _second_peak(res, int(v), int(u))
     resolved = ""
     if prefer_prior and (peak_c - second) < min_gap:
         picks = [(peak_c, int(v), int(u))]
@@ -213,13 +227,16 @@ def register_pair(
     dy = sub(fine[vf - 1, uf], fine[vf, uf], fine[vf + 1, uf]) if 0 < vf < fine.shape[0] - 1 else 0.0
     px_ref, py_ref = sx0 + uf + dx, sy0 + vf + dy  # template top-left in ref
     shift = (px_ref - x0, py_ref - y0)
-    ok = peak >= min_peak and ((peak_c - second) >= min_gap or bool(resolved))
+    # Confidence is judged on the coarse surface: at full resolution the ZNCC of a low-feature chip is
+    # dominated by camera noise (0.4 for a match that is right to 0.5 px), so the full-res peak only says
+    # how noisy the photo is, not whether the position is right.  The fine search only refines the position.
+    ok = peak_c >= min_peak and ((peak_c - second) >= min_gap or bool(resolved))
     reason = resolved if (ok and resolved) else ""
-    if peak < min_peak:
-        reason = f"weak match (peak {peak:.2f} < {min_peak:.2f}); is there anything to register on?"
+    if peak_c < min_peak:
+        reason = f"weak match (score {peak_c:.2f} < {min_peak:.2f}); is there anything to register on?"
     elif peak_c - second < min_gap:
         reason = f"ambiguous match (best {peak_c:.2f} vs next {second:.2f}); repeating features?"
-    return Registration(shift, peak, second, ok, reason)
+    return Registration(shift, peak_c, second, ok, reason, fine_peak=peak)
 
 
 # --------------------------------------------------------------------------------------
@@ -251,7 +268,11 @@ class MapConfig:
     check_tol_um: float = 3.0  # max left/top disagreement
     check_index: int = 1  # traversal index inside a row that gets the left+top check (1 = 2nd tile)
     check_all: bool = False  # left+top check on every tile that has both neighbours
-    retries: int = 1
+    retries: int = 1  # re-captures when left and top disagree (a low-confidence match is not re-captured)
+    # A low-confidence match (weak or ambiguous) does not stop the map: that overlap uses the stage-predicted
+    # position instead, with a small weight in the solve so real matches win.  False = stop the map instead.
+    stage_fallback: bool = True
+    estimate_weight: float = 0.05  # solve weight of a stage estimate (real matches weigh their score, 0.5-1)
     ambiguity: str = "reject"  # 'reject' or 'stage_prior' (see register_pair prefer_prior; finished-piece scans)
     # time model (estimates; the real run reports measured compute time on top)
     t_move_s: float = 1.0
@@ -278,6 +299,7 @@ class PairMeasurement:
     second: float
     ok: bool
     reason: str = ""
+    estimated: bool = False  # True: the match was not trusted, measured_px is the stage prediction
 
     @property
     def error_px(self) -> Tuple[float, float]:
@@ -328,6 +350,11 @@ class MapResult:
         lines.append(
             f"{self.captured} frames, {len(self.pairs)} pair registrations, {len(self.checks)} left+top checks"
         )
+        for p in self.pairs:
+            if p.estimated:
+                lines.append(
+                    f"  stage estimate for tile (row {p.b[0] + 1}, col {p.b[1] + 1}) vs {p.kind} neighbour: {p.reason}"
+                )
         for c in self.checks:
             lines.append(
                 f"  check tile (row {c.tile[0] + 1}, col {c.tile[1] + 1}): left vs top disagree by "
@@ -408,8 +435,11 @@ def plan_scan(
     return pos, (step[0], step[1]), fov
 
 
-def _solve_positions(tiles: List[Tile], pairs: List[PairMeasurement]) -> Dict[Tile, Tuple[float, float]]:
-    """Least-squares tile positions from all pair measurements; tiles[0] is the anchor at (0, 0)."""
+def _solve_positions(
+    tiles: List[Tile], pairs: List[PairMeasurement], estimate_weight: float = 0.05
+) -> Dict[Tile, Tuple[float, float]]:
+    """Least-squares tile positions from all pair measurements; tiles[0] is the anchor at (0, 0).
+    Stage estimates (pairs whose match was not trusted) take part with ``estimate_weight``."""
     idx = {t: i for i, t in enumerate(tiles)}
     n = len(tiles)
     rows_a, rhs, wts = [], [], []
@@ -421,7 +451,7 @@ def _solve_positions(tiles: List[Tile], pairs: List[PairMeasurement]) -> Dict[Ti
         row[idx[p.a]] = -1.0
         rows_a.append(row)
         rhs.append(p.measured_px)
-        wts.append(max(p.peak, 0.1))
+        wts.append(estimate_weight if p.estimated else max(p.peak, 0.1))
     A = np.array(rows_a)[:, 1:]  # anchor column removed
     Wt = np.sqrt(np.array(wts))[:, None]
     sol, *_ = np.linalg.lstsq(A * Wt, np.array(rhs) * Wt, rcond=None)
@@ -462,6 +492,20 @@ def compose_mosaic(
     if say:
         say("stitching: blending done")
     return (acc / np.maximum(wsum, 1e-6)).clip(0, 255).astype(np.uint8), (ox, oy)
+
+
+def _stage_estimate(
+    a: Tile, b: Tile, kind: str, predicted_px: Tuple[float, float], peak: float, second: float, why: str
+) -> PairMeasurement:
+    """An overlap whose match is not trusted: the stage-predicted offset stands in for the measurement."""
+    return PairMeasurement(a, b, kind, predicted_px, predicted_px, peak, second, True, why, estimated=True)
+
+
+def _map_message(pairs: List[PairMeasurement]) -> str:
+    n_est = sum(p.estimated for p in pairs)
+    if not n_est:
+        return "all registrations and left/top checks passed"
+    return f"map complete; {n_est} of {len(pairs)} overlaps used the stage position (low-confidence match)"
 
 
 def map_area(
@@ -571,20 +615,27 @@ def map_area(
             batch: List[PairMeasurement] = []
             est: Dict[str, Tuple[float, float]] = {}
             for kind, nb in neighbours:
+                pred = predicted(nb, tile)
                 reg = register_pair(
-                    prep[nb], prep[tile], predicted(nb, tile), search_eff, min_peak=cfg.min_peak,
+                    prep[nb], prep[tile], pred, search_eff, min_peak=cfg.min_peak,
                     prefer_prior=(cfg.ambiguity == "stage_prior"),
                 )
-                batch.append(PairMeasurement(nb, tile, kind, predicted(nb, tile), reg.shift, reg.peak, reg.second, reg.ok, reg.reason))
-                if reg.ok:
-                    est[kind] = (chain_pos[nb][0] + reg.shift[0], chain_pos[nb][1] + reg.shift[1])
+                if reg.ok or not cfg.stage_fallback:
+                    pm = PairMeasurement(nb, tile, kind, pred, reg.shift, reg.peak, reg.second, reg.ok, reg.reason)
+                else:
+                    pm = _stage_estimate(nb, tile, kind, pred, reg.peak, reg.second, reg.reason)
+                batch.append(pm)
+                if pm.ok:
+                    est[kind] = (chain_pos[nb][0] + pm.measured_px[0], chain_pos[nb][1] + pm.measured_px[1])
             compute_s += time.perf_counter() - t0
             problem = ""
             if not all(p.ok for p in batch):
                 bad = next(p for p in batch if not p.ok)
                 problem = f"tile (row {r + 1}, col {c + 1}) vs {bad.kind} neighbour: {bad.reason}"
+            measured = {p.kind for p in batch if not p.estimated}
             chk: Optional[CheckResult] = None
-            if not problem and want_check and "chain" in est and "top" in est:
+            # the check compares two real measurements; a stage estimate would only compare the stage with itself
+            if not problem and want_check and {"chain", "top"} <= measured:
                 d_px = math.hypot(est["chain"][0] - est["top"][0], est["chain"][1] - est["top"][1])
                 chk = CheckResult(tile, est["chain"], est["top"], d_px, d_px * s, cfg.check_tol_um, d_px * s <= cfg.check_tol_um)
                 if not chk.passed:
@@ -599,10 +650,21 @@ def map_area(
                 chain_pos[tile] = est.get("chain") or est["top"]
                 break
             if attempt >= cfg.retries:
+                if chk is None or not cfg.stage_fallback:
+                    pairs.extend(batch)
+                    if chk:
+                        checks.append(chk)
+                    return fail(problem)
+                # left and top still disagree: one of them is a false lock, and nothing says which one, so
+                # this tile is placed from the stage instead of from either match
+                checks.append(chk)
+                why = f"left and top disagree by {chk.delta_um:.1f} um"
+                batch = [_stage_estimate(p.a, p.b, p.kind, p.predicted_px, p.peak, p.second, why) for p in batch]
                 pairs.extend(batch)
-                if chk:
-                    checks.append(chk)
-                return fail(problem)
+                nb, pm = (prev, batch[0]) if prev is not None else (top, batch[0])
+                chain_pos[tile] = (chain_pos[nb][0] + pm.measured_px[0], chain_pos[nb][1] + pm.measured_px[1])
+                say(f"{cfg.label}: photo {k + 1}/{len(order)}: {why} after {attempt + 1} tries, using the stage position")
+                break
             attempt += 1
             note(k / len(order), f"re-capturing tile {k + 1}: {problem}")
             say(f"{cfg.label}: photo {k + 1}/{len(order)} re-taking, attempt {attempt + 1}: {problem}")
@@ -612,8 +674,12 @@ def map_area(
         reg_txt = "anchor photo"
         if k > 0 and pairs:
             last = pairs[-len(neighbours):]
-            dev = max(math.hypot(p.measured_px[0] - p.predicted_px[0], p.measured_px[1] - p.predicted_px[1]) * s for p in last)
-            reg_txt = f"registered, {dev:.1f} um from the stage prediction, match {min(p.peak for p in last):.2f}"
+            real = [p for p in last if not p.estimated]
+            if real:
+                dev = max(math.hypot(p.error_px[0], p.error_px[1]) * s for p in real)
+                reg_txt = f"registered, {dev:.1f} um from the stage prediction, match {min(p.peak for p in real):.2f}"
+            else:
+                reg_txt = f"stage position used ({last[0].reason})"
         say(
             f"{cfg.label}: photo {k + 1}/{len(order)} taken (row {r + 1}, col {c + 1}) at stage "
             f"({plan[tile][0]:.0f}, {plan[tile][1]:.0f}) um, {reg_txt}, {elapsed:.0f} s elapsed, ~{eta:.0f} s left"
@@ -622,7 +688,7 @@ def map_area(
     say(f"{cfg.label}: all {len(order)} photos taken in {time.perf_counter() - t_start:.0f} s, stitching")
     t_stitch = time.perf_counter()
     t0 = time.perf_counter()
-    solved = _solve_positions(order, pairs)
+    solved = _solve_positions(order, pairs, cfg.estimate_weight)
     say(f"stitching: solved {len(solved)} photo positions from {len(pairs)} overlaps")
     mosaic, (ox, oy) = compose_mosaic(raw, solved, say)
     solved = {t: (p[0] - ox, p[1] - oy) for t, p in solved.items()}
@@ -640,7 +706,7 @@ def map_area(
     say(f"{cfg.label}: done in {time.perf_counter() - t_start:.0f} s")
     total = stage_s + compute_s
     return MapResult(
-        True, "all registrations and left/top checks passed", cfg, center_um, plan, solved, pairs, checks,
+        True, _map_message(pairs), cfg, center_um, plan, solved, pairs, checks,
         mosaic, off,
         {
             "stage_s": stage_s, "compute_s": compute_s, "total_s": total, "autofocus_runs": n_af,

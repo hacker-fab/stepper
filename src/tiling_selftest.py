@@ -162,13 +162,19 @@ def test_map_tolerates_a_bad_config_and_rough_stage() -> None:
     assert res.ok and _max_err_px(rig, cfg, res) < 1.5, res.message
 
 
-def test_map_refuses_when_it_cannot_trust_the_registration() -> None:
+def test_map_uses_the_stage_when_it_cannot_trust_the_registration() -> None:
     blank = VirtualChip(_area(), seed=11, features=False)
-    _, _, res = _run(blank)
-    assert not res.ok and "weak match" in res.message, res.message
     periodic = VirtualChip(_area(), seed=11, periodic=True, period_um=50.0)
-    _, _, res = _run(periodic)
-    assert not res.ok and "ambiguous" in res.message, res.message
+    for chip, why in ((blank, "weak match"), (periodic, "ambiguous")):
+        # default: the map completes, every untrusted overlap is placed from the stage and reported
+        rig, cfg, res = _run(chip)
+        est = [p for p in res.pairs if p.estimated]
+        assert res.ok and est and "stage position" in res.message, res.message
+        assert all(why in p.reason and p.measured_px == p.predicted_px for p in est), [p.reason for p in est]
+        assert any("stage estimate" in line for line in res.report())
+        # strict mode keeps the old behaviour: stop the map
+        _, _, res = _run(chip, cfg=MapConfig(stage_fallback=False))
+        assert not res.ok and why in res.message, res.message
 
 
 def test_left_top_check_catches_a_false_lock() -> None:
@@ -193,10 +199,16 @@ def test_left_top_check_catches_a_false_lock() -> None:
         _, _, res = _run(chip)
         assert res.ok, res.message
         state["n"] = 0
-        mapping.register_pair = make({5, 7})  # wrong on the retry too: map stops
+        mapping.register_pair = make({5, 7})  # wrong on the retry too: that tile is placed from the stage
         _, _, res = _run(chip)
+        failed = [c for c in res.checks if not c.passed]
+        assert res.ok and len(failed) == 1 and failed[0].delta_um > 3.0, res.report()
+        bad = failed[0].tile
+        assert all(p.estimated for p in res.pairs if p.b == bad) and not any(p.estimated for p in res.pairs if p.b != bad)
+        state["n"] = 0
+        mapping.register_pair = make({5, 7})  # strict mode: the map stops
+        _, _, res = _run(chip, cfg=MapConfig(stage_fallback=False))
         assert not res.ok and "left and top disagree" in res.message, res.message
-        assert res.checks and res.checks[-1].delta_um > 3.0
     finally:
         mapping.register_pair = orig
 
@@ -680,13 +692,13 @@ def _ui_area_checks(root, ui) -> None:
             ui.messagebox.showwarning = lambda t, m: events.append("warning")
             ui.RunRecorder = lambda label="": real[5](tmp, label)
             ui.run_map_and_placement(root, model)
-            if features:
-                # 9 map photos + the one photo run_map_and_placement grabs first to learn the camera size
-                assert events[0] == "area dialog" and events[1] == "picker opened after 10 photos", events
-                assert events[2] == "approval 2x2 in 3x3, mapped area 2914 um", events
-                assert model.af_args and set(model.af_args) == {False}, "old-UI red autofocus after every map move"
-            else:
-                assert events == ["area dialog", "warning"], events  # blank chip: map refuses, tiles can never be inserted
+            # 9 map photos + the one photo run_map_and_placement grabs first to learn the camera size.  A blank
+            # chip maps too: its overlaps are placed from the stage, so the tiles can still be inserted.
+            assert events[0] == "area dialog" and events[1] == "picker opened after 10 photos", events
+            assert events[2] == "approval 2x2 in 3x3, mapped area 2914 um", events
+            # ModelRig's autofocus projects a grid and needs a camera; this fake model has none, so it is skipped
+            # and the old UI's red autofocus is never called
+            assert not model.af_args, model.af_args
     finally:
         ui.AreaDialog, ui.PatternPickerDialog, ui.PlacementApprovalWindow, ui.messagebox.showwarning, ui.messagebox.showinfo, ui.RunRecorder = real
 
@@ -941,7 +953,7 @@ def main() -> int:
         return 0
     tests: List[Callable[[], None]] = [
         test_geometry, test_placement, test_seams, test_map_happy_path,
-        test_map_tolerates_a_bad_config_and_rough_stage, test_map_refuses_when_it_cannot_trust_the_registration,
+        test_map_tolerates_a_bad_config_and_rough_stage, test_map_uses_the_stage_when_it_cannot_trust_the_registration,
         test_left_top_check_catches_a_false_lock, test_check_every_tile_option, test_budget,
         test_cross_inputs, test_align_closed_loop_beats_open_loop, test_align_backlash_hunting_is_prevented,
         test_align_fails_loudly_off_the_map, test_cross_measurer_and_method_comparison,

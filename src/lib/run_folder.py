@@ -150,7 +150,8 @@ class RunRecorder:
             "positions_px": {tile_name(t): list(v) for t, v in mr.positions_px.items()},
             "pairs": [
                 {"a": tile_name(p.a), "b": tile_name(p.b), "kind": p.kind, "measured_px": list(p.measured_px),
-                 "predicted_px": list(p.predicted_px), "peak": p.peak, "second_peak": p.second, "ok": p.ok, "reason": p.reason}
+                 "predicted_px": list(p.predicted_px), "peak": p.peak, "second_peak": p.second, "ok": p.ok, "reason": p.reason,
+                 "estimated": p.estimated}
                 for p in mr.pairs
             ],
             "checks": [
