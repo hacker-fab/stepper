@@ -302,6 +302,14 @@ class PlacementMap:
         return lines
 
 
+def tile_pattern(img: np.ndarray, crop: Tuple[int, int, int, int]) -> np.ndarray:
+    """The pattern a tile actually exposes: the frame with everything outside its footprint ``crop`` black."""
+    x0, y0, x1, y1 = crop
+    out = np.zeros_like(img)
+    out[y0:y1, x0:x1] = img[y0:y1, x0:x1]
+    return out
+
+
 def build_placement_map(
     geo: CrossGeometry,
     pattern_rows: int = 2,

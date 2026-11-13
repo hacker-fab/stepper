@@ -37,7 +37,9 @@ from lib.tiling import (  # noqa: E402
     CROSS_DIST_TOP_PX,
     CROSS_HEIGHT_PX,
     CROSS_WIDTH_PX,
+    PROJ_UM_PER_PX,
     SAMPLE_DIR,
+    SAMPLE_SET,
     CrossGeometry,
     TilingTimeModel,
     area_for_tiles,
@@ -613,6 +615,160 @@ def test_ui_area_dialog_and_map_before_tiles() -> None:
         root.destroy()
 
 
+def test_machine_flow_with_fake_stepper() -> None:
+    """Map + Placement -> pattern tiles -> finished piece through ModelRig, the class that drives the real
+    stepper, with a fake EventDispatcher over the virtual stage.  The fake camera has the real camera's dark
+    edge (outside the part the projector lights); each UV exposure paints the projected pattern onto the chip."""
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+    except Exception:  # noqa: BLE001
+        print("    (skipped: no display / tkinter)")
+        return
+    import tempfile
+
+    import gui as ui
+    from lib.img import exposure_mask
+
+    root.withdraw()
+    area = area_for_tiles(2, 2).area_size_um
+    rig = VirtualRig(VirtualChip(area, seed=11), center_um=CENTER, seed=5)
+    log = {"sources_at_grab": [], "patterns": [], "exposed_at": []}
+
+    class Projector:
+        def size(self):
+            return (1920, 1080)
+
+    class Root:
+        def update(self):
+            fake.seq += 1  # the camera delivers a frame every time the Tk loop runs
+            frame = rig.grab().astype(np.float32)
+            h, w = frame.shape[:2]
+            ch, cw = round(h / 1.3), round(w / 1.3)
+            dark = np.full((h, w), 0.25, np.float32)
+            dark[(h - ch) // 2 : (h - ch) // 2 + ch, (w - cw) // 2 : (w - cw) // 2 + cw] = 1.0
+            fake.camera_image = (frame * (dark[..., None] if frame.ndim == 3 else dark)).astype(np.uint8)
+            log["sources_at_grab"].append(fake.red_focus_source)
+
+        def update_idletasks(self):
+            pass
+
+    class FakeStepper:
+        camera = True
+        model = None  # no YOLO model loaded
+        hardware = type("H", (), {"projector": Projector()})()
+
+        def __init__(self):
+            self.seq, self.camera_image = 0, None
+            self.stage_setpoint = [CENTER[0], CENTER[1], 0.0]
+            self.red_focus_source = ui.RedFocusSource.PATTERN
+            self.red_focus_image, self.shown_image, self.pattern = None, ui.ShownImage.RED_FOCUS, None
+            self.root = Root()
+
+        camera_image_seq = property(lambda s: s.seq)
+
+        def move_absolute(self, d):
+            rig.move_to(d["x"], d["y"])
+            self.stage_setpoint = [d["x"], d["y"], d.get("z", 0.0)]
+            return True
+
+        def move_relative(self, d):
+            self.stage_setpoint[2] += d.get("z", 0.0)
+
+        def non_blocking_delay(self, s):
+            rig.settle(s)
+
+        def set_red_focus_image(self, img):
+            self.red_focus_image = img
+
+        def set_red_focus_source(self, src):
+            self.red_focus_source = src
+
+        def set_shown_image(self, s):
+            self.shown_image = s
+
+        def enter_red_mode(self, mode_switch_autofocus=True):
+            self.shown_image = ui.ShownImage.RED_FOCUS
+
+        def set_autofocus_busy(self, busy):
+            pass
+
+        def set_pattern_image(self, img, path):
+            self.pattern = img
+
+        def expose_pattern(self, red_to_uv_offset):
+            pat = np.asarray(self.pattern)
+            log["patterns"].append(pat)
+            log["exposed_at"].append(rig.expose(exposure_mask(pat), PROJ_UM_PER_PX))
+
+    fake = FakeStepper()
+    real = (ui.AreaDialog, ui.PatternPickerDialog, ui.messagebox.askyesno, ui.messagebox.showinfo,
+            ui.messagebox.showwarning, ui.RunRecorder, ui.ModelRig.autofocus)
+    tmp = tempfile.mkdtemp()
+
+    class FakeArea:
+        def __init__(self, *a, **k):
+            pass
+
+        def show(self):
+            return (2, 2)
+
+    class FakePicker:
+        def __init__(self, *a, **k):
+            pass
+
+        def show(self):
+            return [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]
+
+    class AutoApprove(ui.PlacementApprovalWindow):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.win.after(10, self.approve)
+
+    try:
+        ui.AreaDialog, ui.PatternPickerDialog = FakeArea, FakePicker
+        ui.messagebox.askyesno = lambda *a, **k: True
+        ui.messagebox.showinfo = ui.messagebox.showwarning = lambda *a, **k: None
+        ui.RunRecorder = lambda label="": real[5](tmp, label)
+        ui.ModelRig.autofocus = lambda self: rig.autofocus()  # the grid search has nothing to focus on here
+        ui.PlacementApprovalWindow, real_win = AutoApprove, ui.PlacementApprovalWindow
+        try:
+            approved = ui.run_map_and_placement(root, fake)
+        finally:
+            ui.PlacementApprovalWindow = real_win
+    finally:
+        (ui.AreaDialog, ui.PatternPickerDialog, ui.messagebox.askyesno, ui.messagebox.showinfo,
+         ui.messagebox.showwarning, ui.RunRecorder, ui.ModelRig.autofocus) = real
+        root.destroy()
+    assert approved is not None
+    mr = approved.map_result
+    # every photo is the lit middle of the frame: no dark edge in the map
+    assert mr.cfg.cam_size == (1477, 831), mr.cfg.cam_size
+    assert np.percentile(mr.mosaic, 0.5) > 0.6 * np.median(mr.mosaic), "dark edge in the map"
+    # photos were taken under plain red, and the projector setting was put back afterwards
+    assert ui.RedFocusSource.SOLID in log["sources_at_grab"] and fake.red_focus_source == ui.RedFocusSource.PATTERN
+    # four exposures, each the tile's pattern with everything outside its footprint black
+    pm = approved.placement
+    assert len(log["patterns"]) == 4
+    for t, pat in zip(pm.tiles, log["patterns"]):
+        x0, y0, x1, y1 = t.crop
+        outside = exposure_mask(pat).copy()
+        outside[y0:y1, x0:x1] = False
+        assert not outside.any(), f"tile {t.slot + 1} exposes outside its footprint"
+    # the tiles landed where they should relative to each other (closed loop through ModelRig)
+    ideal = [rig.ideal_chip_xy(T) for T in approved.stage_targets]
+    got = log["exposed_at"]
+    err = [
+        math.hypot((got[k][0] - got[0][0]) - (ideal[k][0] - ideal[0][0]), (got[k][1] - got[0][1]) - (ideal[k][1] - ideal[0][1]))
+        for k in range(1, 4)
+    ]
+    assert max(err) < 3.0, err
+    # and the finished piece was re-mapped into the same run folder
+    run_dir = next(os.path.join(tmp, d) for d in os.listdir(tmp))
+    assert os.path.exists(os.path.join(run_dir, "4_finished_piece", "stitched_expected_outline.png")), os.listdir(run_dir)
+
+
 def _ui_area_checks(root, ui) -> None:
     d = ui.AreaDialog(root)
     text = "\n".join(d.info_lines())
@@ -692,9 +848,11 @@ def _ui_area_checks(root, ui) -> None:
             ui.messagebox.showwarning = lambda t, m: events.append("warning")
             ui.RunRecorder = lambda label="": real[5](tmp, label)
             ui.run_map_and_placement(root, model)
-            # 9 map photos + the one photo run_map_and_placement grabs first to learn the camera size.  A blank
-            # chip maps too: its overlaps are placed from the stage, so the tiles can still be inserted.
-            assert events[0] == "area dialog" and events[1] == "picker opened after 10 photos", events
+            # the photo run_map_and_placement grabs first to learn the photo size, then the map: photos are cropped
+            # to the lit middle of the frame (1/1.3), so the 3 x 3 frame area takes 4 x 4 photos (plus any
+            # re-takes).  A blank chip maps too: its overlaps are placed from the stage, so tiles can be inserted.
+            assert events[0] == "area dialog" and events[1].startswith("picker opened after "), events
+            assert int(events[1].split()[3]) >= 1 + 16, events
             assert events[2] == "approval 2x2 in 3x3, mapped area 2914 um", events
             # ModelRig's autofocus projects a grid and needs a camera; this fake model has none, so it is skipped
             # and the old UI's red autofocus is never called
@@ -960,7 +1118,8 @@ def main() -> int:
         test_cross_measurer_ml_seed_and_garbage, test_run_folder_and_finished_piece,
         test_area_for_tiles_plus_one_frame, test_map_grid_is_automatic_and_steps_at_most_three_quarters,
         test_autofocus_after_moves, test_earlier_crosses_logic, test_two_areas_cross_on_off_and_both_finished_pieces_mapped,
-        test_yolo_model_as_cross_seed, test_ui_area_dialog_and_map_before_tiles, test_ui,
+        test_yolo_model_as_cross_seed, test_ui_area_dialog_and_map_before_tiles, test_machine_flow_with_fake_stepper,
+        test_ui,
     ]
     failed = 0
     for t in tests:

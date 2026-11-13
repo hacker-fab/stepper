@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import math
 import os
-import time
 from typing import List, Optional, Tuple
 
 import cv2
@@ -220,14 +219,16 @@ class VirtualRig:
 
     def expose(
         self,
-        mask: np.ndarray,
+        pattern: np.ndarray,
         proj_um_per_px: Tuple[float, float],
         crop: Optional[Tuple[int, int, int, int]] = None,
     ) -> Tuple[float, float]:
-        """Pretend to expose one pattern tile with the stage where it really is now.  Returns the true
-        chip position (um) the frame centre landed on."""
+        """Pretend to expose one pattern tile (its ``crop`` footprint) with the stage where it really is now.
+        Returns the true chip position (um) the frame centre landed on."""
+        from lib.img import exposure_mask
+
         xy = self.true_chip_xy()
-        self.chip.paint(mask, xy, proj_um_per_px, crop)
+        self.chip.paint(exposure_mask(pattern), xy, proj_um_per_px, crop)
         return xy
 
     def ideal_chip_xy(self, target_um: Tuple[float, float]) -> Tuple[float, float]:
@@ -280,49 +281,12 @@ def simulate_patterning(
     ``use_crosses``: tiles that have a left/top neighbour find some of their crosses already printed by
     an earlier tile; with this on, the alignment uses those crosses (cross detection on).  Off, the
     alignment only uses the chip's own features (convolution against the map photos)."""
-    from lib.alignment import (
-        CrossMeasurer,
-        FeatureMeasurer,
-        align_to_target,
-        cross_positions_um,
-        earlier_crosses,
-    )
-    from lib.img import exposure_mask
-    from lib.mapping import status
-    from lib.tiling import cross_patch
+    from lib.alignment import pattern_tiles
 
-    note = progress or (lambda m: None)
-    targets = pm.stage_targets(center_um, cfg.sign)
-    fm = FeatureMeasurer(mr) if closed_loop else None
-    tmpl = cross_patch(images[-1], pm.geo, "tl")
-    pos, photos, aligns, used = [], 0, [], []
-    t_pat = time.perf_counter()
-    status(f"patterning: {len(pm.tiles)} tiles ({'closed-loop alignment' if closed_loop else 'open loop'})")
-    for t, T in zip(pm.tiles, targets):
-        t_tile = time.perf_counter()
-        note(f"tile {t.slot + 1}: {'aligning' if closed_loop else 'moving'}")
-        if closed_loop:
-            measurers = [fm]
-            names = earlier_crosses(pm, t.slot) if use_crosses else []
-            if len(names) >= 2:
-                exp = cross_positions_um(pm.geo, T, pm.um_per_px, cfg.sign, names=names)
-                measurers = [CrossMeasurer(tmpl, pm.geo.center_in_cross, exp, cfg, pm.um_per_px, ml_detector=ml_detector), fm]
-            ar = align_to_target(rig, T, measurers, cfg)
-            photos += len(ar.steps)
-            aligns.append(ar)
-            used.append(ar.steps[-1].used if ar.steps else "")
-            if recorder is not None:
-                recorder.save_alignment(ar, f"tile{t.slot + 1}")
-        else:
-            rig.move_to(*T)
-            rig.settle(cfg.t_settle_s)
-            if hasattr(rig, "autofocus") and cfg.autofocus:
-                rig.autofocus()
-        note(f"tile {t.slot + 1}: exposing (virtual)")
-        pos.append(rig.expose(exposure_mask(images[t.slot]), pm.um_per_px, t.crop))
-        status(f"patterning: tile {len(pos)}/{len(pm.tiles)} done (slot {t.slot + 1}), {time.perf_counter() - t_pat:.0f} s elapsed")
-        if recorder is not None:
-            recorder.add_timing(f"patterning tile {len(pos)}", time.perf_counter() - t_tile, f"slot {t.slot + 1}", "detail")
+    res = pattern_tiles(
+        rig, mr, pm, images, cfg, center_um, closed_loop, use_crosses, recorder, progress, ml_detector
+    )
+    targets, pos = res["targets"], res["exposed"]
     ideal = [rig.ideal_chip_xy(T) for T in targets]
     spacing = [
         math.hypot(
@@ -344,8 +308,8 @@ def simulate_patterning(
                     )
                 )
     return {
-        "true_positions_um": pos, "spacing_error_um": spacing, "seam_error_um": seams, "photos": photos,
-        "alignments": aligns, "driven_by": used, "alignment_s": sum(a.stage_s for a in aligns),
+        "true_positions_um": pos, "spacing_error_um": spacing, "seam_error_um": seams, "photos": res["photos"],
+        "alignments": res["alignments"], "driven_by": res["driven_by"], "alignment_s": res["alignment_s"],
     }
 
 

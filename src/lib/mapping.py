@@ -37,6 +37,9 @@ def status(msg: str) -> None:
 
 CAMERA_SIZE_PX = (1920, 1080)  # "each snapshot captured is 1920 x 1080 pixels" (gui.py)
 DEFAULT_CAM_UM_PER_PX = 0.678  # measured by the user
+# Only the middle of the camera frame is lit by the projector (1037 x 583 um of the 1302 x 732 um view); the
+# dark edge around it made dark lines in the map and pulled the matching.  Same 1 / 1.3 as the old stitcher.
+CAMERA_LIT_FRACTION = 1 / 1.3
 
 Tile = Tuple[int, int]  # (row, col)
 

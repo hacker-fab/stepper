@@ -470,6 +470,22 @@ def save_png_bgr(path: str, img_bgr: np.ndarray) -> None:
     buf.tofile(path)
 
 
+def crop_center(img: np.ndarray, fraction: float) -> np.ndarray:
+    """The middle ``fraction`` of a frame in both directions (no resampling, so um per px is unchanged)."""
+    h, w = img.shape[:2]
+    cw, ch = int(round(w * fraction)), int(round(h * fraction))
+    x0, y0 = (w - cw) // 2, (h - ch) // 2
+    return img[y0 : y0 + ch, x0 : x0 + cw]
+
+
+def cv2_to_pil(img: np.ndarray) -> Image.Image:
+    """An image as cv2 loads it (grey, BGR or BGRA) as an RGB(A) PIL image."""
+    if img.ndim == 2:
+        return Image.fromarray(img)
+    code = cv2.COLOR_BGRA2RGBA if img.shape[2] == 4 else cv2.COLOR_BGR2RGB
+    return Image.fromarray(cv2.cvtColor(img, code))
+
+
 def exposure_mask(img: np.ndarray) -> np.ndarray:
     """True where the pattern exposes (any colour channel bright). Patterns are blue on black."""
     a = np.asarray(img)

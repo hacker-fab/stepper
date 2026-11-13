@@ -8,6 +8,7 @@ import sys
 import time
 import tkinter
 import tkinter as tk
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -27,9 +28,12 @@ from ultralytics import YOLO
 from camera.camera_module import CameraModule
 from camera.webcam import Webcam
 from hardware import ImageProcessSettings, Lithographer, ProcessedImage
+from lib.alignment import pattern_tiles, yolo_detector
 from lib.gui import FloatEntry, IntEntry, Thumbnail
 from lib.img import (
     aruco_grid_image,
+    crop_center,
+    cv2_to_pil,
     exposure_mask,
     frame_difference,
     image_to_tk_image,
@@ -38,6 +42,7 @@ from lib.img import (
 )
 from lib.mapping import (
     CAMERA_DEAD_S,
+    CAMERA_LIT_FRACTION,
     DEFAULT_CAM_UM_PER_PX,
     FOCUS_SETTLE_S,
     FOCUS_STAGES,
@@ -68,6 +73,7 @@ from lib.tiling import (
     render_placement,
     same_layout,
     spec_mismatches,
+    tile_pattern,
 )
 from projector import TkProjector
 from stage_control.grbl_stage import GrblStage
@@ -779,6 +785,17 @@ class EventDispatcher:
         if self.should_abort:
             print("Patterning aborted")
             self.should_abort = False
+
+    def expose_pattern(self, red_to_uv_offset: float):
+        """Expose the loaded pattern at the current position (used by both tiling flows): move z by the
+        red -> UV focus offset, UV autofocus, expose, then back to red mode and the red focus height."""
+        self.move_relative({"z": red_to_uv_offset})
+        self.non_blocking_delay(0.5)
+        self.enter_uv_mode(mode_switch_autofocus=False)
+        self.autofocus(blue_only=True)
+        self.begin_patterning()
+        self.enter_red_mode(mode_switch_autofocus=False)
+        self.move_relative({"z": -1 * red_to_uv_offset})
 
     def non_blocking_delay(self, t: float):
         start = time.time()
@@ -2865,22 +2882,12 @@ class TilingFrame:
                 else:
                     do_align_tiling('top')
 
-            # Do automatic offset for UV then autofocus
-            self.model.move_relative({"z": self.red_to_uv_offset})
-            self.model.non_blocking_delay(0.5)
-            self.model.enter_uv_mode(mode_switch_autofocus=False)
-            self.model.autofocus(blue_only=True)
-
-            # expose the image
-            self.model.begin_patterning()
+            # UV offset + autofocus, expose, back to red
+            self.model.expose_pattern(self.red_to_uv_offset)
 
             # TODO Add second exposure of the alignment markers
             # I tried doing this with a non blocking delay but didnt have success
             # I think that loading a pattern of the alignment marks that is hardcoded into the software might be the best bet
-
-            # Offset back to red mode
-            self.model.enter_red_mode(mode_switch_autofocus=False)
-            self.model.move_relative({"z": -1 * self.red_to_uv_offset})
 
         def segment():
             # create tile directory and segment images
@@ -2986,6 +2993,7 @@ class TilingFrame:
                 self.frame,
                 model,
                 tile_counts=lambda: (self.y_settings.amount_var.get(), self.x_settings.amount_var.get()),
+                red_to_uv_offset=self.red_to_uv_offset,
             )
 
         self.map_button = ttk.Button(
@@ -3525,12 +3533,43 @@ class PlacementApprovalWindow:
 # Whole flow
 # --------------------------------------------------------------------------------------
 class ModelRig:
-    """Rig for the old UI: wraps the EventDispatcher ('model') the way TilingCheckFrame uses it."""
+    """Rig for the old UI: wraps the EventDispatcher ('model') the way TilingCheckFrame uses it.
 
-    def __init__(self, model, z: Optional[float] = None):
+    Every photo it hands out is cropped to the part of the camera frame the projector lights
+    (CAMERA_LIT_FRACTION), so the dark edge never reaches the map, the matching or the focus score."""
+
+    def __init__(self, model, z: Optional[float] = None, red_to_uv_offset: float = -40.0):
         self.model = model
         self.z = model.stage_setpoint[2] if z is None else z
+        self.red_to_uv_offset = red_to_uv_offset  # z move from red focus to UV focus (TilingFrame's value)
         self._focused_once = False  # the first autofocus does the coarse stage, later ones only the fine one
+
+    @contextmanager
+    def solid_red(self):
+        """Light the chip with plain red while photos are taken (map, alignment, finished piece).  Red does not
+        expose the resist; a projected red pattern would sit still in every photo and pull the matching."""
+        m = self.model
+        if not getattr(m, "camera", None) or not hasattr(m, "red_focus_source"):
+            yield
+            return
+        prev_source, prev_shown = m.red_focus_source, m.shown_image
+        self.project_and_confirm(
+            lambda: (m.set_red_focus_source(RedFocusSource.SOLID), m.enter_red_mode(mode_switch_autofocus=False)),
+            "solid red on",
+        )
+        try:
+            yield
+        finally:
+            m.set_red_focus_source(prev_source)
+            m.set_shown_image(prev_shown)
+
+    def expose(self, pattern: np.ndarray, proj_um_per_px: Tuple[float, float], crop: Tuple[int, int, int, int]) -> None:
+        """Expose one tile here: its pattern with everything outside the footprint black, then the same UV
+        offset / UV autofocus / exposure / back-to-red steps as Begin Tiling."""
+        m = self.model
+        m.set_pattern_image(cv2_to_pil(tile_pattern(pattern, crop)), f"map tile, footprint {crop}")
+        m.expose_pattern(self.red_to_uv_offset)
+        self.z = m.stage_setpoint[2]
 
     def move_to(self, x_um: float, y_um: float) -> None:
         # move_absolute fills missing axes with 0, so always pass z
@@ -3665,13 +3704,18 @@ class ModelRig:
     verbose_projector = True  # print how many frames each projector change took (to see the real latency)
 
     def grab(self) -> np.ndarray:
-        """The next frame the camera delivers after this call, never the one that was already there."""
+        """The lit middle of the next frame the camera delivers after this call (never the one already there)."""
         if getattr(self.model, "camera", None):
-            return self._next_frame()
+            return crop_center(self._next_frame(), CAMERA_LIT_FRACTION)
         img = self.model.camera_image
         if img is None:
             raise RuntimeError("no camera image available")
-        return np.array(img)
+        return crop_center(np.array(img), CAMERA_LIT_FRACTION)
+
+    def cam_size(self) -> Tuple[int, int]:
+        """(width, height) of the photos grab() hands out."""
+        f = self.grab()
+        return (f.shape[1], f.shape[0])
 
 
 class ProgressWindow:
@@ -3729,11 +3773,13 @@ def run_map_and_placement(
     cam_um_per_px: float = DEFAULT_CAM_UM_PER_PX,
     on_approved: Optional[Callable[[ApprovedPlacement], None]] = None,
     tile_counts: Optional[Callable[[], Tuple[object, object]]] = None,
+    red_to_uv_offset: float = -40.0,
 ) -> Optional[ApprovedPlacement]:
     """Tile grid (taken from the tiling panel, shown in the area dialog to confirm) -> camera map around the
-    current stage position -> ONLY THEN pick the pattern for each tile -> placement approval."""
-    cam = np.asarray(model.camera_image)
-    cam_size = (cam.shape[1], cam.shape[0])
+    current stage position -> ONLY THEN pick the pattern for each tile -> placement approval -> (asked)
+    pattern the tiles with closed-loop alignment -> re-map the finished piece to check the alignment."""
+    rig = ModelRig(model, red_to_uv_offset=red_to_uv_offset)
+    cam_size = rig.cam_size()
     (rows0, cols0), why = default_tile_counts(tile_counts)
     status(f"tile grid: {why}")
     t_dialog = time.perf_counter()
@@ -3758,7 +3804,8 @@ def run_map_and_placement(
     prog = ProgressWindow(parent)
     t_map = time.perf_counter()
     try:
-        result = map_area(ModelRig(model), cfg, area_pm.area_size_um, center, prog.update, lambda: prog.aborted)
+        with rig.solid_red():
+            result = map_area(rig, cfg, area_pm.area_size_um, center, prog.update, lambda: prog.aborted)
     except Exception as e:  # noqa: BLE001
         prog.close()
         recorder.log(f"mapping stopped: {e}")
@@ -3801,27 +3848,69 @@ def run_map_and_placement(
             model.map_placement = win.result  # kept for the exposure step that comes next
         except Exception:  # noqa: BLE001
             pass
+        n = len(win.result.stage_targets)
+        if messagebox.askyesno(
+            "Pattern tiles",
+            f"Expose the {n} tiles now?\n\nEach tile: move to its target, align under red light (crosses already "
+            "printed by earlier tiles, else the chip's own features against the map), then UV exposure with "
+            "that tile's pattern.  Afterwards the finished piece is re-mapped to check the alignment.",
+        ):
+            run_tiles(parent, model, win.result, recorder, rig)
+            run_finished_piece(parent, model, cam_um_per_px, rig)
     else:
         recorder.log("placement not approved")
     return win.result
 
 
-def run_finished_piece(parent: tk.Misc, model, cam_um_per_px: float = DEFAULT_CAM_UM_PER_PX) -> Optional[MapResult]:
-    """After patterning: quick re-map of the same area, saved as separate photos + one stitched image
-    in the run folder of the approved placement (4_finished_piece)."""
+def run_tiles(parent: tk.Misc, model, placement: ApprovedPlacement, recorder: RunRecorder, rig: ModelRig) -> Optional[dict]:
+    """Pattern every tile of an approved placement: closed-loop alignment, then UV exposure (pattern_tiles)."""
+    mr = placement.map_result
+    if mr is None:
+        messagebox.showerror("Pattern tiles", "This placement has no camera map to align against.")
+        return None
+    yolo = getattr(model, "model", None)
+    prog = ProgressWindow(parent, "Pattern tiles")
+    t0 = time.perf_counter()
+    try:
+        with rig.solid_red():
+            res = pattern_tiles(
+                rig, mr, placement.placement, placement.images, mr.cfg, placement.area_center_um,
+                closed_loop=True, use_crosses=True, recorder=recorder,
+                progress=lambda msg: prog.update(0.5, msg),
+                ml_detector=yolo_detector(yolo) if yolo is not None else None,
+                should_abort=lambda: prog.aborted,
+            )
+    except Exception as e:  # noqa: BLE001
+        prog.close()
+        recorder.log(f"patterning stopped: {e}")
+        messagebox.showerror("Pattern tiles", f"Patterning stopped: {e}")
+        return None
+    prog.close()
+    done = len(res["exposed"])
+    recorder.add_timing("patterning", time.perf_counter() - t0, f"{done} tiles", "machine")
+    recorder.log(f"patterned {done} of {len(placement.stage_targets)} tiles, alignment driven by {res['driven_by']}")
+    return res
+
+
+def run_finished_piece(
+    parent: tk.Misc, model, cam_um_per_px: float = DEFAULT_CAM_UM_PER_PX, rig: Optional[ModelRig] = None
+) -> Optional[MapResult]:
+    """After patterning: quick re-map of the same area, saved as separate photos + one stitched image with the
+    expected tile outlines drawn on it, in the run folder of the approved placement (4_finished_piece)."""
     placement: Optional[ApprovedPlacement] = getattr(model, "map_placement", None)
     recorder: Optional[RunRecorder] = getattr(model, "map_run", None)
     if placement is None or recorder is None:
         messagebox.showinfo("Camera map", "Run Map + Placement and approve a placement first.")
         return None
-    cam = np.asarray(model.camera_image)
-    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=(cam.shape[1], cam.shape[0]))
+    rig = rig or ModelRig(model)
+    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=rig.cam_size())
     prog = ProgressWindow(parent, "Finished piece")
     try:
-        res = map_finished_piece(
-            ModelRig(model), cfg, placement.placement.area_size_um, placement.area_center_um, recorder,
-            placement.placement, prog.update, lambda: prog.aborted,
-        )
+        with rig.solid_red():
+            res = map_finished_piece(
+                rig, cfg, placement.placement.area_size_um, placement.area_center_um, recorder,
+                placement.placement, prog.update, lambda: prog.aborted,
+            )
     except Exception as e:  # noqa: BLE001
         prog.close()
         recorder.log(f"finished-piece scan stopped: {e}")
@@ -3951,7 +4040,7 @@ class TilingCheckFrame:
         stride_x, stride_y = 798, 448  # 1037 / 1.3 and 583 / 1.3
         # crop image pixels
         # each snapshot captured is 1920 x 1080 pixels
-        crop_x, crop_y = 1477, 831  # 1920 / 1.3 and 1080 / 1.3
+        crop_x, crop_y = round(1920 * CAMERA_LIT_FRACTION), round(1080 * CAMERA_LIT_FRACTION)  # 1477, 831
         # Disable button during capture
         self.capture_button.config(state='disabled', text="Capturing...")
         self.frame.update()

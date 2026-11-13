@@ -31,6 +31,7 @@ Sign conventions are those of lib/mapping.py: mosaic x right / y down, stage +x 
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -248,8 +249,10 @@ class CrossMeasurer(Measurer):
         scales: Sequence[float] = (0.94, 1.0, 1.06),
         ml_detector: Optional[MLDetector] = None,
         ml_gate_px: float = 90.0,
+        max_spread_um: float = 10.0,  # crosses of one layer agree to a few um (each tile its own error); 35 um = a false find
     ):
         self.cfg = cfg
+        self.max_spread_um = max_spread_um
         self.expected = list(expected_um)
         self.proj = proj_um_per_px
         self.search = search_px
@@ -360,9 +363,16 @@ class CrossMeasurer(Measurer):
         e = np.array([[a, b] for a, b, _ in errs])
         w = np.array([c for _, _, c in errs])
         med = np.median(e, axis=0)
-        keep = np.hypot(*(e - med).T) <= max(4.0, 3.0 * float(np.median(np.hypot(*(e - med).T))))
+        # A fixed limit: with two crosses each is exactly as far from the median as the other, so a limit
+        # relative to the median distance (as before) kept two crosses that disagreed by 35 um.
+        dist = np.hypot(*(e - med).T) * s
+        keep = dist <= self.max_spread_um
         if keep.sum() < self.min_crosses:
-            return Measurement(self.name, False, (0.0, 0.0), 0.0, int(keep.sum()), "crosses disagree with each other")
+            return Measurement(
+                self.name, False, (0.0, 0.0), 0.0, int(keep.sum()),
+                f"crosses disagree with each other (up to {float(dist.max()):.1f} um from their median, "
+                f"limit {self.max_spread_um:.1f} um)",
+            )
         mean = (e[keep] * w[keep, None]).sum(axis=0) / w[keep].sum()
         # crosses appear displaced by +mean in the photo, so the camera sits at -mean: move by +mean
         corr = (sg[0] * float(mean[0]) * s, sg[1] * float(mean[1]) * s)
@@ -522,3 +532,74 @@ def compare_methods(frame: np.ndarray, target_um: Point, measurers: Sequence[Mea
     if len(good) >= 2:
         delta = math.hypot(good[0].correction_um[0] - good[1].correction_um[0], good[0].correction_um[1] - good[1].correction_um[1])
     return {"measurements": ms, "delta_um": delta}
+
+
+# --------------------------------------------------------------------------------------
+# Patterning: align to every tile target, then expose it (real machine and virtual stage alike)
+# --------------------------------------------------------------------------------------
+def pattern_tiles(
+    rig: Rig,
+    mr: MapResult,
+    pm,
+    images: Sequence[np.ndarray],
+    cfg: MapConfig,
+    center_um: Point,
+    closed_loop: bool = True,
+    use_crosses: bool = False,
+    recorder=None,
+    progress: Optional[Callable[[str], None]] = None,
+    ml_detector: Optional[MLDetector] = None,
+    should_abort: Optional[Callable[[], bool]] = None,
+) -> dict:
+    """For every tile in reading order: move to its stage target (closed loop: correct with the measured
+    error until aligned), then ``rig.expose(pattern, proj_um_per_px, footprint)``.
+
+    Alignment always uses the chip's own features against the map (``FeatureMeasurer``).  With
+    ``use_crosses``, a tile that has crosses already printed by an earlier tile measures those too and
+    prefers them (they follow what is really on the chip); features take over when they are not found.
+    Returns what ``rig.expose`` returned per tile, the alignment results and the photo count."""
+    from .mapping import status
+    from .tiling import cross_patch
+
+    note = progress or (lambda m: None)
+    targets = pm.stage_targets(center_um, cfg.sign)
+    fm = FeatureMeasurer(mr) if closed_loop else None
+    tmpl = cross_patch(images[-1], pm.geo, "tl")
+    exposed: list = []
+    photos, aligns, used = 0, [], []
+    t_pat = time.perf_counter()
+    status(f"patterning: {len(pm.tiles)} tiles ({'closed-loop alignment' if closed_loop else 'open loop'})")
+    for t, T in zip(pm.tiles, targets):
+        if should_abort and should_abort():
+            status(f"patterning: aborted after {len(exposed)} tiles")
+            break
+        t_tile = time.perf_counter()
+        note(f"tile {t.slot + 1}: {'aligning' if closed_loop else 'moving'}")
+        if closed_loop:
+            measurers: List[Measurer] = [fm]
+            names = earlier_crosses(pm, t.slot) if use_crosses else []
+            if len(names) >= 2:
+                exp = cross_positions_um(pm.geo, T, pm.um_per_px, cfg.sign, names=names)
+                measurers = [CrossMeasurer(tmpl, pm.geo.center_in_cross, exp, cfg, pm.um_per_px, ml_detector=ml_detector), fm]
+            ar = align_to_target(rig, T, measurers, cfg, progress=note)
+            photos += len(ar.steps)
+            aligns.append(ar)
+            used.append(ar.steps[-1].used if ar.steps else "")
+            if not ar.ok:
+                status(f"patterning: tile {t.slot + 1} not aligned within tolerance ({ar.message}); exposing at the best position")
+            if recorder is not None:
+                recorder.save_alignment(ar, f"tile{t.slot + 1}")
+        else:
+            rig.move_to(*T)
+            rig.settle(cfg.t_settle_s)
+            if hasattr(rig, "autofocus") and cfg.autofocus:
+                rig.autofocus()
+        note(f"tile {t.slot + 1}: exposing")
+        exposed.append(rig.expose(images[t.slot], pm.um_per_px, t.crop))
+        status(f"patterning: tile {len(exposed)}/{len(pm.tiles)} done (slot {t.slot + 1}), {time.perf_counter() - t_pat:.0f} s elapsed")
+        if recorder is not None:
+            recorder.add_timing(f"patterning tile {len(exposed)}", time.perf_counter() - t_tile, f"slot {t.slot + 1}", "detail")
+    return {
+        "targets": targets, "exposed": exposed, "photos": photos, "alignments": aligns, "driven_by": used,
+        "alignment_s": sum(a.stage_s for a in aligns),
+    }
