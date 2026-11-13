@@ -412,6 +412,24 @@ def scan_summary(area_um: Tuple[float, float], cfg: Optional[MapConfig] = None) 
     }
 
 
+def scan_area_um(pm: PlacementMap, cfg: MapConfig) -> Tuple[float, float]:
+    """The area to map for a placement: what the alignment needs, and no more photos than necessary.
+
+    The alignment photographs each tile centred on its stage target, so every such view must be on the map:
+    tile-centre span + one photo.  That is widened to what (tiles + 1) photos per direction cover at the
+    minimum overlap (more context for free), but never beyond the placement's full area of complete frames.
+    With the photo cropped to the lit part of the frame (about one projector frame), mapping the full
+    (tiles + 1)-frame area would need one more photo per direction for no benefit."""
+    fov = (cfg.cam_size[0] * cfg.um_per_px, cfg.cam_size[1] * cfg.um_per_px)
+    out = []
+    for a, n in ((0, pm.cols), (1, pm.rows)):
+        centres = [t.center_um[a] for t in pm.tiles]
+        need = (max(centres) - min(centres)) + fov[a]
+        grid = fov[a] * (1.0 + n * (1.0 - cfg.overlap_min)) * (1.0 - 1e-6)  # n + 1 photos at the minimum overlap
+        out.append(max(need, min(grid, pm.area_size_um[a])))
+    return (out[0], out[1])
+
+
 def plan_scan(
     cfg: MapConfig, area_um: Tuple[float, float], center_um: Tuple[float, float]
 ) -> Tuple[Dict[Tile, Tuple[float, float]], Tuple[float, float], Tuple[float, float]]:

@@ -27,6 +27,7 @@ from lib.mapping import (  # noqa: E402
     MapConfig,
     MapResult,
     map_area,
+    scan_area_um,
     scan_summary,
     snake_order,
 )
@@ -745,6 +746,7 @@ def test_machine_flow_with_fake_stepper() -> None:
     mr = approved.map_result
     # every photo is the lit middle of the frame: no dark edge in the map
     assert mr.cfg.cam_size == (1477, 831), mr.cfg.cam_size
+    assert (mr.cfg.rows, mr.cfg.cols) == (3, 3), (mr.cfg.rows, mr.cfg.cols)  # 2 x 2 tiles: a 3 x 3 map
     assert np.percentile(mr.mosaic, 0.5) > 0.6 * np.median(mr.mosaic), "dark edge in the map"
     # photos were taken under plain red, and the projector setting was put back afterwards
     assert ui.RedFocusSource.SOLID in log["sources_at_grab"] and fake.red_focus_source == ui.RedFocusSource.PATTERN
@@ -848,12 +850,13 @@ def _ui_area_checks(root, ui) -> None:
             ui.messagebox.showwarning = lambda t, m: events.append("warning")
             ui.RunRecorder = lambda label="": real[5](tmp, label)
             ui.run_map_and_placement(root, model)
-            # the photo run_map_and_placement grabs first to learn the photo size, then the map: photos are cropped
-            # to the lit middle of the frame (1/1.3), so the 3 x 3 frame area takes 4 x 4 photos (plus any
-            # re-takes).  A blank chip maps too: its overlaps are placed from the stage, so tiles can be inserted.
+            # the photo run_map_and_placement grabs first to learn the photo size, then a 3 x 3 map (photos are
+            # cropped to the lit middle of the frame; the map covers every tile's alignment view), plus any
+            # re-takes.  A blank chip maps too: its overlaps are placed from the stage, so tiles can be inserted.
             assert events[0] == "area dialog" and events[1].startswith("picker opened after "), events
-            assert int(events[1].split()[3]) >= 1 + 16, events
-            assert events[2] == "approval 2x2 in 3x3, mapped area 2914 um", events
+            assert 1 + 9 <= int(events[1].split()[3]) <= 1 + 9 + 2, events
+            mapped = scan_area_um(area_for_tiles(2, 2), MapConfig(cam_size=(1477, 831)))[0]  # the cropped photo
+            assert events[2] == f"approval 2x2 in 3x3, mapped area {mapped:.0f} um", events
             # ModelRig's autofocus projects a grid and needs a camera; this fake model has none, so it is skipped
             # and the old UI's red autofocus is never called
             assert not model.af_args, model.af_args

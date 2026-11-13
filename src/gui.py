@@ -54,6 +54,7 @@ from lib.mapping import (
     background_from_map,
     golden_section_focus,
     map_area,
+    scan_area_um,
     scan_summary,
     status,
 )
@@ -3264,7 +3265,8 @@ class AreaDialog:
         pm = area_for_tiles(r, c)
         w_um, h_um = pm.area_size_um
         cfg = MapConfig(um_per_px=self.cam_um_per_px, cam_size=self.cam_size)
-        sc = scan_summary((w_um, h_um), cfg)
+        mw, mh = scan_area_um(pm, cfg)
+        sc = scan_summary((mw, mh), cfg)
         x0 = min(t.dest[0] for t in pm.tiles)
         y0 = min(t.dest[1] for t in pm.tiles)
         x1 = max(t.dest[2] for t in pm.tiles)
@@ -3275,6 +3277,7 @@ class AreaDialog:
             f"area to map: {c + 1} x {r + 1} complete frames",
             f"space occupied: {w_um:.0f} x {h_um:.0f} um  ({w_um / 1000:.2f} x {h_um / 1000:.2f} mm)",
             f"pattern block inside: {bw:.0f} x {bh:.0f} um, centred",
+            f"mapped: {mw:.0f} x {mh:.0f} um (every tile's alignment view)",
             "",
             f"map photos: {sc['cols']} x {sc['rows']} ({sc['photos']}), step "
             f"{sc['step_fraction'][0] * 100:.0f}% x / {sc['step_fraction'][1] * 100:.0f}% y of a frame (max 75%)",
@@ -3284,7 +3287,7 @@ class AreaDialog:
             "Tiles can be inserted once the map is done.",
         ]
         if sc["est_s"] > 300:
-            lines.insert(7, "WARNING: this is over the 5 minute mapping target")
+            lines.insert(8, "WARNING: this is over the 5 minute mapping target")
         return lines
 
     def refresh(self) -> None:
@@ -3483,11 +3486,12 @@ class PlacementApprovalWindow:
             lines.append("cross size/distances match the CROSS_* inputs in lib/tiling.py")
         self.too_big = False
         if self.mapped_area_um is not None:
-            over = (pm.area_size_um[0] - self.mapped_area_um[0], pm.area_size_um[1] - self.mapped_area_um[1])
+            need = scan_area_um(pm, self.map_result.cfg) if self.map_result is not None else pm.area_size_um
+            over = (need[0] - self.mapped_area_um[0], need[1] - self.mapped_area_um[1])
             if max(over) > 25.0:
                 self.too_big = True
                 lines.append(
-                    f"WARNING: this placement needs {pm.area_size_um[0]:.0f} x {pm.area_size_um[1]:.0f} um but only "
+                    f"WARNING: this placement needs {need[0]:.0f} x {need[1]:.0f} um mapped but only "
                     f"{self.mapped_area_um[0]:.0f} x {self.mapped_area_um[1]:.0f} um was mapped (cross layout differs from CROSS_*)"
                 )
         targets = pm.stage_targets(self.area_center, self.sign)
@@ -3790,10 +3794,11 @@ def run_map_and_placement(
     tile_rows, tile_cols = counts
     area_pm = area_for_tiles(tile_rows, tile_cols)
     cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=cam_size)
+    map_um = scan_area_um(area_pm, cfg)
     center = (float(model.stage_setpoint[0]), float(model.stage_setpoint[1]))
     status(
-        f"mapping {area_pm.area_size_um[0]:.0f} x {area_pm.area_size_um[1]:.0f} um "
-        f"({tile_cols + 1} x {tile_rows + 1} complete frames) around stage ({center[0]:.0f}, {center[1]:.0f}) um"
+        f"mapping {map_um[0]:.0f} x {map_um[1]:.0f} um (every tile's alignment view of a {tile_cols} x {tile_rows} "
+        f"pattern) around stage ({center[0]:.0f}, {center[1]:.0f}) um"
     )
     recorder = RunRecorder(label="map")  # one folder per run, next to this file
     recorder.add_timing("area dialog", dialog_s, "confirm the tile grid", "user")
@@ -3805,7 +3810,7 @@ def run_map_and_placement(
     t_map = time.perf_counter()
     try:
         with rig.solid_red():
-            result = map_area(rig, cfg, area_pm.area_size_um, center, prog.update, lambda: prog.aborted)
+            result = map_area(rig, cfg, map_um, center, prog.update, lambda: prog.aborted)
     except Exception as e:  # noqa: BLE001
         prog.close()
         recorder.log(f"mapping stopped: {e}")
@@ -3834,7 +3839,7 @@ def run_map_and_placement(
     t_approve = time.perf_counter()
     win = PlacementApprovalWindow(
         parent, images, paths, rows=tile_rows, cols=tile_cols, area_rows=tile_rows + 1, area_cols=tile_cols + 1,
-        area_center_um=center, map_result=result, on_approve=on_approved, mapped_area_um=area_pm.area_size_um,
+        area_center_um=center, map_result=result, on_approve=on_approved, mapped_area_um=map_um,
     )
     win.win.grab_set()
     win.win.wait_window()
@@ -3908,7 +3913,7 @@ def run_finished_piece(
     try:
         with rig.solid_red():
             res = map_finished_piece(
-                rig, cfg, placement.placement.area_size_um, placement.area_center_um, recorder,
+                rig, cfg, scan_area_um(placement.placement, cfg), placement.area_center_um, recorder,
                 placement.placement, prog.update, lambda: prog.aborted,
             )
     except Exception as e:  # noqa: BLE001
