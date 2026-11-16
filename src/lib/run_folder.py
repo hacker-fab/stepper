@@ -30,11 +30,45 @@ import cv2
 import numpy as np
 
 from .img import save_png, save_png_bgr
-from .mapping import MapConfig, MapResult, Rig, background_from_map, map_area, status
+from .mapping import (
+    MapConfig,
+    MapResult,
+    ProjectorCalibration,
+    Rig,
+    background_from_map,
+    map_area,
+    status,
+    tile_point_map_px,
+)
 from .tiling import TILE_COLORS, PlacementMap, check_seams, render_placement
 
 # test runs are written next to the code (src/map_runs); the folder is git-ignored
 RUNS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "map_runs")
+
+
+# what this machine has measured about itself (camera vs stage, red -> UV focus offset); kept between runs
+CALIBRATION_FILE = os.path.join(RUNS_DIR, "calibration.json")
+
+
+def load_calibration() -> dict:
+    """The stored machine calibration ({} when nothing has been measured yet)."""
+    try:
+        with open(CALIBRATION_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_calibration(**values) -> None:
+    """Update some calibration values (the others are kept) with the time they were measured."""
+    cal = load_calibration()
+    stamp = datetime.now().isoformat(timespec="seconds")
+    for k, v in values.items():
+        cal[k] = v
+        cal[f"{k}_measured"] = stamp
+    os.makedirs(RUNS_DIR, exist_ok=True)
+    with open(CALIBRATION_FILE, "w", encoding="utf-8") as f:
+        json.dump(cal, f, indent=2)
 
 
 def _write_text(path: str, lines: Sequence[str]) -> None:
@@ -212,6 +246,7 @@ class RunRecorder:
         mr: MapResult,
         pm: Optional[PlacementMap] = None,
         center_um: Optional[Tuple[float, float]] = None,
+        proj: Optional[ProjectorCalibration] = None,
         subdir: str = "4_finished_piece",
     ) -> str:
         """Separate photos plus the stitched finished piece, with the expected tile outlines drawn on a copy."""
@@ -219,34 +254,40 @@ class RunRecorder:
         if mr.mosaic is not None:
             os.replace(os.path.join(root, "combined_map.png"), os.path.join(root, "stitched.png"))
             if pm is not None and center_um is not None:
-                save_png_bgr(os.path.join(root, "stitched_expected_outline.png"), draw_expected_outline(mr, pm, center_um))
+                save_png_bgr(os.path.join(root, "stitched_expected_outline.png"), draw_expected_outline(mr, pm, center_um, proj))
         self.log(f"finished piece saved -> {root}")
         return root
 
 
-def expected_outline_px(
-    mr: MapResult, pm: PlacementMap, center_um: Tuple[float, float]
-) -> List[Tuple[int, Tuple[float, float, float, float]]]:
-    """For each placed tile: (slot, (x0, y0, x1, y1)) of the footprint it should have exposed, in mosaic px."""
+def expected_outline_corners_px(
+    mr: MapResult, pm: PlacementMap, center_um: Tuple[float, float], proj: Optional[ProjectorCalibration] = None
+) -> List[Tuple[int, List[Tuple[float, float]]]]:
+    """For each placed tile: (slot, its footprint's four corners in mosaic px: TL, TR, BR, BL).  With a projector
+    calibration the outline follows the measured projector -> camera mapping (it may be rotated)."""
     out = []
-    sg = mr.cfg.sign
-    fw, fh = pm.geo.frame_w, pm.geo.frame_h
-    for t, (tx, ty) in zip(pm.tiles, pm.stage_targets(center_um, sg)):
-        pts = []
-        for (fx, fy) in ((t.crop[0], t.crop[1]), (t.crop[2], t.crop[3])):
-            dx = (fx - fw / 2.0) * pm.um_per_px[0]
-            dy = (fy - fh / 2.0) * pm.um_per_px[1]
-            pts.append(mr.stage_to_px(tx + sg[0] * dx, ty + sg[1] * dy))
-        out.append((t.slot, (pts[0][0], pts[0][1], pts[1][0], pts[1][1])))
+    for t in pm.tiles:
+        x0, y0, x1, y1 = t.crop
+        out.append((t.slot, [tile_point_map_px(mr, pm, center_um, proj, t.slot, fx, fy)
+                             for fx, fy in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]))
     return out
 
 
-def draw_expected_outline(mr: MapResult, pm: PlacementMap, center_um: Tuple[float, float]) -> np.ndarray:
+def expected_outline_px(
+    mr: MapResult, pm: PlacementMap, center_um: Tuple[float, float], proj: Optional[ProjectorCalibration] = None
+) -> List[Tuple[int, Tuple[float, float, float, float]]]:
+    """For each placed tile: (slot, (x0, y0, x1, y1)) of the footprint it should have exposed, in mosaic px."""
+    return [(s, (c[0][0], c[0][1], c[2][0], c[2][1])) for s, c in expected_outline_corners_px(mr, pm, center_um, proj)]
+
+
+def draw_expected_outline(
+    mr: MapResult, pm: PlacementMap, center_um: Tuple[float, float], proj: Optional[ProjectorCalibration] = None
+) -> np.ndarray:
     base = mr.mosaic if mr.mosaic is not None else np.zeros((10, 10), np.uint8)
     img = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR) if base.ndim == 2 else base.copy()
-    for slot, (x0, y0, x1, y1) in expected_outline_px(mr, pm, center_um):
+    for slot, corners in expected_outline_corners_px(mr, pm, center_um, proj):
         col = TILE_COLORS[slot % len(TILE_COLORS)]
-        cv2.rectangle(img, (int(round(x0)), int(round(y0))), (int(round(x1)), int(round(y1))), col, 3)
+        cv2.polylines(img, [np.round(np.array(corners)).astype(np.int32)], True, col, 3)
+        x0, y0 = corners[0]
         cv2.putText(img, f"tile {slot + 1}", (int(x0) + 14, int(y0) + 44), cv2.FONT_HERSHEY_SIMPLEX, 1.3, col, 3, cv2.LINE_AA)
     return img
 
@@ -267,5 +308,6 @@ def map_finished_piece(
     t0 = time.perf_counter()
     mr = map_area(rig, cfg, area_um, center_um, progress, should_abort)
     recorder.add_timing("finished piece scan", time.perf_counter() - t0, f"{mr.captured} photos, {'ok' if mr.ok else 'FAILED'}", "machine")
-    recorder.save_finished(mr, pm, center_um)
+    get_proj = getattr(rig, "projector_calibration", None)
+    recorder.save_finished(mr, pm, center_um, get_proj() if callable(get_proj) else None)
     return mr

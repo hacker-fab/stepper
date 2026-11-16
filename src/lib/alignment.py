@@ -38,7 +38,16 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .mapping import MapConfig, MapResult, Rig, prepare_frame, register_pair
+from .mapping import (
+    MapConfig,
+    MapResult,
+    Matrix,
+    Rig,
+    nominal_stage_px,
+    prepare_frame,
+    register_pair,
+    tile_stage_targets,
+)
 from .tiling import PROJ_UM_PER_PX, CrossGeometry
 
 Point = Tuple[float, float]
@@ -108,16 +117,15 @@ class FeatureMeasurer(Measurer):
     def measure(self, frame: np.ndarray, target_um: Point) -> Measurement:
         mr = self.mr
         cw, ch = mr.cfg.cam_size
-        s, sg = mr.cfg.um_per_px, mr.cfg.sign
         cx, cy = mr.stage_to_px(*target_um)
         origin = (cx - cw / 2.0, cy - ch / 2.0)  # where the target view's top-left sits in the mosaic
         new = prepare_frame(frame)
         if self.use_mosaic:
-            return self._from_refs(new, [(None, None)], origin, s, sg)
+            return self._from_refs(new, [(None, None)], origin)
         near = sorted(mr.positions_px, key=lambda t: math.hypot(mr.positions_px[t][0] - origin[0], mr.positions_px[t][1] - origin[1]))
-        return self._from_refs(new, [(t, mr.positions_px[t]) for t in near[: self.n_refs]], origin, s, sg)
+        return self._from_refs(new, [(t, mr.positions_px[t]) for t in near[: self.n_refs]], origin)
 
-    def _from_refs(self, new, refs, origin, s, sg) -> Measurement:
+    def _from_refs(self, new, refs, origin) -> Measurement:
         mr, m = self.mr, self.margin
         devs: List[Tuple[float, float, float]] = []
         reasons: List[str] = []
@@ -145,8 +153,10 @@ class FeatureMeasurer(Measurer):
             return Measurement(self.name, False, (0.0, 0.0), 0.0, 0, reasons[0] if reasons else "no reference")
         w8 = np.array([d[2] for d in devs])
         dev = (sum(d[0] * d[2] for d in devs) / w8.sum(), sum(d[1] * d[2] for d in devs) / w8.sum())
-        spread = max((math.hypot(d[0] - dev[0], d[1] - dev[1]) for d in devs), default=0.0) * s
-        corr = (-sg[0] * dev[0] * s, -sg[1] * dev[1] * s)
+        spread = max((math.hypot(d[0] - dev[0], d[1] - dev[1]) for d in devs), default=0.0) * mr.um_per_px()
+        # the view sits dev px away from where the target view is on the map: move the stage back by that much
+        back = mr.px_to_stage_delta(dev[0], dev[1])
+        corr = (-back[0], -back[1])
         detail = f"{len(devs)} ref(s), ZNCC {float(w8.mean()):.2f}" + (f", refs differ {spread:.2f} um" if len(devs) > 1 else "")
         return Measurement(self.name, True, corr, float(w8.mean()), len(devs), detail)
 
@@ -250,8 +260,11 @@ class CrossMeasurer(Measurer):
         ml_detector: Optional[MLDetector] = None,
         ml_gate_px: float = 90.0,
         max_spread_um: float = 10.0,  # crosses of one layer agree to a few um (each tile its own error); 35 um = a false find
+        stage_px: Optional[Matrix] = None,  # camera px per stage um (MapResult.matrix()); None = from cfg
     ):
         self.cfg = cfg
+        self.m = np.array(stage_px if stage_px is not None else nominal_stage_px(cfg), float).reshape(2, 2)
+        self.um_px = 1.0 / math.sqrt(abs(np.linalg.det(self.m)))
         self.max_spread_um = max_spread_um
         self.expected = list(expected_um)
         self.proj = proj_um_per_px
@@ -278,8 +291,8 @@ class CrossMeasurer(Measurer):
 
     def _template(self, k: float) -> np.ndarray:
         if k not in self._templates:
-            sx = self.proj[0] / self.cfg.um_per_px * k
-            sy = self.proj[1] / self.cfg.um_per_px * k
+            sx = self.proj[0] / self.um_px * k
+            sy = self.proj[1] / self.um_px * k
             w = max(8, int(round(self._mask.shape[1] * sx)))
             h = max(8, int(round(self._mask.shape[0] * sy)))
             self._templates[k] = cv2.resize(self._mask, (w, h), interpolation=cv2.INTER_AREA)
@@ -324,13 +337,13 @@ class CrossMeasurer(Measurer):
     def measure(self, frame: np.ndarray, target_um: Point) -> Measurement:
         cfg = self.cfg
         cw, ch = cfg.cam_size
-        s, sg = cfg.um_per_px, cfg.sign
         prep = prepare_frame(frame)
         dets = self.ml(frame) if self.ml else []
         errs: List[Tuple[float, float, float]] = []  # (ex, ey, score)
         notes: List[str] = []
         for i, (X, Y) in enumerate(self.expected):
-            exp = (cw / 2.0 + sg[0] * (X - target_um[0]) / s, ch / 2.0 + sg[1] * (Y - target_um[1]) / s)
+            d = self.m @ np.array([X - target_um[0], Y - target_um[1]])
+            exp = (cw / 2.0 + float(d[0]), ch / 2.0 + float(d[1]))
             if not (-20 <= exp[0] <= cw + 20 and -20 <= exp[1] <= ch + 20):
                 notes.append(f"cross {i + 1} out of view")
                 continue
@@ -365,7 +378,7 @@ class CrossMeasurer(Measurer):
         med = np.median(e, axis=0)
         # A fixed limit: with two crosses each is exactly as far from the median as the other, so a limit
         # relative to the median distance (as before) kept two crosses that disagreed by 35 um.
-        dist = np.hypot(*(e - med).T) * s
+        dist = np.hypot(*(e - med).T) * self.um_px
         keep = dist <= self.max_spread_um
         if keep.sum() < self.min_crosses:
             return Measurement(
@@ -375,8 +388,9 @@ class CrossMeasurer(Measurer):
             )
         mean = (e[keep] * w[keep, None]).sum(axis=0) / w[keep].sum()
         # crosses appear displaced by +mean in the photo, so the camera sits at -mean: move by +mean
-        corr = (sg[0] * float(mean[0]) * s, sg[1] * float(mean[1]) * s)
-        spread = float(np.max(np.hypot(*(e[keep] - mean).T))) * s
+        back = np.linalg.solve(self.m, mean)
+        corr = (float(back[0]), float(back[1]))
+        spread = float(np.max(np.hypot(*(e[keep] - mean).T))) * self.um_px
         detail = f"{int(keep.sum())} crosses, scale x{self.scale:.2f}, spread {spread:.2f} um" + (" (ML seeded)" if dets else "")
         return Measurement(self.name, True, corr, float(w[keep].mean()), int(keep.sum()), detail)
 
@@ -547,7 +561,7 @@ def pattern_tiles(
     closed_loop: bool = True,
     use_crosses: bool = False,
     recorder=None,
-    progress: Optional[Callable[[str], None]] = None,
+    progress: Optional[Callable[[float, str], None]] = None,
     ml_detector: Optional[MLDetector] = None,
     should_abort: Optional[Callable[[], bool]] = None,
 ) -> dict:
@@ -557,30 +571,46 @@ def pattern_tiles(
     Alignment always uses the chip's own features against the map (``FeatureMeasurer``).  With
     ``use_crosses``, a tile that has crosses already printed by an earlier tile measures those too and
     prefers them (they follow what is really on the chip); features take over when they are not found.
+    ``progress(fraction, message)``: fraction of the tiles done (1.0 at the end).
     Returns what ``rig.expose`` returned per tile, the alignment results and the photo count."""
     from .mapping import status
     from .tiling import cross_patch
 
-    note = progress or (lambda m: None)
-    targets = pm.stage_targets(center_um, cfg.sign)
+    report = progress or (lambda f, m: None)
+    n = len(pm.tiles)
+    # where the projector really puts its frame (measured from the autofocus grid), when the rig knows it
+    get_proj = getattr(rig, "projector_calibration", None)
+    proj = get_proj() if callable(get_proj) else None
+    targets = tile_stage_targets(mr, pm, center_um, proj)
+    status(
+        f"patterning: tile targets from the measured projector -> camera mapping: {proj.describe()}"
+        if proj is not None else "patterning: tile targets from the placement (no projector calibration yet)"
+    )
     fm = FeatureMeasurer(mr) if closed_loop else None
     tmpl = cross_patch(images[-1], pm.geo, "tl")
     exposed: list = []
     photos, aligns, used = 0, [], []
     t_pat = time.perf_counter()
     status(f"patterning: {len(pm.tiles)} tiles ({'closed-loop alignment' if closed_loop else 'open loop'})")
-    for t, T in zip(pm.tiles, targets):
+    for k, (t, T) in enumerate(zip(pm.tiles, targets)):
         if should_abort and should_abort():
             status(f"patterning: aborted after {len(exposed)} tiles")
             break
         t_tile = time.perf_counter()
-        note(f"tile {t.slot + 1}: {'aligning' if closed_loop else 'moving'}")
+
+        def note(msg: str, k: int = k) -> None:
+            report(k / n, msg)
+
+        note(f"tile {t.slot + 1}/{n}: {'aligning' if closed_loop else 'moving'}")
         if closed_loop:
             measurers: List[Measurer] = [fm]
             names = earlier_crosses(pm, t.slot) if use_crosses else []
             if len(names) >= 2:
                 exp = cross_positions_um(pm.geo, T, pm.um_per_px, cfg.sign, names=names)
-                measurers = [CrossMeasurer(tmpl, pm.geo.center_in_cross, exp, cfg, pm.um_per_px, ml_detector=ml_detector), fm]
+                measurers = [
+                    CrossMeasurer(tmpl, pm.geo.center_in_cross, exp, cfg, pm.um_per_px, ml_detector=ml_detector, stage_px=mr.matrix()),
+                    fm,
+                ]
             ar = align_to_target(rig, T, measurers, cfg, progress=note)
             photos += len(ar.steps)
             aligns.append(ar)
@@ -594,12 +624,14 @@ def pattern_tiles(
             rig.settle(cfg.t_settle_s)
             if hasattr(rig, "autofocus") and cfg.autofocus:
                 rig.autofocus()
-        note(f"tile {t.slot + 1}: exposing")
+        report((k + 0.5) / n, f"tile {t.slot + 1}/{n}: exposing")
         exposed.append(rig.expose(images[t.slot], pm.um_per_px, t.crop, name=f"tile{t.slot + 1}"))
         status(f"patterning: tile {len(exposed)}/{len(pm.tiles)} done (slot {t.slot + 1}), {time.perf_counter() - t_pat:.0f} s elapsed")
         if recorder is not None:
             recorder.add_timing(f"patterning tile {len(exposed)}", time.perf_counter() - t_tile, f"slot {t.slot + 1}", "detail")
+    report(len(exposed) / n, f"{len(exposed)} of {n} tiles exposed")
     return {
         "targets": targets, "exposed": exposed, "photos": photos, "alignments": aligns, "driven_by": used,
+        "projector_calibration": proj,
         "alignment_s": sum(a.stage_s for a in aligns),
     }

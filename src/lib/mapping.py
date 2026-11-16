@@ -17,7 +17,7 @@ import dataclasses
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Protocol, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -113,6 +113,40 @@ def golden_section_focus(
                 return None
     best = max(seen, key=lambda k: seen[k])
     return best, seen[best], seen
+
+
+FOCUS_LOST_RATIO = 0.6  # a fine search whose best sharpness is below this x the usual focused value missed focus
+FOCUS_MAX_PREDICT_UM = 40.0  # a tilt prediction never moves z further than this from the nearest focused point
+
+
+def predict_focus_z(points: Sequence[Tuple[float, float, float]], x: float, y: float) -> Optional[float]:
+    """z of best focus at stage (x, y) from earlier (x, y, z) focus results: a plane through them (the chip's
+    tilt) once they span an area, the nearest one before that.  None when there are none yet."""
+    if not points:
+        return None
+    pts = np.array(points, float)
+    near = pts[int(np.argmin(np.hypot(pts[:, 0] - x, pts[:, 1] - y)))]
+    if len(pts) < 3:
+        return float(near[2])
+    c = pts.mean(axis=0)
+    a = np.c_[np.ones(len(pts)), pts[:, 0] - c[0], pts[:, 1] - c[1]]
+    # centred, so points along one line (the first row of a map) give no slope across it (min-norm solution)
+    coef, *_ = np.linalg.lstsq(a, pts[:, 2], rcond=1e-6)
+    z = float(coef[0] + coef[1] * (x - c[0]) + coef[2] * (y - c[1]))
+    return float(np.clip(z, near[2] - FOCUS_MAX_PREDICT_UM, near[2] + FOCUS_MAX_PREDICT_UM))
+
+
+def focus_missed(
+    best_z: float, best_score: float, start_z: float, half_range: float, threshold: float, usual: Sequence[float]
+) -> Optional[str]:
+    """Why a fine focus search did not find focus (None = it did): it ended on the edge of its range, or its
+    best sharpness is far below what earlier fine searches reached (the projected grid is the same every time,
+    so the focused sharpness hardly changes from place to place)."""
+    if abs(best_z - start_z) >= half_range - 2 * threshold:
+        return "ended on the edge of its range"
+    if usual and best_score < FOCUS_LOST_RATIO * float(np.median(usual)):
+        return f"sharpness {best_score:.3g} < {FOCUS_LOST_RATIO:.0%} of the usual {float(np.median(usual)):.3g}"
+    return None
 
 
 # --------------------------------------------------------------------------------------
@@ -266,6 +300,9 @@ class MapConfig:
     #                            at most 3/4 of a frame (the grid is chosen so no step is larger than that)
     margin_um: float = 0.0  # extra border around the area
     sign: Tuple[int, int] = (1, -1)  # stage -> mosaic direction (x right, y down)
+    # camera px moved per stage um, (m00, m01, m10, m11): px = M @ stage_um.  None = sign / um_per_px (square
+    # pixels, no rotation).  A map measures the real one (MapResult.stage_px); pass it back in for later runs.
+    stage_px: Optional[Tuple[float, float, float, float]] = None
     search_px: int = 96  # registration search radius around the stage prediction
     min_peak: float = 0.5
     check_tol_um: float = 3.0  # max left/top disagreement
@@ -320,6 +357,69 @@ class CheckResult:
     passed: bool
 
 
+Matrix = Tuple[float, float, float, float]  # (m00, m01, m10, m11), row-major 2x2
+
+
+def nominal_stage_px(cfg: MapConfig) -> Matrix:
+    """Camera px per stage um from the configured sign and um/px (or the measured matrix, if given)."""
+    if cfg.stage_px is not None:
+        return tuple(float(v) for v in cfg.stage_px)  # type: ignore[return-value]
+    s = cfg.um_per_px
+    return (cfg.sign[0] / s, 0.0, 0.0, cfg.sign[1] / s)
+
+
+def fov_um(cfg: MapConfig) -> Tuple[float, float]:
+    """Stage um covered by one photo along stage x and stage y (per-axis um/px of the matrix, if measured)."""
+    m = nominal_stage_px(cfg)
+    ux = 1.0 / max(math.hypot(m[0], m[2]), 1e-12)
+    uy = 1.0 / max(math.hypot(m[1], m[3]), 1e-12)
+    return (cfg.cam_size[0] * ux, cfg.cam_size[1] * uy)
+
+
+def fit_stage_px(
+    steps: Sequence[Tuple[Tuple[float, float], Tuple[float, float]]], prior: Matrix, weight_um2: float = 1e3
+) -> Matrix:
+    """Least-squares camera-px-per-stage-um matrix from (stage step um, measured px shift) pairs.
+
+    Each row is fitted with a weak pull toward ``prior`` so that a direction that has not been stepped yet
+    (only x steps so far) keeps its prior value instead of being undetermined."""
+    a = np.eye(2) * weight_um2
+    m0 = np.array(prior, float).reshape(2, 2)
+    b = m0 * weight_um2  # rows: b_r = lambda * m0_r
+    for d, p in steps:
+        dv = np.array(d, float)
+        a += np.outer(dv, dv)
+        b += np.outer(np.array(p, float), dv)
+    m = np.linalg.solve(a, b.T).T
+    return (float(m[0, 0]), float(m[0, 1]), float(m[1, 0]), float(m[1, 1]))
+
+
+def fit_stage_px_absolute(
+    stage_um: Sequence[Tuple[float, float]], centre_px: Sequence[Tuple[float, float]]
+) -> Optional[Tuple[Matrix, Tuple[float, float]]]:
+    """Camera px per stage um and offset (mosaic px = M @ stage - offset) from every photo's commanded stage
+    position and its solved mosaic position.  Stage backlash and placement noise (a few um per move) average
+    out over the span of the map, unlike in a fit to single steps.  None if the photos do not span an area."""
+    s = np.array(stage_um, float)
+    a = np.c_[s, np.ones(len(s))]
+    if len(s) < 3 or np.linalg.matrix_rank(s - s.mean(axis=0), tol=1e-6) < 2:  # all on one line
+        return None
+    coef, *_ = np.linalg.lstsq(a, np.array(centre_px, float), rcond=None)  # rows: x, y, 1 -> (u, v)
+    m = (float(coef[0, 0]), float(coef[1, 0]), float(coef[0, 1]), float(coef[1, 1]))
+    return m, (-float(coef[2, 0]), -float(coef[2, 1]))
+
+
+def describe_stage_px(m: Matrix, sign: Tuple[int, int] = (1, -1)) -> str:
+    """um/px along each stage axis and the angle of each stage axis in the photo (0 deg = as configured)."""
+    mx, my = np.array([m[0], m[2]]), np.array([m[1], m[3]])  # photo px per um of stage x / stage y
+    ax = math.degrees(math.atan2(sign[0] * m[2], sign[0] * m[0]))
+    ay = math.degrees(math.atan2(-sign[1] * m[1], sign[1] * m[3]))
+    return (
+        f"stage x: {1 / max(np.linalg.norm(mx), 1e-12):.4f} um/px at {ax:+.2f} deg, "
+        f"stage y: {1 / max(np.linalg.norm(my), 1e-12):.4f} um/px at {ay:+.2f} deg"
+    )
+
+
 @dataclass
 class MapResult:
     ok: bool
@@ -331,21 +431,33 @@ class MapResult:
     pairs: List[PairMeasurement]
     checks: List[CheckResult]
     mosaic: Optional[np.ndarray]
-    stage_offset_um: Tuple[float, float] = (0.0, 0.0)  # see stage_to_px
+    stage_px: Optional[Matrix] = None  # measured camera px per stage um (None = nominal_stage_px(cfg))
+    stage_px_offset: Tuple[float, float] = (0.0, 0.0)  # mosaic px = stage_px @ stage_um - offset
     timing: Dict[str, float] = field(default_factory=dict)
     captured: int = 0
     frames: Dict[Tile, np.ndarray] = field(default_factory=dict)  # the raw camera photos (for run folders)
     photo_wall_s: List[float] = field(default_factory=list)  # measured seconds per photo (move+settle+focus+grab+register)
 
+    def matrix(self) -> Matrix:
+        return self.stage_px if self.stage_px is not None else nominal_stage_px(self.cfg)
+
     def stage_to_px(self, x_um: float, y_um: float) -> Tuple[float, float]:
-        sx, sy = self.cfg.sign
-        s = self.cfg.um_per_px
-        return ((sx * x_um - self.stage_offset_um[0]) / s, (sy * y_um - self.stage_offset_um[1]) / s)
+        m, o = self.matrix(), self.stage_px_offset
+        return (m[0] * x_um + m[1] * y_um - o[0], m[2] * x_um + m[3] * y_um - o[1])
 
     def px_to_stage(self, u: float, v: float) -> Tuple[float, float]:
-        sx, sy = self.cfg.sign
-        s = self.cfg.um_per_px
-        return (sx * (u * s + self.stage_offset_um[0]), sy * (v * s + self.stage_offset_um[1]))
+        o = self.stage_px_offset
+        return self.px_to_stage_delta(u + o[0], v + o[1])
+
+    def px_to_stage_delta(self, du: float, dv: float) -> Tuple[float, float]:
+        """Stage um that move the view by (du, dv) photo px."""
+        inv = np.linalg.inv(np.array(self.matrix(), float).reshape(2, 2))
+        d = inv @ np.array([du, dv], float)
+        return (float(d[0]), float(d[1]))
+
+    def um_per_px(self) -> float:
+        """Average um per photo px of the (measured) matrix."""
+        return 1.0 / math.sqrt(abs(np.linalg.det(np.array(self.matrix(), float).reshape(2, 2))))
 
     def report(self) -> List[str]:
         t = self.timing
@@ -353,6 +465,8 @@ class MapResult:
         lines.append(
             f"{self.captured} frames, {len(self.pairs)} pair registrations, {len(self.checks)} left+top checks"
         )
+        if self.stage_px is not None:
+            lines.append(f"camera vs stage, measured: {describe_stage_px(self.stage_px, self.cfg.sign)}")
         for p in self.pairs:
             if p.estimated:
                 lines.append(
@@ -390,7 +504,7 @@ def resolve_grid(cfg: MapConfig, area_um: Tuple[float, float]) -> MapConfig:
     (3/4 of a frame by default), spread evenly so the area edges are covered."""
     if cfg.rows is not None and cfg.cols is not None:
         return cfg
-    fov = (cfg.cam_size[0] * cfg.um_per_px, cfg.cam_size[1] * cfg.um_per_px)
+    fov = fov_um(cfg)
     need = (area_um[0] + 2 * cfg.margin_um, area_um[1] + 2 * cfg.margin_um)
     n = []
     for a in (0, 1):
@@ -420,7 +534,7 @@ def scan_area_um(pm: PlacementMap, cfg: MapConfig) -> Tuple[float, float]:
     minimum overlap (more context for free), but never beyond the placement's full area of complete frames.
     With the photo cropped to the lit part of the frame (about one projector frame), mapping the full
     (tiles + 1)-frame area would need one more photo per direction for no benefit."""
-    fov = (cfg.cam_size[0] * cfg.um_per_px, cfg.cam_size[1] * cfg.um_per_px)
+    fov = fov_um(cfg)
     out = []
     for a, n in ((0, pm.cols), (1, pm.rows)):
         centres = [t.center_um[a] for t in pm.tiles]
@@ -434,7 +548,7 @@ def plan_scan(
     cfg: MapConfig, area_um: Tuple[float, float], center_um: Tuple[float, float]
 ) -> Tuple[Dict[Tile, Tuple[float, float]], Tuple[float, float], Tuple[float, float]]:
     """Stage positions for the scan grid.  Returns (positions, step_um, fov_um)."""
-    fov = (cfg.cam_size[0] * cfg.um_per_px, cfg.cam_size[1] * cfg.um_per_px)
+    fov = fov_um(cfg)
     need = (area_um[0] + 2 * cfg.margin_um, area_um[1] + 2 * cfg.margin_um)
     step = [0.0, 0.0]
     for k, (n, nd, f) in enumerate(((cfg.cols, need[0], fov[0]), (cfg.rows, need[1], fov[1]))):
@@ -550,7 +664,8 @@ def map_area(
     plan, step, fov = plan_scan(cfg, area_um, center_um)
     order = snake_order(cfg.rows, cfg.cols)
     # the registration search window must leave enough overlap to correlate on (small overlaps at 3/4 steps)
-    overlaps_px = [cfg.cam_size[a] - step[a] / cfg.um_per_px for a in (0, 1) if (cfg.cols, cfg.rows)[a] > 1]
+    fov = fov_um(cfg)
+    overlaps_px = [cfg.cam_size[a] * (1.0 - step[a] / fov[a]) for a in (0, 1) if (cfg.cols, cfg.rows)[a] > 1]
     search_eff = cfg.search_px
     if overlaps_px:
         search_eff = int(max(16, min(cfg.search_px, ((min(overlaps_px) - 96) // 2) // 4 * 4)))
@@ -575,10 +690,24 @@ def map_area(
     stage_s = 0.0
     compute_s = 0.0
 
+    # camera px per stage um: starts from the configured / last measured value and is re-fitted from every
+    # trusted overlap, so later predictions (and the search window around them) follow the real stage
+    prior = nominal_stage_px(cfg)
+    steps: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+    m_now: List[Matrix] = [prior]
+
     def predicted(a: Tile, b: Tile) -> Tuple[float, float]:
         dx = plan[b][0] - plan[a][0]
         dy = plan[b][1] - plan[a][1]
-        return (sgn[0] * dx / s, sgn[1] * dy / s)
+        m = m_now[0]
+        return (m[0] * dx + m[1] * dy, m[2] * dx + m[3] * dy)
+
+    def learn(batch: List[PairMeasurement]) -> None:
+        for p in batch:
+            if not p.estimated:
+                steps.append(((plan[p.b][0] - plan[p.a][0], plan[p.b][1] - plan[p.a][1]), p.measured_px))
+        if steps:
+            m_now[0] = fit_stage_px(steps, prior)
 
     def capture(tile: Tile, extra_settle: float = 0.0) -> None:
         nonlocal stage_s
@@ -666,6 +795,7 @@ def map_area(
                     )
             if not problem:
                 pairs.extend(batch)
+                learn(batch)
                 if chk:
                     checks.append(chk)
                 chain_pos[tile] = est.get("chain") or est["top"]
@@ -713,14 +843,21 @@ def map_area(
     say(f"stitching: solved {len(solved)} photo positions from {len(pairs)} overlaps")
     mosaic, (ox, oy) = compose_mosaic(raw, solved, say)
     solved = {t: (p[0] - ox, p[1] - oy) for t, p in solved.items()}
-    # stage <-> mosaic anchor: average over tiles of (chip position of the commanded stage) - (frame centre)
+    # stage <-> mosaic: fitted to every photo's commanded stage position vs its solved mosaic centre; a single
+    # row or column of photos cannot measure both axes, so it keeps the step fit / prior for the other one
     cw, ch = cfg.cam_size
-    offs = []
-    for t, (x, y) in plan.items():
-        cx_px = solved[t][0] + cw / 2.0
-        cy_px = solved[t][1] + ch / 2.0
-        offs.append((sgn[0] * x - cx_px * s, sgn[1] * y - cy_px * s))
-    off = (float(np.mean([o[0] for o in offs])), float(np.mean([o[1] for o in offs])))
+    tiles = list(plan)
+    centres = [(solved[t][0] + cw / 2.0, solved[t][1] + ch / 2.0) for t in tiles]
+    fit = fit_stage_px_absolute([plan[t] for t in tiles], centres)
+    if fit is not None:
+        m, off = fit
+    else:
+        m = m_now[0] if steps else prior
+        offs = [(m[0] * plan[t][0] + m[1] * plan[t][1] - c[0], m[2] * plan[t][0] + m[3] * plan[t][1] - c[1]) for t, c in zip(tiles, centres)]
+        off = (float(np.mean([o[0] for o in offs])), float(np.mean([o[1] for o in offs])))
+    measured = fit is not None or bool(steps)
+    if measured:
+        say(f"{cfg.label}: camera vs stage, measured: {describe_stage_px(m, sgn)}")
     compute_s += time.perf_counter() - t0
     note(1.0, "map complete")
     wall_stitch = time.perf_counter() - t_stitch
@@ -728,7 +865,7 @@ def map_area(
     total = stage_s + compute_s
     return MapResult(
         True, _map_message(pairs), cfg, center_um, plan, solved, pairs, checks,
-        mosaic, off,
+        mosaic, m if measured else None, off,
         {
             "stage_s": stage_s, "compute_s": compute_s, "total_s": total, "autofocus_runs": n_af,
             "wall_s": time.perf_counter() - t_start, "wall_photos_s": sum(photo_wall), "wall_autofocus_s": af_wall,
@@ -738,13 +875,115 @@ def map_area(
     )
 
 
+
+# --------------------------------------------------------------------------------------
+# Projector -> camera (measured from the autofocus grid) and where each tile goes on the map
+# --------------------------------------------------------------------------------------
+@dataclass
+class ProjectorCalibration:
+    """Where the projected frame lands in the photo: photo px = a @ (u, v) + b, with (u, v) the position in
+    the projected frame as a fraction (0..1, x right, y down).  Measured by projecting the autofocus grid
+    through the same image pipeline as the patterns (image adjust included), so it holds the real
+    projector-to-camera scale, rotation and any mirroring.  ``b`` and ``cam_size`` are of the cropped photo."""
+
+    a: Matrix
+    b: Tuple[float, float]
+    cam_size: Tuple[int, int]
+    n_points: int = 0
+    residual_px: float = 0.0
+
+    def to_px(self, u: float, v: float) -> Tuple[float, float]:
+        a = self.a
+        return (a[0] * u + a[1] * v + self.b[0], a[2] * u + a[3] * v + self.b[1])
+
+    def describe(self) -> str:
+        a = np.array(self.a).reshape(2, 2)
+        w, h = np.linalg.norm(a[:, 0]), np.linalg.norm(a[:, 1])
+        ang = math.degrees(math.atan2(a[1, 0], a[0, 0]))
+        off = self.frame_centre_offset_px()
+        mirror = ", mirrored" if np.linalg.det(a) < 0 else ""
+        return (f"projected frame {w:.0f} x {h:.0f} photo px, turned {ang:+.2f} deg{mirror}, centre "
+                f"{off[0]:+.0f}, {off[1]:+.0f} px from the photo centre ({self.n_points // 4} markers, fit {self.residual_px:.2f} px)")
+
+    def frame_centre_offset_px(self) -> Tuple[float, float]:
+        """Projected frame centre minus photo centre (the projector need not be centred on the camera)."""
+        c = self.to_px(0.5, 0.5)
+        return (c[0] - self.cam_size[0] / 2.0, c[1] - self.cam_size[1] / 2.0)
+
+
+def fit_projector_calibration(
+    frame_pts: np.ndarray, photo_pts: np.ndarray, cam_size: Tuple[int, int], max_residual_px: float = 3.0
+) -> Optional[ProjectorCalibration]:
+    """Affine fit of photo px to projected-frame fractions (find_aruco_grid output).  None with fewer than
+    three markers' worth of corners or a poor fit (a marker found in the wrong place)."""
+    if len(frame_pts) < 12:
+        return None
+    a = np.c_[frame_pts, np.ones(len(frame_pts))]
+    coef, *_ = np.linalg.lstsq(a, photo_pts, rcond=None)
+    res = float(np.sqrt(np.mean(np.sum((a @ coef - photo_pts) ** 2, axis=1))))
+    if res > max_residual_px:
+        return None
+    m = (float(coef[0, 0]), float(coef[1, 0]), float(coef[0, 1]), float(coef[1, 1]))
+    return ProjectorCalibration(m, (float(coef[2, 0]), float(coef[2, 1])), tuple(cam_size), len(frame_pts), res)
+
+
+def average_projector_calibration(cals: Sequence[ProjectorCalibration]) -> Optional[ProjectorCalibration]:
+    """Element-wise median of several measurements (one per autofocus)."""
+    if not cals:
+        return None
+    a = tuple(float(np.median([c.a[k] for c in cals])) for k in range(4))
+    b = (float(np.median([c.b[0] for c in cals])), float(np.median([c.b[1] for c in cals])))
+    return ProjectorCalibration(a, b, cals[-1].cam_size, sum(c.n_points for c in cals),  # type: ignore[arg-type]
+                                float(np.median([c.residual_px for c in cals])))
+
+
+def tile_point_map_px(
+    mr: MapResult, pm: PlacementMap, center_um: Tuple[float, float], proj: Optional[ProjectorCalibration],
+    slot: int, fx: float, fy: float,
+) -> Tuple[float, float]:
+    """Mosaic px where pattern-frame px (fx, fy) of tile ``slot`` lands on the chip.
+
+    With a projector calibration the tile offsets go through the measured projector -> camera mapping, so the
+    spacing follows the optics (not the stage, whose errors would scale it); the pattern block is centred on
+    the map position of ``center_um``.  Without one, through the stage and stage_to_px as before."""
+    t, g = pm.tiles[slot], pm.geo
+    ox = t.center_um[0] / pm.um_per_px[0] + fx - g.frame_w / 2.0  # frame px from the pattern-block centre
+    oy = t.center_um[1] / pm.um_per_px[1] + fy - g.frame_h / 2.0
+    if proj is not None:
+        anchor = mr.stage_to_px(*center_um)
+        a = proj.a
+        u, v = ox / g.frame_w, oy / g.frame_h
+        return (anchor[0] + a[0] * u + a[1] * v, anchor[1] + a[2] * u + a[3] * v)
+    sg = mr.cfg.sign
+    return mr.stage_to_px(center_um[0] + sg[0] * ox * pm.um_per_px[0], center_um[1] + sg[1] * oy * pm.um_per_px[1])
+
+
+def tile_stage_targets(
+    mr: MapResult, pm: PlacementMap, center_um: Tuple[float, float], proj: Optional[ProjectorCalibration]
+) -> List[Tuple[float, float]]:
+    """Stage position for each tile (reading order) at which the projector frame lands where it should.
+
+    With a projector calibration: the camera must sit so that the projected frame centre (which may be off
+    the photo centre) lands on the tile's map position; the stage command is that map position through the
+    measured camera-vs-stage matrix, and closed-loop alignment to the map removes what that matrix gets
+    wrong.  Without one: the placement's own stage targets."""
+    if proj is None:
+        return pm.stage_targets(center_um, mr.cfg.sign)
+    off = proj.frame_centre_offset_px()
+    out = []
+    for t in pm.tiles:
+        px = tile_point_map_px(mr, pm, center_um, proj, t.slot, pm.geo.frame_w / 2.0, pm.geo.frame_h / 2.0)
+        out.append(mr.px_to_stage(px[0] - off[0], px[1] - off[1]))
+    return out
+
+
 def background_from_map(mr: "MapResult", pm: PlacementMap, scale: float) -> np.ndarray:
     """The camera mosaic cut to the placement area, at preview scale (BGR), for drawing underneath
     the placement.  The area is centred on the stage position the map was centred on."""
     out_w = max(1, int(round(pm.area_size_px[0] * scale)))
     out_h = max(1, int(round(pm.area_size_px[1] * scale)))
     cx, cy = mr.stage_to_px(*mr.area_center_um)
-    w_cam = pm.area_size_um[0] / mr.cfg.um_per_px
+    w_cam = pm.area_size_um[0] / mr.um_per_px()
     f = out_w / w_cam
     small = cv2.resize(mr.mosaic, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
     if small.ndim == 2:

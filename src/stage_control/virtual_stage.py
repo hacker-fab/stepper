@@ -232,6 +232,20 @@ class VirtualRig:
         self.chip.paint(exposure_mask(pattern), xy, proj_um_per_px, crop)
         return xy
 
+    def projector_calibration(self, cam_size: Optional[Tuple[int, int]] = None):
+        """What measuring the projected autofocus grid would give: the virtual projector paints its frame square to
+        the chip, centred on the camera centre, ``PROJ_UM_PER_PX`` per pattern px; the camera sees the chip at
+        ``true_um_per_px`` turned by ``rot_deg`` (see VirtualChip.render)."""
+        from lib.mapping import ProjectorCalibration
+        from lib.tiling import PROJ_UM_PER_PX, PROJECTOR_SIZE_PX
+
+        w, h = cam_size or self.cam_size
+        th = math.radians(self.rot_deg)
+        r_inv = np.array([[math.cos(th), math.sin(th)], [-math.sin(th), math.cos(th)]]) / self.true_um_per_px
+        a = r_inv @ np.diag([PROJECTOR_SIZE_PX[0] * PROJ_UM_PER_PX[0], PROJECTOR_SIZE_PX[1] * PROJ_UM_PER_PX[1]])
+        b = np.array([w / 2.0, h / 2.0]) - a @ np.array([0.5, 0.5])
+        return ProjectorCalibration(tuple(float(v) for v in a.ravel()), (float(b[0]), float(b[1])), (w, h))
+
     def ideal_chip_xy(self, target_um: Tuple[float, float]) -> Tuple[float, float]:
         """Where the chip would be under the camera if the stage reached ``target_um`` exactly."""
         return (
@@ -285,10 +299,12 @@ def simulate_patterning(
     from lib.alignment import pattern_tiles
 
     res = pattern_tiles(
-        rig, mr, pm, images, cfg, center_um, closed_loop, use_crosses, recorder, progress, ml_detector
+        rig, mr, pm, images, cfg, center_um, closed_loop, use_crosses, recorder,
+        (lambda f, m: progress(m)) if progress else None, ml_detector,
     )
-    targets, pos = res["targets"], res["exposed"]
-    ideal = [rig.ideal_chip_xy(T) for T in targets]
+    pos = res["exposed"]
+    # where the tiles should land: the placement as designed (the virtual projector is square to the stage)
+    ideal = [rig.ideal_chip_xy(T) for T in pm.stage_targets(center_um, cfg.sign)]
     spacing = [
         math.hypot(
             (pos[k][0] - pos[0][0]) - (ideal[k][0] - ideal[0][0]),

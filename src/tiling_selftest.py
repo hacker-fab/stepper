@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lib.run_folder as _run_folder  # noqa: E402
 from lib.img import (  # noqa: E402
     exposure_mask,
     load_image,
@@ -56,6 +57,9 @@ from lib.tiling import (  # noqa: E402
     spec_mismatches,
 )
 from stage_control.virtual_stage import VirtualChip, VirtualRig  # noqa: E402
+
+# the tests must never read or overwrite this machine's real calibration (src/map_runs/calibration.json)
+_run_folder.CALIBRATION_FILE = os.path.join(__import__("tempfile").mkdtemp(), "calibration.json")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CENTER = (5000.0, 3000.0)  # pretend stage position at the middle of the area
@@ -230,6 +234,79 @@ def test_budget() -> None:
     full = budget_report(40.0, exposure_s=100.0)
     assert full["tile_ok"] and full["total_ok"]
     assert not budget_report(40.0, exposure_s=200.0)["tile_ok"]
+
+
+def test_map_measures_the_real_camera_scale_and_rotation() -> None:
+    """The stepper's camera turned out 7-14 % off the configured 0.678 um/px and 3-5 deg rotated: the map
+    measures that from its own overlaps, and closed-loop patterning places the tiles right anyway."""
+    import lib.mapping as mapping
+
+    imgs, geo = _load_samples()
+    pm = build_placement_map(geo)
+    cfg = MapConfig()  # still says 0.678 um/px, no rotation
+    rig = VirtualRig(VirtualChip(pm.area_size_um, seed=11), center_um=CENTER, seed=4, true_um_per_px=0.62, rot_deg=3.5)
+    mr = map_area(rig, cfg, pm.area_size_um, CENTER)
+    assert mr.ok and mr.stage_px is not None, mr.message
+    m = np.array(mr.stage_px).reshape(2, 2)
+    for col in (0, 1):
+        assert abs(1 / np.linalg.norm(m[:, col]) - 0.62) < 0.01, mapping.describe_stage_px(mr.stage_px)
+    assert abs(abs(math.degrees(math.atan2(m[1, 0], m[0, 0]))) - 3.5) < 0.5, mapping.describe_stage_px(mr.stage_px)
+    assert any("camera vs stage, measured" in line for line in mr.report())
+    from stage_control.virtual_stage import simulate_patterning
+
+    sim = simulate_patterning(rig, mr, pm, imgs, cfg, CENTER, closed_loop=True)
+    assert max(sim["spacing_error_um"]) < 3.0, sim["spacing_error_um"]
+    # a later map starts from the measured matrix: its predictions are close from the first overlap on
+    cfg2 = MapConfig(stage_px=mr.stage_px)
+    rig2 = VirtualRig(VirtualChip(pm.area_size_um, seed=11), center_um=CENTER, seed=6, true_um_per_px=0.62, rot_deg=3.5)
+    mr2 = map_area(rig2, cfg2, pm.area_size_um, CENTER)
+    first = mr2.pairs[0]
+    assert math.hypot(*first.error_px) < 15, first.error_px
+
+
+def test_focus_prediction_and_missed_focus() -> None:
+    from lib.mapping import focus_missed, predict_focus_z
+
+    assert predict_focus_z([], 0, 0) is None
+    assert predict_focus_z([(0, 0, 10.0)], 500, 0) == 10.0
+    # a row of points (first map row): slope along the row, none across it
+    row = [(0, 0, 10.0), (500, 0, 15.0), (1000, 0, 20.0)]
+    assert abs(predict_focus_z(row, 1500, 0) - 25.0) < 1e-6
+    assert abs(predict_focus_z(row, 1000, 400) - 20.0) < 1e-6
+    # a tilted plane once the points span an area (clipped to +-40 um from the nearest point)
+    plane = row + [(0, 400, 12.0), (500, 400, 17.0)]
+    assert abs(predict_focus_z(plane, 1000, 400) - 22.0) < 1e-6
+    assert abs(predict_focus_z(plane, 20000, 0) - 60.0) < 1e-6
+    usual = [100.0, 104.0, 98.0]
+    assert focus_missed(5.0, 101.0, 0.0, 10.0, 0.5, usual) is None
+    assert "edge" in focus_missed(9.6, 101.0, 0.0, 10.0, 0.5, usual)
+    assert "sharpness" in focus_missed(2.0, 40.0, 0.0, 10.0, 0.5, usual)
+    assert focus_missed(2.0, 40.0, 0.0, 10.0, 0.5, []) is None  # nothing to compare with yet
+
+
+def test_projector_calibration_from_the_autofocus_grid() -> None:
+    """The autofocus grid, projected through a turned / scaled / mirrored / shifted optical path, is found in
+    the photo and the fitted projector -> camera mapping matches the one used to make the photo."""
+    from lib.img import aruco_grid_image, find_aruco_grid
+    from lib.mapping import fit_projector_calibration
+
+    proj_size, cam = (1920, 1080), (1360, 929)
+    grid = aruco_grid_image(4, proj_size).astype(np.float32)
+    for rot, mirror in ((2.8, False), (-5.0, True)):
+        th = math.radians(rot)
+        r = np.array([[math.cos(th), -math.sin(th)], [math.sin(th), math.cos(th)]])
+        a = r @ np.diag([1300.0 * (-1 if mirror else 1), 735.0])  # frame fraction -> photo px
+        b = np.array([cam[0] / 2 + 23.0, cam[1] / 2 - 17.0]) - a @ np.array([0.5, 0.5])
+        m = np.c_[a @ np.diag([1 / proj_size[0], 1 / proj_size[1]]), b]  # projector px -> photo px
+        photo = cv2.warpAffine(grid, m, cam, flags=cv2.INTER_AREA)
+        photo = 60 + 0.55 * photo + np.random.default_rng(1).normal(0, 4, photo.shape)  # chip + red light
+        photo = cv2.GaussianBlur(np.clip(photo, 0, 255).astype(np.uint8), (0, 0), 1.0)
+        cal = fit_projector_calibration(*find_aruco_grid(photo, 4, proj_size), cam)
+        assert cal is not None and cal.n_points >= 4 * 12, (rot, None if cal is None else cal.n_points)
+        assert np.abs(np.array(cal.a) - a.ravel()).max() < 3.0, (cal.a, a.ravel())
+        assert np.abs(np.array(cal.b) - b).max() < 2.0, (cal.b, b)
+        off = cal.frame_centre_offset_px()
+        assert abs(off[0] - 23.0) < 1.0 and abs(off[1] + 17.0) < 1.0, off
 
 
 def test_ui() -> None:
@@ -635,7 +712,7 @@ def test_machine_flow_with_fake_stepper() -> None:
     root.withdraw()
     area = area_for_tiles(2, 2).area_size_um
     rig = VirtualRig(VirtualChip(area, seed=11), center_um=CENTER, seed=5)
-    log = {"sources_at_grab": [], "patterns": [], "exposed_at": [], "pattern_paths": []}
+    log = {"sources_at_grab": [], "patterns": [], "exposed_at": [], "pattern_paths": [], "uv_z": []}
 
     class Projector:
         def size(self):
@@ -703,15 +780,22 @@ def test_machine_flow_with_fake_stepper() -> None:
             log["pattern_paths"].append(path)
             self.pattern = img
 
-        def expose_pattern(self, red_to_uv_offset):
+        def expose_pattern(self, red_to_uv_offset, uv_autofocus=True):
+            # the map run exposes at red focus + the UV offset, without the old absolute-z UV autofocus
+            assert uv_autofocus is False
+            z_red = self.stage_setpoint[2]
+            self.move_relative({"z": red_to_uv_offset})
+            log["uv_z"].append((z_red, self.stage_setpoint[2]))
             pat = np.asarray(self.pattern)
             log["patterns"].append(pat)
             log["exposed_at"].append(rig.expose(exposure_mask(pat), PROJ_UM_PER_PX))
+            self.move_relative({"z": -red_to_uv_offset})
 
     fake = FakeStepper()
     real = (ui.AreaDialog, ui.PatternPickerDialog, ui.messagebox.askyesno, ui.messagebox.showinfo,
             ui.messagebox.showwarning, ui.RunRecorder, ui.ModelRig.autofocus)
     tmp = tempfile.mkdtemp()
+    real_proj = ui.ModelRig.projector_calibration
 
     class FakeArea:
         def __init__(self, *a, **k):
@@ -738,6 +822,8 @@ def test_machine_flow_with_fake_stepper() -> None:
         ui.messagebox.showinfo = ui.messagebox.showwarning = lambda *a, **k: None
         ui.RunRecorder = lambda label="": real[5](tmp, label)
         ui.ModelRig.autofocus = lambda self: rig.autofocus()  # the grid search has nothing to focus on here
+        # nor a grid to photograph: the projector -> camera mapping the real autofocus would measure
+        ui.ModelRig.projector_calibration = lambda self: rig.projector_calibration((1477, 831))
         ui.PlacementApprovalWindow, real_win = AutoApprove, ui.PlacementApprovalWindow
         try:
             approved = ui.run_map_and_placement(root, fake)
@@ -746,6 +832,7 @@ def test_machine_flow_with_fake_stepper() -> None:
     finally:
         (ui.AreaDialog, ui.PatternPickerDialog, ui.messagebox.askyesno, ui.messagebox.showinfo,
          ui.messagebox.showwarning, ui.RunRecorder, ui.ModelRig.autofocus) = real
+        ui.ModelRig.projector_calibration = real_proj
         root.destroy()
     assert approved is not None
     mr = approved.map_result
@@ -758,6 +845,7 @@ def test_machine_flow_with_fake_stepper() -> None:
     # four exposures, each the tile's pattern with everything outside its footprint black
     pm = approved.placement
     assert len(log["patterns"]) == 4
+    assert all(abs((zu - zr) - (-40.0)) < 1e-9 for zr, zu in log["uv_z"]), log["uv_z"]  # default offset
     for t, pat in zip(pm.tiles, log["patterns"]):
         x0, y0, x1, y1 = t.crop
         outside = exposure_mask(pat).copy()
@@ -855,6 +943,8 @@ def _ui_area_checks(root, ui) -> None:
             ui.AreaDialog, ui.PatternPickerDialog, ui.PlacementApprovalWindow = FakeArea, FakePicker, FakeApproval
             ui.messagebox.showwarning = lambda t, m: events.append("warning")
             ui.RunRecorder = lambda label="": real[5](tmp, label)
+            if os.path.exists(_run_folder.CALIBRATION_FILE):  # each run starts uncalibrated
+                os.remove(_run_folder.CALIBRATION_FILE)
             ui.run_map_and_placement(root, model)
             # the photo run_map_and_placement grabs first to learn the photo size, then a 3 x 3 map (photos are
             # cropped to the lit middle of the frame; the map covers every tile's alignment view), plus any
@@ -1126,7 +1216,9 @@ def main() -> int:
         test_align_fails_loudly_off_the_map, test_cross_measurer_and_method_comparison,
         test_cross_measurer_ml_seed_and_garbage, test_run_folder_and_finished_piece,
         test_area_for_tiles_plus_one_frame, test_map_grid_is_automatic_and_steps_at_most_three_quarters,
-        test_autofocus_after_moves, test_earlier_crosses_logic, test_two_areas_cross_on_off_and_both_finished_pieces_mapped,
+        test_autofocus_after_moves, test_map_measures_the_real_camera_scale_and_rotation,
+        test_focus_prediction_and_missed_focus, test_projector_calibration_from_the_autofocus_grid,
+        test_earlier_crosses_logic, test_two_areas_cross_on_off_and_both_finished_pieces_mapped,
         test_yolo_model_as_cross_seed, test_ui_area_dialog_and_map_before_tiles, test_machine_flow_with_fake_stepper,
         test_ui,
     ]

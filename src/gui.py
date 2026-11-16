@@ -36,6 +36,7 @@ from lib.img import (
     crop_center,
     cv2_to_pil,
     exposure_mask,
+    find_aruco_grid,
     frame_difference,
     image_to_tk_image,
     load_image,
@@ -52,14 +53,19 @@ from lib.mapping import (
     PROJ_CHANGE_NOISE_FACTOR,
     MapConfig,
     MapResult,
+    ProjectorCalibration,
+    average_projector_calibration,
     background_from_map,
+    fit_projector_calibration,
+    focus_missed,
     golden_section_focus,
     map_area,
+    predict_focus_z,
     scan_area_um,
     scan_summary,
     status,
 )
-from lib.run_folder import RunRecorder, map_finished_piece
+from lib.run_folder import RunRecorder, load_calibration, map_finished_piece, save_calibration
 from lib.tiling import (
     PROJ_UM_PER_PX,
     SAMPLE_DIR,
@@ -788,14 +794,19 @@ class EventDispatcher:
             print("Patterning aborted")
             self.should_abort = False
 
-    def expose_pattern(self, red_to_uv_offset: float):
+    def expose_pattern(self, red_to_uv_offset: float, uv_autofocus: bool = True):
         """Expose the loaded pattern at the current position (used by both tiling flows): move z by the
-        red -> UV focus offset, UV autofocus, expose, then back to red mode and the red focus height."""
+        red -> UV focus offset, (optionally) UV autofocus, expose, then back to red mode and the red focus height.
+
+        ``uv_autofocus=False``: z stays at red focus + offset.  The old UV autofocus does not search on a homed
+        stage (OMM): it jumps to the toml ``autofocus`` z + 50, wherever red focus was."""
         self.move_relative({"z": red_to_uv_offset})
         self.non_blocking_delay(0.5)
         self.enter_uv_mode(mode_switch_autofocus=False)
-        self.autofocus(blue_only=True)
+        if uv_autofocus:
+            self.autofocus(blue_only=True)
         self.begin_patterning()
+        self.root.update()  # paint the exposure progress at 100% before the stage moves on
         self.enter_red_mode(mode_switch_autofocus=False)
         self.move_relative({"z": -1 * red_to_uv_offset})
 
@@ -2656,7 +2667,8 @@ class TilingFrame:
         self.frame = ttk.LabelFrame(parent, text="Tiling")
         self.model = model
 
-        self.red_to_uv_offset = -40
+        # z from red focus to UV focus; measured by "Calibrate UV focus" (stored per machine), -40 until then
+        self.red_to_uv_offset = float(load_calibration().get("red_to_uv_offset_um", -40))
 
         self.overall_pattern_size_w = 0
         self.overall_pattern_size_h = 0
@@ -3011,6 +3023,16 @@ class TilingFrame:
         )
         self.finished_piece_button.grid(row=5, column=0)
 
+        def calibrate_uv():
+            offset = calibrate_uv_focus(self.frame, model, self.red_to_uv_offset)
+            if offset is not None:
+                self.red_to_uv_offset = offset
+
+        self.calibrate_uv_button = ttk.Button(
+            self.frame, text="Calibrate UV focus", command=calibrate_uv, state="enabled"
+        )
+        self.calibrate_uv_button.grid(row=6, column=0)
+
 
 # --------------------------------------------------------------------------------------
 # Camera map -> pattern placement -> finished-piece scan (the two map buttons of the Tiling panel)
@@ -3219,9 +3241,11 @@ class AreaDialog:
         cam_size: Tuple[int, int] = (1920, 1080),
         rows: int = 2,
         cols: int = 2,
+        stage_px: Optional[Tuple[float, float, float, float]] = None,
     ):
         self.cam_um_per_px = cam_um_per_px
         self.cam_size = cam_size
+        self.stage_px = stage_px  # measured camera px per stage um (from an earlier map), for the photo plan
         self.result: Optional[Tuple[int, int]] = None  # (tile rows, tile cols)
         self.win = tk.Toplevel(parent)
         self.win.title("Map: area to map")
@@ -3265,7 +3289,7 @@ class AreaDialog:
         r, c = counts
         pm = area_for_tiles(r, c)
         w_um, h_um = pm.area_size_um
-        cfg = MapConfig(um_per_px=self.cam_um_per_px, cam_size=self.cam_size)
+        cfg = MapConfig(um_per_px=self.cam_um_per_px, cam_size=self.cam_size, stage_px=self.stage_px)
         mw, mh = scan_area_um(pm, cfg)
         sc = scan_summary((mw, mh), cfg)
         x0 = min(t.dest[0] for t in pm.tiles)
@@ -3549,6 +3573,13 @@ class ModelRig:
         self.red_to_uv_offset = red_to_uv_offset  # z move from red focus to UV focus (TilingFrame's value)
         self.pattern_dir: Optional[str] = None  # where expose() saves each tile's exposed pattern (run folder)
         self._focused_once = False  # the first autofocus does the coarse stage, later ones only the fine one
+        self.focus_points: List[Tuple[float, float, float]] = []  # (x, y, z) where autofocus found focus
+        self._focus_scores: List[float] = []  # sharpness at the end of each successful fine search
+        self._proj_cals: List[ProjectorCalibration] = []  # projector -> camera, one per autofocus grid photo
+
+    def projector_calibration(self) -> Optional[ProjectorCalibration]:
+        """Where the projector puts its frame in the photo, from the autofocus grid photos (median)."""
+        return average_projector_calibration(self._proj_cals[-12:])
 
     @contextmanager
     def solid_red(self):
@@ -3584,11 +3615,16 @@ class ModelRig:
         path = os.path.join(folder, f"{name}_exposed_pattern.png")
         img.save(path)
         m.set_pattern_image(img, path)
-        m.expose_pattern(self.red_to_uv_offset)
+        status(f"{name}: exposing at red focus z {m.stage_setpoint[2]:.1f} {self.red_to_uv_offset:+.1f} um (UV focus offset)")
+        m.expose_pattern(self.red_to_uv_offset, uv_autofocus=False)
         self.z = m.stage_setpoint[2]
 
     def move_to(self, x_um: float, y_um: float) -> None:
-        # move_absolute fills missing axes with 0, so always pass z
+        # arrive at the z the chip's tilt predicts (from earlier focus results), so a big move does not leave
+        # the photo badly out of focus; move_absolute fills missing axes with 0, so always pass z
+        z = predict_focus_z(self.focus_points, x_um, y_um)
+        if z is not None:
+            self.z = z
         if self.model.move_absolute({"x": x_um, "y": y_um, "z": self.z}) is False:
             raise RuntimeError(f"stage refused the move to ({x_um:.0f}, {y_um:.0f}) um (out of bounds?)")
 
@@ -3599,9 +3635,10 @@ class ModelRig:
         """Toby's autofocus, ported to the old UI: project a red ArUco grid and golden-section search z for the
         sharpest image (coarse 2x2 grid +-250 um, then fine 4x4 grid +-10 um).
 
-        The first call does both stages.  Later calls (the next photo, a few um of tilt away) run the fine stage
-        only, and fall back to the coarse one when the fine search ends on the edge of its range.  The projector
-        is put back to what it showed before, so the map photos are not taken with the grid on the chip."""
+        The first call does both stages.  Later calls start at the tilt-predicted z (move_to) and run the fine
+        stage only, falling back to coarse + fine when the fine search missed focus (focus_missed: it ended on
+        the edge of its range, or its sharpness is far below the usual focused value).  The projector is put back
+        to what it showed before, so the map photos are not taken with the grid on the chip."""
         m = self.model
         if not getattr(m, "camera", None):
             return
@@ -3632,28 +3669,39 @@ class ModelRig:
 
                 return golden_section_focus(measure, centre, half, thr)
 
-            centre = z_start
+            coarse, fine = FOCUS_STAGES
             res = None
-            stages = FOCUS_STAGES[1:] if self._focused_once else FOCUS_STAGES
-            for k, (grid_n, half, thr) in enumerate(stages):
-                res = run_stage(grid_n, half, thr, centre)
-                if res is None:
-                    break
-                centre = res[0]
-                # a fine search that ends on the edge of its range has not found the peak: do the coarse stage too
-                if self._focused_once and k == 0 and abs(centre - z_start) >= half - 2 * thr:
-                    res = run_stage(*FOCUS_STAGES[0], centre)
-                    if res is not None:
-                        res = run_stage(*FOCUS_STAGES[1], res[0])
-                    break
+            why = "first focus" if not self._focused_once else ""
+            if self._focused_once:
+                res = run_stage(*fine, z_start)
+                if res is not None:
+                    why = focus_missed(res[0], res[1], z_start, fine[1], fine[2], self._focus_scores) or ""
+            if why:  # first photo, or the fine search missed: find focus again from far out
+                if self._focused_once:
+                    status(f"autofocus: fine search missed focus ({why}), running the coarse search")
+                res = run_stage(*coarse, z_start)
+                if res is not None:
+                    res = run_stage(*fine, res[0])
             if res is None:
                 status("autofocus: a z move was refused (limit?), staying at the starting height")
                 m.move_absolute({"x": sp[0], "y": sp[1], "z": z_start})
             else:
                 m.move_absolute({"x": sp[0], "y": sp[1], "z": res[0]})
                 self._focused_once = True
+                self.focus_points.append((float(sp[0]), float(sp[1]), float(res[0])))
+                self._focus_scores.append(float(res[1]))
                 status(f"autofocus: z {z_start:.1f} -> {res[0]:.1f} um, {n_moves} z moves")
             self.settle(FOCUS_SETTLE_S)  # the stage settling after the last z move (not the projector)
+            if res is not None:
+                # the fine grid is still projected and in focus: measure where the projector frame lands
+                photo = self.grab()
+                cal = fit_projector_calibration(
+                    *find_aruco_grid(photo, fine[0], proj_size), (photo.shape[1], photo.shape[0])
+                )
+                if cal is not None:
+                    self._proj_cals.append(cal)
+                else:
+                    status("autofocus: the grid markers were not found well enough to measure the projector")
         finally:
 
             def restore() -> None:
@@ -3796,16 +3844,17 @@ def run_map_and_placement(
     pattern the tiles with closed-loop alignment -> re-map the finished piece to check the alignment."""
     rig = ModelRig(model, red_to_uv_offset=red_to_uv_offset)
     cam_size = rig.cam_size()
+    stage_px = measured_stage_px(cam_size)
     (rows0, cols0), why = default_tile_counts(tile_counts)
     status(f"tile grid: {why}")
     t_dialog = time.perf_counter()
-    counts = AreaDialog(parent, cam_um_per_px, cam_size, rows=rows0, cols=cols0).show()
+    counts = AreaDialog(parent, cam_um_per_px, cam_size, rows=rows0, cols=cols0, stage_px=stage_px).show()
     dialog_s = time.perf_counter() - t_dialog
     if not counts:
         return None
     tile_rows, tile_cols = counts
     area_pm = area_for_tiles(tile_rows, tile_cols)
-    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=cam_size)
+    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=cam_size, stage_px=stage_px)
     map_um = scan_area_um(area_pm, cfg)
     center = (float(model.stage_setpoint[0]), float(model.stage_setpoint[1]))
     status(
@@ -3837,6 +3886,8 @@ def run_map_and_placement(
     if not result.ok:
         messagebox.showwarning("Camera map", "\n".join(result.report()) + f"\n\nPhotos saved in:\n{recorder.dir}")
         return None
+    if result.stage_px is not None:  # the next map starts from what this one measured
+        save_calibration(stage_px=list(result.stage_px), stage_px_cam_size=list(cam_size))
 
     # the map is good: now (and only now) the tiles can be inserted
     sample_paths = [os.path.join(SAMPLE_DIR, f) for f in SAMPLE_SET]
@@ -3879,6 +3930,80 @@ def run_map_and_placement(
     return win.result
 
 
+UV_FOCUS_STAGES = ((60.0, 2.0), (6.0, 0.5))  # (+- search um around the expected UV focus, stop width um)
+
+
+def calibrate_uv_focus(parent: tk.Misc, model, current_offset: float = -40.0) -> Optional[float]:
+    """Measure the red -> UV focus offset here: red autofocus, then the same golden-section search with the
+    4x4 grid projected in UV, sharpness from the camera.  The UV light exposes this spot, so it has to be a
+    spare one.  Stores the offset for this machine and returns it (None if cancelled or failed)."""
+    if not getattr(model, "camera", None):
+        messagebox.showerror("Calibrate UV focus", "No camera connected.")
+        return None
+    if not messagebox.askyesno(
+        "Calibrate UV focus",
+        "This focuses with UV light on the spot under the camera, which EXPOSES the resist there.\n\n"
+        "Move to a spare spot of the chip first.  Continue?",
+    ):
+        return None
+    rig = ModelRig(model, red_to_uv_offset=current_offset)
+    m = model
+    prev_uv_image, prev_shown = m.uv_focus_image, m.shown_image
+    sp = list(m.stage_setpoint)
+    try:
+        with rig.solid_red():
+            rig.autofocus()
+        z_red = float(m.stage_setpoint[2])
+        grid = Image.fromarray(aruco_grid_image(4, tuple(m.hardware.projector.size()))).convert("RGBA")
+
+        def uv_on() -> None:
+            m.set_uv_focus_image(grid)
+            m.camera.setExposureTime(m.uv_exposure_time)
+            m.set_shown_image(ShownImage.UV_FOCUS)
+
+        rig.project_and_confirm(uv_on, "UV focus grid on")
+
+        def measure(z: float) -> Optional[float]:
+            if m.move_absolute({"x": sp[0], "y": sp[1], "z": z}) is False:
+                return None
+            rig.settle(FOCUS_SETTLE_S)
+            return sobel_focus_score(rig.grab())
+
+        centre = z_red + current_offset
+        res = None
+        for half, thr in UV_FOCUS_STAGES:
+            res = golden_section_focus(measure, centre, half, thr)
+            if res is None:
+                break
+            centre = res[0]
+    finally:
+        m.set_uv_focus_image(prev_uv_image)
+        m.set_shown_image(prev_shown)
+        m.enter_red_mode(mode_switch_autofocus=False)
+    if res is None:
+        messagebox.showerror("Calibrate UV focus", "A z move was refused (limit?); nothing stored.")
+        m.move_absolute({"x": sp[0], "y": sp[1], "z": z_red})
+        return None
+    offset = float(res[0] - z_red)
+    m.move_absolute({"x": sp[0], "y": sp[1], "z": z_red})
+    save_calibration(red_to_uv_offset_um=offset)
+    status(f"UV focus: red focus z {z_red:.1f} um, UV focus z {res[0]:.1f} um -> offset {offset:+.1f} um (stored)")
+    messagebox.showinfo(
+        "Calibrate UV focus",
+        f"Red focus z {z_red:.1f} um, UV focus z {res[0]:.1f} um.\n\nRed -> UV offset: {offset:+.1f} um "
+        f"(was {current_offset:+.1f} um).  Stored for this machine; tiling uses it from now on.",
+    )
+    return offset
+
+
+def measured_stage_px(cam_size: Tuple[int, int]) -> Optional[Tuple[float, float, float, float]]:
+    """Camera px per stage um measured by the last map on this machine, if it used the same photo size."""
+    cal = load_calibration()
+    if cal.get("stage_px") and tuple(cal.get("stage_px_cam_size", ())) == tuple(cam_size):
+        return tuple(float(v) for v in cal["stage_px"])  # type: ignore[return-value]
+    return None
+
+
 def run_tiles(parent: tk.Misc, model, placement: ApprovedPlacement, recorder: RunRecorder, rig: ModelRig) -> Optional[dict]:
     """Pattern every tile of an approved placement: closed-loop alignment, then UV exposure (pattern_tiles)."""
     mr = placement.map_result
@@ -3893,8 +4018,9 @@ def run_tiles(parent: tk.Misc, model, placement: ApprovedPlacement, recorder: Ru
         with rig.solid_red():
             res = pattern_tiles(
                 rig, mr, placement.placement, placement.images, mr.cfg, placement.area_center_um,
-                closed_loop=True, use_crosses=True, recorder=recorder,
-                progress=lambda msg: prog.update(0.5, msg),
+                # features only: red light does not show the undeveloped crosses of earlier tiles
+                closed_loop=True, use_crosses=False, recorder=recorder,
+                progress=prog.update,
                 ml_detector=yolo_detector(yolo) if yolo is not None else None,
                 should_abort=lambda: prog.aborted,
             )
@@ -3921,7 +4047,8 @@ def run_finished_piece(
         messagebox.showinfo("Camera map", "Run Map + Placement and approve a placement first.")
         return None
     rig = rig or ModelRig(model)
-    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=rig.cam_size())
+    cam_size = rig.cam_size()
+    cfg = MapConfig(um_per_px=cam_um_per_px, cam_size=cam_size, stage_px=measured_stage_px(cam_size))
     prog = ProgressWindow(parent, "Finished piece")
     try:
         with rig.solid_red():

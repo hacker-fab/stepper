@@ -524,29 +524,69 @@ def sobel_focus_score(img: Optional[np.ndarray], kernel_size: int = 9) -> float:
     return float(np.hypot(sx, sy).var())
 
 
-def aruco_grid_image(grid_n: int, canvas_size: Tuple[int, int]) -> np.ndarray:
-    """grid_n x grid_n ArUco tags (DICT_4X4_250, white quiet zones on black), as in Toby's generate_ar_tag_grid.
-    ``canvas_size`` is (width, height) of the projector; returns a grey uint8 image of that size."""
+def aruco_grid_layout(grid_n: int, canvas_size: Tuple[int, int]) -> list:
+    """Where aruco_grid_image puts each marker: [(id, x, y, size)] with (x, y) the marker's top-left corner."""
     width, height = canvas_size
     grid_n = max(1, int(grid_n))
-    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
     mx, my = int(width * 0.05), int(height * 0.05)
     cell_w, cell_h = (width - 2 * mx) / grid_n, (height - 2 * my) / grid_n
     marker = max(12, int(min(cell_w, cell_h) * 0.65))
     quiet = max(4, int(marker * 0.2))
     box = marker + 2 * quiet
-    canvas = np.zeros((height, width), np.uint8)
+    out = []
     for r in range(grid_n):
         for c in range(grid_n):
             cx, cy = int(mx + (c + 0.5) * cell_w), int(my + (r + 0.5) * cell_h)
             x1, y1 = cx - box // 2, cy - box // 2
             if x1 < 0 or y1 < 0 or x1 + box > width or y1 + box > height:
                 continue
-            canvas[y1 : y1 + box, x1 : x1 + box] = 255
-            canvas[y1 + quiet : y1 + quiet + marker, x1 + quiet : x1 + quiet + marker] = cv2.aruco.generateImageMarker(
-                dictionary, (r * grid_n + c) % 250, marker
-            )
+            out.append(((r * grid_n + c) % 250, x1 + quiet, y1 + quiet, marker))
+    return out
+
+
+def aruco_grid_image(grid_n: int, canvas_size: Tuple[int, int]) -> np.ndarray:
+    """grid_n x grid_n ArUco tags (DICT_4X4_250, white quiet zones on black), as in Toby's generate_ar_tag_grid.
+    ``canvas_size`` is (width, height) of the projector; returns a grey uint8 image of that size."""
+    width, height = canvas_size
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
+    canvas = np.zeros((height, width), np.uint8)
+    for marker_id, x, y, size in aruco_grid_layout(grid_n, canvas_size):
+        quiet = max(4, int(size * 0.2))
+        canvas[y - quiet : y + size + quiet, x - quiet : x + size + quiet] = 255
+        canvas[y : y + size, x : x + size] = cv2.aruco.generateImageMarker(dictionary, marker_id, size)
     return canvas
+
+
+def find_aruco_grid(
+    photo: np.ndarray, grid_n: int, canvas_size: Tuple[int, int]
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Markers of aruco_grid_image(grid_n, canvas_size) found in a camera photo of it.
+
+    Returns (frame, photo): matching marker corners as fractions of the projected frame (0..1, x right,
+    y down) and in photo px, one row per corner (N x 2 each, N = 4 per marker found)."""
+    g = photo if photo.ndim == 2 else cv2.cvtColor(photo, cv2.COLOR_RGB2GRAY)
+    detector = cv2.aruco.ArucoDetector(
+        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250), cv2.aruco.DetectorParameters()
+    )
+    w, h = canvas_size
+    known = {m: (x, y, s) for m, x, y, s in aruco_grid_layout(grid_n, canvas_size)}
+    best: Tuple[list, list] = ([], [])
+    # a mirrored marker is not a valid marker, so a camera that sees the projector mirrored needs the photo
+    # flipped back first; the corners are then mapped back to the unflipped photo
+    for flip in (False, True):
+        img = g[:, ::-1] if flip else g
+        corners, ids, _ = detector.detectMarkers(np.ascontiguousarray(img))
+        frame_pts, photo_pts = [], []
+        for c, i in zip(corners, ids.ravel() if ids is not None else []):
+            if int(i) not in known:
+                continue
+            x, y, s = known[int(i)]
+            for (fx, fy), (px, py) in zip(((x, y), (x + s, y), (x + s, y + s), (x, y + s)), c.reshape(4, 2)):
+                frame_pts.append((fx / w, fy / h))
+                photo_pts.append((float(g.shape[1] - 1 - px) if flip else float(px), float(py)))
+        if len(frame_pts) > len(best[0]):
+            best = (frame_pts, photo_pts)
+    return np.array(best[0], float).reshape(-1, 2), np.array(best[1], float).reshape(-1, 2)
 
 
 # endregion
